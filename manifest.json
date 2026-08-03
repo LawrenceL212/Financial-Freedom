@@ -1,0 +1,8 @@
+{
+  "name": "Financial Freedom",
+  "short_name": "Freedom",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#FAF8F1",
+  "theme_color": "#FAF8F1"
+}
