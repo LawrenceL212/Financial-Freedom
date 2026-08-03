@@ -691,11 +691,136 @@ function trendsScreen(){
     el('div',{class:'section-hdr'},'Income per paycheck'),
     makeGraph('Income per paycheck','var(--amber)',incomeSeries,incomeDates,true)
   );
+  // ── Pay consistency score ──
+  const consistencyCard = el('div',{class:'card'});
+  if(incomeSeries.length >= 3){
+    const mean = avgIncome;
+    const variance = incomeSeries.reduce((s,v)=>s+Math.pow(v-mean,2),0)/incomeSeries.length;
+    const stdDev = Math.sqrt(variance);
+    const cv = (stdDev/mean*100); // coefficient of variation
+    const score = Math.max(0,Math.round(100 - cv));
+    const scoreColor = score>=75?'var(--green)':score>=50?'var(--amber)':'var(--red)';
+    const scoreLabel = score>=75?'Consistent':'Moderate variance';
+    const W=Math.min(window.innerWidth-40,440), barW=Math.max(0,Math.min(1,score/100))*((W-40));
+    consistencyCard.innerHTML=`
+      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${scoreColor};margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Pay consistency</div>
+      <div style="display:flex;align-items:flex-end;gap:12px;margin-bottom:12px">
+        <div style="font-family:'Space Mono',monospace;font-size:48px;font-weight:700;color:${scoreColor};line-height:1">${score}</div>
+        <div style="padding-bottom:8px">
+          <div style="font-size:14px;font-weight:600">${scoreLabel}</div>
+          <div style="font-size:12px;color:var(--text2)">out of 100</div>
+        </div>
+      </div>
+      <div style="background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin-bottom:16px">
+        <div style="height:100%;width:${barW}px;background:${scoreColor};border-radius:100px;transition:width .6s"></div>
+      </div>
+      <div class="balance-row"><span class="balance-label">Avg paycheck</span><span class="balance-value">${fmt(mean)}</span></div>
+      <div class="balance-row"><span class="balance-label">Std deviation</span><span class="balance-value">${fmt(stdDev)}</span></div>
+      <div class="balance-row"><span class="balance-label">Lowest paycheck</span><span class="balance-value" style="color:var(--red)">${fmt(Math.min(...incomeSeries))}</span></div>
+      <div class="balance-row" style="border:none"><span class="balance-label">Highest paycheck</span><span class="balance-value" style="color:var(--green)">${fmt(Math.max(...incomeSeries))}</span></div>
+    `;
+  } else {
+    consistencyCard.innerHTML='<div style="color:var(--text3);font-size:13px">Log more paychecks to see your consistency score.</div>';
+  }
+
+  // ── Trip savings planner ──
+  const tripCard = el('div',{class:'card'});
+  tripCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--green);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Trip savings planner</div>`;
+  const tripNameInp = el('input',{placeholder:'Trip name (e.g. Philippines Nov)',style:{marginBottom:'10px'}});
+  const tripGoalInp = el('input',{inputmode:'decimal',placeholder:'Target amount (£)',style:{marginBottom:'10px'}});
+  const tripDateInp = el('input',{type:'date',style:{marginBottom:'10px'}});
+  const tripResult = el('div',{style:{background:'var(--surface2)',borderRadius:'12px',padding:'14px',marginTop:'4px',display:'none'}});
+  const tripCalcBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'12px'}},'Calculate');
+  tripCalcBtn.addEventListener('click',()=>{
+    const target = parseFloat(tripGoalInp.value)||0;
+    const tripDate = new Date(tripDateInp.value);
+    const now = new Date();
+    if(!target||!tripDateInp.value||tripDate<=now){
+      tripResult.style.display='block';
+      tripResult.innerHTML='<div style="color:var(--red);font-size:13px">Enter a valid target and future date.</div>';
+      return;
+    }
+    const msPerDay = 86400000;
+    const daysLeft = Math.ceil((tripDate-now)/msPerDay);
+    const payPeriods = Math.max(1,Math.floor(daysLeft/14));
+    const florasiiNow = appData.balances?.florasii||0;
+    const still = Math.max(0,target-florasiiNow);
+    const perPaycheck = still/payPeriods;
+    const pctOfAvg = avgIncome>0?(perPaycheck/avgIncome*100).toFixed(1):0;
+    tripResult.style.display='block';
+    tripResult.innerHTML=`
+      <div style="font-size:13px;color:var(--text2);margin-bottom:10px">${tripNameInp.value||'Trip'} · ${daysLeft} days away</div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">Already saved</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(florasiiNow)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">Still needed</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700">${fmt(still)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">Paychecks remaining</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700">${payPeriods}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0">
+        <span style="font-size:13px;color:var(--text2)">Save per paycheck</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700;color:${perPaycheck>avgIncome*0.8?'var(--red)':'var(--green)'}">${fmt(perPaycheck)} <span style="font-size:11px;color:var(--text3)">(${pctOfAvg}% of avg pay)</span></span>
+      </div>
+      ${perPaycheck>avgIncome*0.75?'<div style="margin-top:10px;padding:10px;background:var(--red-dim);border-radius:10px;font-size:12px;color:var(--red)">⚠️ This is more than 75% of your average paycheck — consider a lower target or later date.</div>':''}
+    `;
+  });
+  tripCard.append(tripNameInp,tripGoalInp,tripDateInp,tripCalcBtn,tripResult);
+
+  // ── What-if calculator ──
+  const whatifCard = el('div',{class:'card'});
+  whatifCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">"What if" calculator</div>`;
+  const wiHoursInp = el('input',{inputmode:'decimal',placeholder:'Extra hours this period',style:{marginBottom:'10px'}});
+  const wiResult = el('div',{style:{background:'var(--surface2)',borderRadius:'12px',padding:'14px',marginTop:'4px',display:'none'}});
+  const wiBtn = el('button',{style:{background:'var(--amber)',color:'#000',borderRadius:'12px',padding:'13px',width:'100%',fontWeight:'700',fontSize:'14px'}},'Calculate');
+  const RATE = appData.hourlyRate||14.50;
+  wiBtn.addEventListener('click',()=>{
+    const extraH = parseFloat(wiHoursInp.value)||0;
+    if(!extraH){ wiResult.style.display='none'; return; }
+    const extraGross = extraH * RATE;
+    const extraFlorasii = extraGross * 0.75; // 75% split to Florasii when no CC
+    const extraSpending = extraGross * 0.25;
+    const florasiiNow = appData.balances?.florasii||0;
+    const newFlorasii = florasiiNow + extraFlorasii;
+    const newPct = Math.min(100,(newFlorasii/15000*100)).toFixed(1);
+    wiResult.style.display='block';
+    wiResult.innerHTML=`
+      <div style="font-size:13px;color:var(--text2);margin-bottom:10px">${extraH}h extra at £${RATE}/hr</div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">Extra take-home</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--amber)">${fmt(extraGross)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">→ Extra to Florasii (75%)</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(extraFlorasii)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:13px;color:var(--text2)">→ Extra spending (25%)</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700">${fmt(extraSpending)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0">
+        <span style="font-size:13px;color:var(--text2)">Florasii would reach</span>
+        <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(newFlorasii)} <span style="font-size:11px;color:var(--text3)">(${newPct}%)</span></span>
+      </div>
+    `;
+  });
+  whatifCard.append(wiHoursInp,wiBtn,wiResult);
+
   if(accuracyCard) content.append(
     el('div',{class:'section-hdr'},'Prediction accuracy'),
     accuracyCard
   );
   content.append(
+    el('div',{class:'section-hdr'},'Pay consistency'),
+    consistencyCard,
+    el('div',{class:'section-hdr'},'Trip savings planner'),
+    tripCard,
+    el('div',{class:'section-hdr'},'"What if" calculator'),
+    whatifCard,
     el('div',{class:'section-hdr'},'Subscriptions'),
     subCard,
     el('div',{class:'section-hdr'},'All time stats'),
