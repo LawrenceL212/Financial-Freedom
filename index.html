@@ -602,13 +602,193 @@ function trendsScreen(){
   return content;
 }
 
-function mainScreen(startTab='home'){
+function hoursScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const weeks = appData.hoursLog || [];
+  const RATE = appData.hourlyRate || 14.50;
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  // Current week being logged
+  let currentHours = {mon:0,tue:0,wed:0,thu:0,fri:0,sat:0,sun:0};
+  let weekLabel = '';
+
+  function totalHours(w){ return ['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+(parseFloat(w[d])||0),0); }
+  function predictedPay(h){ return h * RATE; }
+
+  // Rate editor
+  const rateWrap = el('div',{class:'card',style:{marginBottom:'0'}});
+  const rateLabel = el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'6px',letterSpacing:'0.5px'}},'Hourly rate (after tax, £)');
+  const rateInput = el('input',{inputmode:'decimal',value:String(RATE),style:{marginBottom:'8px'}});
+  const saveRateBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'12px'}},'Save rate');
+  saveRateBtn.addEventListener('click',async()=>{
+    const r = parseFloat(rateInput.value)||14.50;
+    await save({...appData, hourlyRate:r});
+    saveRateBtn.textContent='Saved ✓';
+    setTimeout(()=>{saveRateBtn.textContent='Save rate'; renderAll();},1500);
+  });
+  rateWrap.append(rateLabel, rateInput, saveRateBtn);
+
+  // Log new week
+  const logWrap = el('div',{class:'card'});
+  const logTitle = el('div',{style:{fontSize:'14px',fontWeight:'600',marginBottom:'14px',color:'var(--text)'}},'Log a week');
+  const weekInput = el('input',{placeholder:'Week starting (e.g. 04/08/2026)',style:{marginBottom:'12px'}});
+
+  const dayInputs = {};
+  const dayGrid = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'6px',marginBottom:'12px'}});
+  for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+    const label = el('div',{style:{fontSize:'10px',color:'var(--text3)',textAlign:'center',marginBottom:'3px',textTransform:'uppercase'}}, d.slice(0,2));
+    const inp = el('input',{inputmode:'decimal',placeholder:'0',style:{padding:'10px 4px',textAlign:'center',fontSize:'14px',borderRadius:'10px'}});
+    dayInputs[d] = inp;
+    const col = el('div',{},label,inp);
+    dayGrid.append(col);
+  }
+
+  const previewDiv = el('div',{style:{background:'var(--surface2)',borderRadius:'12px',padding:'12px',marginBottom:'12px',display:'none'}});
+
+  function updatePreview(){
+    const h = ['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+(parseFloat(dayInputs[d].value)||0),0);
+    if(h>0){
+      previewDiv.style.display='block';
+      previewDiv.innerHTML = `<span style="color:var(--text2);font-size:13px">Total: </span><span style="font-family:'Space Mono',monospace;font-weight:700">${h.toFixed(2)}h</span><span style="color:var(--text2);font-size:13px;margin-left:12px">Predicted: </span><span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(predictedPay(h))}</span>`;
+    } else {
+      previewDiv.style.display='none';
+    }
+  }
+
+  for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+    dayInputs[d].addEventListener('input', updatePreview);
+  }
+
+  const addWeekBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'12px'}},'Add week');
+  addWeekBtn.addEventListener('click',async()=>{
+    if(!weekInput.value) return;
+    const hrs = {};
+    for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+      hrs[d] = parseFloat(dayInputs[d].value)||0;
+    }
+    const total = totalHours(hrs);
+    if(total===0) return;
+    const week = {
+      id: uid(),
+      label: weekInput.value.trim(),
+      ...hrs,
+      total,
+      predicted: predictedPay(total)
+    };
+    const newLog = [week, ...(appData.hoursLog||[])];
+    await save({...appData, hoursLog:newLog});
+    weekInput.value='';
+    for(const d of ['mon','tue','wed','thu','fri','sat','sun']) dayInputs[d].value='';
+    previewDiv.style.display='none';
+    renderAll();
+  });
+
+  logWrap.append(logTitle, weekInput, dayGrid, previewDiv, addWeekBtn);
+
+  // History
+  const histWrap = el('div',{});
+
+  function renderAll(){
+    histWrap.innerHTML='';
+    const log = appData.hoursLog||[];
+    if(log.length===0){
+      histWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},'No weeks logged yet — add your first week above.'));
+      return;
+    }
+
+    // Group pairs into pay periods (every 2 weeks)
+    const pairs = [];
+    for(let i=0;i<log.length;i+=2){
+      const w1 = log[i];
+      const w2 = log[i+1];
+      pairs.push({w1, w2});
+    }
+
+    for(const {w1,w2} of pairs){
+      const totalH = w1.total + (w2?w2.total:0);
+      const predicted = predictedPay(totalH);
+      const card = el('div',{class:'card',style:{marginBottom:'10px'}});
+
+      const header = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'12px'}});
+      const labelDiv = el('div',{},
+        el('div',{style:{fontWeight:'600',fontSize:'14px'}}, w1.label + (w2?' → '+w2.label:'')),
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},totalH.toFixed(2)+'h total')
+      );
+      const payDiv = el('div',{style:{textAlign:'right'}},
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(predicted)),
+        el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},'predicted')
+      );
+      header.append(labelDiv,payDiv);
+
+      // day breakdown
+      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px'}});
+      for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+        const h1 = w1[d]||0;
+        const h2 = w2?w2[d]||0:0;
+        const total = h1+h2;
+        const col = el('div',{style:{textAlign:'center'}},
+          el('div',{style:{fontSize:'9px',color:'var(--text3)',textTransform:'uppercase',marginBottom:'2px'}},d.slice(0,2)),
+          el('div',{style:{fontSize:'12px',fontFamily:"'Space Mono',monospace",color:total>0?'var(--text)':'var(--text3)'}},total>0?total.toFixed(1):'—')
+        );
+        breakdown.append(col);
+      }
+
+      // delete button
+      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'10px'}},'Remove');
+      delBtn.addEventListener('click',async()=>{
+        const ids = [w1.id, w2&&w2.id].filter(Boolean);
+        const newLog = (appData.hoursLog||[]).filter(w=>!ids.includes(w.id));
+        await save({...appData,hoursLog:newLog});
+        renderAll();
+      });
+
+      card.append(header,breakdown,delBtn);
+      histWrap.append(card);
+    }
+
+    // Summary
+    const totalAllHours = log.reduce((s,w)=>s+w.total,0);
+    const avgPerPeriod = log.length >= 2 ? predictedPay((log[0].total+(log[1]?log[1].total:0))) : 0;
+    histWrap.append(
+      el('div',{class:'section-hdr'},'Summary'),
+      el('div',{class:'card'},
+        el('div',{class:'balance-row'},
+          el('div',{class:'balance-label'},'Total hours tracked'),
+          el('div',{class:'balance-value'},totalAllHours.toFixed(1)+'h')
+        ),
+        el('div',{class:'balance-row'},
+          el('div',{class:'balance-label'},'Effective rate (after tax)'),
+          el('div',{class:'balance-value'},fmt(RATE)+'/hr')
+        ),
+        el('div',{class:'balance-row'},
+          el('div',{class:'balance-label'},'Next predicted pay'),
+          el('div',{class:'balance-value',style:{color:'var(--green)'}},
+            log.length>=2 ? fmt(predictedPay(log[0].total+(log[1]?log[1].total:0))) : '—'
+          )
+        )
+      )
+    );
+  }
+
+  renderAll();
+
+  content.append(
+    el('div',{class:'section-hdr'},'Hourly Rate'),
+    rateWrap,
+    el('div',{class:'section-hdr'},'Log Hours'),
+    logWrap,
+    el('div',{class:'section-hdr'},'Pay Periods'),
+    histWrap
+  );
+  return content;
+}
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
   let tab = startTab;
 
   const svgHome = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>';
   const svgChart = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-4 4 4 4-6"/></svg>';
+  const svgClock = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
   const svgGear = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>';
   const svgPlus = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
@@ -616,6 +796,8 @@ function mainScreen(startTab='home'){
   homeBtn.innerHTML = svgHome + '<span>Overview</span>';
   const trendsBtn = el('button',{class:'nav-btn'});
   trendsBtn.innerHTML = svgChart + '<span>Trends</span>';
+  const hoursBtn = el('button',{class:'nav-btn'});
+  hoursBtn.innerHTML = svgClock + '<span>Hours</span>';
   const settBtn = el('button',{class:'nav-btn'});
   settBtn.innerHTML = svgGear + '<span>Settings</span>';
   const payBtn = el('button',{class:'nav-btn',style:{color:'var(--green)'}});
@@ -627,6 +809,7 @@ function mainScreen(startTab='home'){
     tab=t;
     homeBtn.className='nav-btn'+(t==='home'?' active':'');
     trendsBtn.className='nav-btn'+(t==='trends'?' active':'');
+    hoursBtn.className='nav-btn'+(t==='hours'?' active':'');
     settBtn.className='nav-btn'+(t==='settings'?' active':'');
     body.innerHTML='';
     const header = el('div',{style:{padding:'max(20px,env(safe-area-inset-top)) 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0'}});
@@ -646,6 +829,12 @@ function mainScreen(startTab='home'){
         el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Trends')
       ));
       body.append(header, trendsScreen());
+    } else if(t==='hours'){
+      header.append(el('div',{},
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Work'),
+        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Hours & Pay')
+      ));
+      body.append(header, hoursScreen());
     } else {
       header.append(el('div',{},
         el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Manage'),
@@ -657,10 +846,11 @@ function mainScreen(startTab='home'){
 
   homeBtn.addEventListener('click',()=>setTab('home'));
   trendsBtn.addEventListener('click',()=>setTab('trends'));
+  hoursBtn.addEventListener('click',()=>setTab('hours'));
   settBtn.addEventListener('click',()=>setTab('settings'));
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, hoursBtn, settBtn);
   wrap.append(body, nav);
   setTab(startTab);
   render(wrap);
