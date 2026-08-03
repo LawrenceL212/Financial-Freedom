@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Financial Freedom</title>
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#FAF8F1" />
+<meta name="theme-color" content="#0D0D0D" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -13,19 +15,127 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
 
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
-  body { font-family: 'Inter', system-ui, sans-serif; background: #FAF8F1; }
-  .font-mono { font-family: 'IBM Plex Mono', monospace; }
-  .font-display { font-family: 'Fraunces', serif; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0D0D0D;
+  --surface: #161616;
+  --surface2: #1E1E1E;
+  --border: #2A2A2A;
+  --green: #00E676;
+  --green-dim: #00E67620;
+  --red: #FF5252;
+  --red-dim: #FF525220;
+  --amber: #FFB300;
+  --amber-dim: #FFB30020;
+  --text: #F0F0F0;
+  --text2: #888;
+  --text3: #555;
+}
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  min-height: 100dvh;
+  overscroll-behavior: none;
+}
+.mono { font-family: 'Space Mono', monospace; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 0; }
+
+/* input reset */
+input, select, button { font-family: inherit; }
+input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 14px 16px; font-size: 16px; width: 100%; outline: none; transition: border-color 0.15s; }
+input:focus { border-color: var(--green); }
+input::placeholder { color: var(--text3); }
+
+button { cursor: pointer; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
+button:active { transform: scale(0.97); }
+
+.btn-primary { background: var(--green); color: #000; padding: 16px; width: 100%; font-size: 16px; border-radius: 16px; letter-spacing: 0.3px; }
+.btn-ghost { background: var(--surface2); color: var(--text2); padding: 14px; width: 100%; border: 1px solid var(--border); }
+
+/* layout */
+.screen { min-height: 100dvh; display: flex; flex-direction: column; }
+.content { flex: 1; padding: 24px 20px; max-width: 480px; margin: 0 auto; width: 100%; }
+
+/* cards */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 20px; }
+.card + .card { margin-top: 12px; }
+
+/* balance pill */
+.balance-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.balance-row:last-child { border-bottom: none; padding-bottom: 0; }
+.balance-row:first-child { padding-top: 0; }
+.balance-label { font-size: 14px; color: var(--text2); }
+.balance-value { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; }
+
+/* step flow */
+.step-number { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text3); margin-bottom: 8px; }
+.step-title { font-size: 26px; font-weight: 700; line-height: 1.2; margin-bottom: 6px; }
+.step-sub { font-size: 14px; color: var(--text2); margin-bottom: 28px; line-height: 1.5; }
+
+/* split instruction card */
+.instruction { background: var(--surface2); border-radius: 16px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border-left: 3px solid var(--green); }
+.instruction.red { border-left-color: var(--red); }
+.instruction.amber { border-left-color: var(--amber); }
+.instruction-label { font-size: 14px; color: var(--text2); margin-bottom: 2px; }
+.instruction-action { font-size: 15px; font-weight: 600; }
+.instruction-amount { font-family: 'Space Mono', monospace; font-size: 20px; font-weight: 700; color: var(--green); }
+.instruction.red .instruction-amount { color: var(--red); }
+.instruction.amber .instruction-amount { color: var(--amber); }
+
+/* big input */
+.big-input-wrap { position: relative; margin-bottom: 24px; }
+.big-input-wrap .currency { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-family: 'Space Mono', monospace; font-size: 28px; font-weight: 700; color: var(--text3); pointer-events: none; }
+.big-input { font-family: 'Space Mono', monospace !important; font-size: 28px !important; font-weight: 700 !important; padding: 20px 20px 20px 44px !important; border-radius: 16px !important; letter-spacing: -0.5px; }
+
+/* nav */
+.nav { display: flex; justify-content: space-around; padding: 10px 0 max(10px, env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); position: sticky; bottom: 0; }
+.nav-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 16px; background: none; color: var(--text3); font-size: 11px; border-radius: 12px; min-width: 60px; }
+.nav-btn.active { color: var(--green); }
+.nav-btn svg { width: 22px; height: 22px; }
+
+/* progress bar */
+.prog-wrap { background: var(--surface2); border-radius: 100px; height: 8px; overflow: hidden; margin: 8px 0; }
+.prog-fill { height: 100%; border-radius: 100px; background: var(--green); transition: width 0.6s cubic-bezier(.4,0,.2,1); }
+.prog-fill.red { background: var(--red); }
+.prog-fill.amber { background: var(--amber); }
+
+/* sub item */
+.sub-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.sub-item:last-child { border-bottom: none; }
+.sub-name { font-size: 14px; }
+.sub-amount { font-family: 'Space Mono', monospace; font-size: 14px; color: var(--text2); }
+
+/* paycheck history */
+.history-item { background: var(--surface2); border-radius: 14px; padding: 14px 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+.history-date { font-size: 12px; color: var(--text3); margin-top: 2px; }
+
+/* tag */
+.tag { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
+.tag-green { background: var(--green-dim); color: var(--green); }
+.tag-red { background: var(--red-dim); color: var(--red); }
+
+/* done checkmark animation */
+@keyframes pop { 0% { transform: scale(0.5); opacity: 0; } 70% { transform: scale(1.2); } 100% { transform: scale(1); opacity: 1; } }
+.done-icon { animation: pop 0.4s cubic-bezier(.4,0,.2,1) forwards; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px; border-radius: 50%; background: var(--green-dim); margin: 0 auto 20px; }
+
+/* section header */
+.section-header { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text3); margin-bottom: 14px; margin-top: 28px; }
+.section-header:first-child { margin-top: 0; }
+
+/* toggle */
+.toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.toggle-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 
-<!-- ====================== CONFIG — fill this in from Firebase ====================== -->
 <script>
   window.FIREBASE_CONFIG = {
     apiKey: "AIzaSyBqjVFKGnQujQQ0rQqsPZ2px1DCCkjlzyA",
@@ -37,549 +147,479 @@
     appId: "1:610515737665:web:7f497468aaa3d484aafac0"
   };
 </script>
-<!-- ======================================================================= -->
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 firebase.initializeApp(window.FIREBASE_CONFIG);
 const auth = firebase.auth();
 const db = firebase.database();
 
-/* ---------------------------- tiny inline icons ---------------------------- */
-const Icon = ({ d, size = 18, ...p }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+const uid = () => Math.random().toString(36).slice(2, 10);
+const fmt = (n) => {
+  const abs = Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (n < 0 ? '-£' : '£') + abs;
+};
+const fmtShort = (n) => '£' + Math.round(Math.abs(n)).toLocaleString('en-GB');
+
+const DEFAULT_DATA = {
+  balances: {
+    current: -5.40,
+    creditCard: 0,
+    florasii: 1973.24,
+    personalSavings: 0.51,
+  },
+  paychecks: [],
+  goals: [
+    { id: 'g1', name: 'Florasii Fund', target: 15000, current: 1973.24, color: 'green' },
+  ],
+  subscriptions: [
+    { id: 's1', name: 'Spotify', amount: 12.99 },
+    { id: 's2', name: 'Amazon Prime', amount: 8.99 },
+    { id: 's3', name: 'Discord Nitro', amount: 7.99 },
+    { id: 's4', name: 'Prime Video', amount: 2.99 },
+    { id: 's5', name: 'BH Live (Gym)', amount: 47.00 },
+    { id: 's6', name: 'Aloha VPN', amount: 4.99 },
+    { id: 's7', name: 'Crunchyroll', amount: 6.99 },
+    { id: 's8', name: 'iCloud+', amount: 8.99 },
+    { id: 's9', name: 'OKOK (Scale)', amount: 9.99 },
+    { id: 's10', name: 'Runna', amount: 15.99 },
+    { id: 's11', name: 'YouTube Premium', amount: 16.99 },
+  ],
+};
+
+/* ── icons ── */
+const I = ({ d, size=22, color='currentColor', strokeWidth=1.8 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
     {d}
   </svg>
 );
-const IWallet = (p) => <Icon {...p} d={<path d="M3 7a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v3M3 7v11a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-6a1 1 0 0 0-1-1h-5a2 2 0 1 0 0 4h6" />} />;
-const IPiggy = (p) => <Icon {...p} d={<><path d="M11 5c-4 0-7 2.5-7 6 0 1.4.6 2.6 1.5 3.5L5 17h3l1-1.2c.6.1 1.3.2 2 .2s1.4-.1 2-.2L14 17h3l-.7-2.3A5.6 5.6 0 0 0 18 11c0-3.5-3-6-7-6Z" /><circle cx="15" cy="9" r=".6" fill="currentColor" /><path d="M8 9V7" /></>} />;
-const ICard = (p) => <Icon {...p} d={<><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /></>} />;
-const IPlus = (p) => <Icon {...p} d={<path d="M12 5v14M5 12h14" />} />;
-const IGear = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></>} />;
-const IReceipt = (p) => <Icon {...p} d={<><path d="M4 3h16v18l-2.5-1.5L15 21l-2.5-1.5L10 21l-2.5-1.5L5 21l-1-1V3Z" /><path d="M8 8h8M8 12h8M8 16h5" /></>} />;
-const IUsers = (p) => <Icon {...p} d={<><circle cx="9" cy="8" r="3" /><path d="M2 20c0-3.3 3-5 7-5s7 1.7 7 5" /><circle cx="17" cy="9" r="2.5" /><path d="M22 20c0-2.5-2-4-5-4.3" /></>} />;
-const ITrash = (p) => <Icon {...p} d={<><path d="M4 7h16M9 7V4h6v3M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13" /></>} />;
-const IChevD = (p) => <Icon {...p} d={<path d="M6 9l6 6 6-6" />} />;
-const IChevU = (p) => <Icon {...p} d={<path d="M6 15l6-6 6 6" />} />;
-const ICompass = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="10" /><path d="M16 8l-2.5 6L8 16l2.5-6L16 8Z" /></>} />;
-const ILandmark = (p) => <Icon {...p} d={<><path d="M3 21h18M4 21V10M20 21V10M2 10l10-6 10 6M6 10v6M10 10v6M14 10v6M18 10v6" /></>} />;
+const HomeIcon = () => <I d={<><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></>} />;
+const PayIcon = () => <I d={<><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></>} />;
+const ChartIcon = () => <I d={<><path d="M3 3v18h18"/><path d="M7 16l4-4 4 4 4-6"/></>} />;
+const SettingsIcon = () => <I d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></>} />;
+const CheckIcon = () => <I d={<path d="M20 6L9 17l-5-5"/>} size={36} color="var(--green)" strokeWidth={2.5}/>;
+const PlusIcon = () => <I d={<path d="M12 5v14M5 12h14"/>} />;
+const TrashIcon = () => <I d={<><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></>} size={16}/>;
 
-/* ------------------------------ engine (same math as your sheet) ------------------------------ */
-const DEFAULT_SETTINGS = {
-  currencySymbol: "£", tripName: "Florasii Fund", tripGoal: 15179,
-  spendingPct: 0.20, ccApr: 0.2461,
-  motherLabel: "Personal Debt", motherPct: 0.20, motherLeftoverShare: 0.30,
-  tripPct: 0.10, tripLeftoverShare: 0.80,
-  initialSpending: 629.02, initialCC: 1187.59, initialMother: 1917,
-  initialTrip: 1973.24, initialSavings: 0.51,
-};
-const DEFAULT_FIXED_COSTS = [
-  { id: "c1", name: "Transport", amount: 20, cadence: "Monthly", note: "" },
-  { id: "c2", name: "Crunchyroll", amount: 5.99, cadence: "Monthly", note: "25th" },
-  { id: "c3", name: "iCloud+", amount: 8.99, cadence: "Monthly", note: "13th" },
-  { id: "c4", name: "Spotify", amount: 5.99, cadence: "Monthly", note: "17th" },
-];
-const DEFAULT_OTHER_DEBT = { name: "Phone Unlock", original: 1800, paid: 300 };
+/* ── Auth ── */
+function AuthScreen() {
+  const [mode, setMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [pass, setPass] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
 
-let CURRENCY = "£";
-const fmt = (n) => (n < 0 ? `-${CURRENCY}` : CURRENCY) + Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtShort = (n) => CURRENCY + Math.round(n).toLocaleString();
-const uid = () => Math.random().toString(36).slice(2, 10);
-
-function computeSeries(entries, s) {
-  const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
-  let spending = s.initialSpending, cc = s.initialCC, mother = s.initialMother, trip = s.initialTrip, savings = s.initialSavings;
-  const rows = [];
-  for (const e of sorted) {
-    const income = Number(e.income) || 0, expenses = Number(e.expenses) || 0;
-    const spendAdd = income * s.spendingPct;
-    spending = spending + spendAdd - expenses;
-    const ccGrown = cc * (1 + (s.ccApr / 365) * 14);
-    const ccPayment = Math.max(0, Math.min(ccGrown, income * 0.5));
-    const newCC = Math.max(ccGrown - ccPayment, 0);
-    const leftover = income * 0.5 - ccPayment;
-    const motherShare = income * s.motherPct + leftover * s.motherLeftoverShare;
-    let motherPayment = 0, redirectToTrip = 0;
-    if (mother > 0) motherPayment = Math.min(mother, motherShare);
-    else redirectToTrip = motherShare;
-    const newMother = Math.max(mother - motherPayment, 0);
-    const tripAdd = income * s.tripPct + leftover * s.tripLeftoverShare + redirectToTrip;
-    trip = trip + tripAdd;
-    savings = savings + (Number(e.savings) || 0);
-    cc = newCC; mother = newMother;
-    rows.push({ ...e, income, expenses, spendAdd, spending, ccPayment, cc, motherPayment, mother, tripAdd, trip, savings, pctToGoal: s.tripGoal > 0 ? trip / s.tripGoal : 0 });
-  }
-  return rows;
-}
-
-/* ---------------------------------- small pieces ---------------------------------- */
-function StatCard({ icon: Icn, label, value, tone = "ink", sub }) {
-  const toneMap = { ink: "text-[#24261F]", moss: "text-[#3E5B44]", rust: "text-[#93463A]", gold: "text-[#96751A]" };
-  return (
-    <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 px-4 py-3 flex flex-col gap-1 min-w-0">
-      <div className="flex items-center gap-1.5 text-[#6B6552] text-[11px] uppercase tracking-wider font-medium">
-        <Icn size={13} /><span className="truncate">{label}</span>
-      </div>
-      <div className={`font-mono text-lg font-semibold ${toneMap[tone]} truncate`}>{value}</div>
-      {sub && <div className="text-[11px] text-[#8A836C] -mt-0.5">{sub}</div>}
-    </div>
-  );
-}
-
-function FreedomMeter({ debtTotal, debtStart, saved, goal }) {
-  const debtPct = debtStart > 0 ? Math.max(0, Math.min(1, debtTotal / debtStart)) : 0;
-  const savePct = goal > 0 ? Math.max(0, Math.min(1, saved / goal)) : 0;
-  return (
-    <div className="w-full">
-      <div className="flex justify-between text-[11px] uppercase tracking-wider text-[#6B6552] mb-1.5 font-medium">
-        <span>Debt remaining</span><span>Trip fund</span>
-      </div>
-      <div className="relative h-3 rounded-full bg-[#EDE7D6] overflow-hidden">
-        <div className="absolute left-0 top-0 h-full bg-gradient-to-r from-[#93463A] to-[#B5695D] rounded-r-full transition-all duration-700" style={{ width: `${debtPct * 50}%` }} />
-        <div className="absolute right-0 top-0 h-full bg-gradient-to-l from-[#3E5B44] to-[#6E8F6F] rounded-l-full transition-all duration-700" style={{ width: `${savePct * 50}%` }} />
-        <div className="absolute left-1/2 top-0 h-full w-[2px] bg-[#24261F]/20 -translate-x-1/2" />
-      </div>
-      <div className="flex justify-between text-[12px] font-mono mt-1 text-[#4A473C]">
-        <span>{fmtShort(debtTotal)}</span><span>{fmtShort(saved)} / {fmtShort(goal)}</span>
-      </div>
-    </div>
-  );
-}
-
-function GoalDial({ pct, label }) {
-  const clamped = Math.max(0, Math.min(1, pct));
-  const r = 42, c = 2 * Math.PI * r;
-  return (
-    <div className="relative w-28 h-28 shrink-0">
-      <svg viewBox="0 0 100 100" className="w-28 h-28 -rotate-90">
-        <circle cx="50" cy="50" r={r} fill="none" stroke="#EDE7D6" strokeWidth="9" />
-        <circle cx="50" cy="50" r={r} fill="none" stroke="#96751A" strokeWidth="9" strokeDasharray={c} strokeDashoffset={c * (1 - clamped)} strokeLinecap="round" className="transition-all duration-700" />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="font-mono text-xl font-bold text-[#24261F]">{Math.round(clamped * 100)}%</span>
-        <span className="text-[10px] text-[#8A836C] uppercase tracking-wide">{label}</span>
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------- screens ---------------------------------- */
-function Dashboard({ rows, settings, otherDebt }) {
-  const latest = rows[rows.length - 1];
-  const spending = latest ? latest.spending : settings.initialSpending;
-  const cc = latest ? latest.cc : settings.initialCC;
-  const mother = latest ? latest.mother : settings.initialMother;
-  const trip = latest ? latest.trip : settings.initialTrip;
-  const savings = latest ? latest.savings : settings.initialSavings;
-  const otherRemainder = Math.max(0, otherDebt.original - otherDebt.paid);
-  const totalDebt = cc + mother + otherRemainder;
-  const startDebt = settings.initialCC + settings.initialMother + Math.max(0, otherDebt.original);
-
-  return (
-    <div className="space-y-5 pb-4">
-      <div className="rounded-3xl bg-gradient-to-br from-[#F7F4EB] to-[#EDE7D6] border border-[#E4DEC9] p-5 flex items-center gap-4">
-        <GoalDial pct={latest ? latest.pctToGoal : trip / settings.tripGoal} label="to goal" />
-        <div className="flex-1 min-w-0">
-          <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">{settings.tripName}</div>
-          <div className="font-mono text-2xl font-bold text-[#24261F] truncate">{fmt(trip)}</div>
-          <div className="text-[12px] text-[#6B6552]">of {fmtShort(settings.tripGoal)} goal</div>
-        </div>
-      </div>
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/60 p-4">
-        <FreedomMeter debtTotal={totalDebt} debtStart={startDebt} saved={trip + savings} goal={settings.tripGoal} />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <StatCard icon={IWallet} label="Spending account" value={fmt(spending)} tone="ink" />
-        <StatCard icon={IPiggy} label="Savings" value={fmt(savings)} tone="moss" />
-        <StatCard icon={ICard} label="Credit card" value={fmt(cc)} tone="rust" sub={`${(settings.ccApr * 100).toFixed(2)}% APR`} />
-        <StatCard icon={IUsers} label={settings.motherLabel} value={fmt(mother)} tone="rust" />
-      </div>
-      {!latest && (
-        <div className="rounded-2xl border border-dashed border-[#C9C2A6] p-4 text-center text-[#6B6552] text-sm">
-          No paychecks logged yet. Add your first entry in the <b>Add</b> tab.
-        </div>
-      )}
-      {latest && (
-        <div className="rounded-2xl border border-[#E4DEC9] bg-white/60 p-4">
-          <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium mb-2">Last paycheck split</div>
-          <div className="text-sm text-[#3D3A2D] space-y-1 font-mono">
-            <div className="flex justify-between"><span>Income</span><span>{fmt(latest.income)}</span></div>
-            <div className="flex justify-between"><span>→ Spending</span><span>{fmt(latest.spendAdd)}</span></div>
-            <div className="flex justify-between"><span>→ Credit card</span><span>{fmt(latest.ccPayment)}</span></div>
-            <div className="flex justify-between"><span>→ {settings.motherLabel}</span><span>{fmt(latest.motherPayment)}</span></div>
-            <div className="flex justify-between"><span>→ {settings.tripName}</span><span>{fmt(latest.tripAdd)}</span></div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AddEntry({ onAdd, settings }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [source, setSource] = useState("");
-  const [income, setIncome] = useState("");
-  const [expenses, setExpenses] = useState("");
-  const [savings, setSavings] = useState("");
-  const [notes, setNotes] = useState("");
-  const [lastPreview, setLastPreview] = useState(null);
-
-  const preview = useMemo(() => {
-    const inc = Number(income) || 0;
-    if (!inc) return null;
-    return computeSeries([{ date, income: inc, expenses: Number(expenses) || 0, savings: Number(savings) || 0 }], settings)[0];
-  }, [income, expenses, savings, date, settings]);
-
-  function submit(e) {
+  async function submit(e) {
     e.preventDefault();
-    if (!income) return;
-    const entry = { id: uid(), date, source: source.trim() || "Paycheck", income: Number(income) || 0, expenses: Number(expenses) || 0, savings: Number(savings) || 0, notes: notes.trim() };
-    onAdd(entry);
-    setLastPreview({ ...preview, source: entry.source });
-    setSource(""); setIncome(""); setExpenses(""); setSavings(""); setNotes("");
+    setBusy(true); setErr('');
+    try {
+      if (mode === 'signin') await auth.signInWithEmailAndPassword(email, pass);
+      else await auth.createUserWithEmailAndPassword(email, pass);
+    } catch(ex) { setErr(ex.message); }
+    setBusy(false);
   }
 
-  const field = "w-full rounded-xl border border-[#E4DEC9] bg-white/80 px-3 py-2.5 text-[15px] text-[#24261F] outline-none focus:border-[#96751A] focus:ring-2 focus:ring-[#96751A]/20 transition";
-
   return (
-    <div className="space-y-5 pb-4">
-      <form onSubmit={submit} className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">New paycheck</div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="text-xs text-[#6B6552] space-y-1"><span>Date</span>
-            <input type="date" className={field} value={date} onChange={(e) => setDate(e.target.value)} /></label>
-          <label className="text-xs text-[#6B6552] space-y-1"><span>Source</span>
-            <input className={field} placeholder="Employer" value={source} onChange={(e) => setSource(e.target.value)} /></label>
+    <div className="screen" style={{justifyContent:'center'}}>
+      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',minHeight:'100dvh'}}>
+        <div style={{marginBottom:40}}>
+          <div style={{fontSize:13,letterSpacing:3,textTransform:'uppercase',color:'var(--text3)',marginBottom:8}}>Your money</div>
+          <div style={{fontSize:36,fontWeight:700,lineHeight:1.1}}>Financial<br/>Freedom</div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <label className="text-xs text-[#6B6552] space-y-1"><span>Income</span>
-            <input inputMode="decimal" className={field} placeholder="0.00" value={income} onChange={(e) => setIncome(e.target.value)} /></label>
-          <label className="text-xs text-[#6B6552] space-y-1"><span>Expenses this period</span>
-            <input inputMode="decimal" className={field} placeholder="0.00" value={expenses} onChange={(e) => setExpenses(e.target.value)} /></label>
-        </div>
-        <label className="text-xs text-[#6B6552] space-y-1 block"><span>Extra to savings (optional)</span>
-          <input inputMode="decimal" className={field} placeholder="0.00" value={savings} onChange={(e) => setSavings(e.target.value)} /></label>
-        <label className="text-xs text-[#6B6552] space-y-1 block"><span>Notes</span>
-          <input className={field} placeholder="What this covered" value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
-        {preview && (
-          <div className="rounded-xl bg-[#F7F4EB] border border-[#E4DEC9] p-3 text-sm font-mono space-y-1">
-            <div className="flex justify-between text-[#3D3A2D]"><span>Spending</span><span>+{fmt(preview.spendAdd)}</span></div>
-            <div className="flex justify-between text-[#93463A]"><span>Credit card</span><span>-{fmt(preview.ccPayment)}</span></div>
-            <div className="flex justify-between text-[#93463A]"><span>{settings.motherLabel}</span><span>-{fmt(preview.motherPayment)}</span></div>
-            <div className="flex justify-between text-[#3E5B44]"><span>{settings.tripName}</span><span>+{fmt(preview.tripAdd)}</span></div>
-          </div>
-        )}
-        <button type="submit" className="w-full rounded-xl bg-[#24261F] text-[#F7F4EB] font-medium py-3 flex items-center justify-center gap-2 active:scale-[0.98] transition">
-          <IPlus size={16} /> Log paycheck
-        </button>
-      </form>
-      {lastPreview && (
-        <div className="text-center text-[13px] text-[#6B6552]">Logged {lastPreview.source} — split across spending, debt, and {settings.tripName.toLowerCase()}.</div>
-      )}
-    </div>
-  );
-}
-
-function History({ rows, onDelete }) {
-  const [openId, setOpenId] = useState(null);
-  const ordered = [...rows].reverse();
-  if (!ordered.length) {
-    return <div className="rounded-2xl border border-dashed border-[#C9C2A6] p-6 text-center text-[#6B6552] text-sm">Your ledger is empty. Paychecks you log will appear here, newest first.</div>;
-  }
-  return (
-    <div className="space-y-2.5 pb-4">
-      {ordered.map((r) => {
-        const open = openId === r.id;
-        return (
-          <div key={r.id} className="rounded-2xl border border-[#E4DEC9] bg-white/70 overflow-hidden">
-            <button className="w-full flex items-center justify-between px-4 py-3 text-left" onClick={() => setOpenId(open ? null : r.id)}>
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-[#24261F] truncate">{r.source}</div>
-                <div className="text-[11px] text-[#8A836C]">{new Date(r.date).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="font-mono text-sm text-[#24261F]">{fmt(r.income)}</span>
-                {open ? <IChevU size={16} className="text-[#8A836C]" /> : <IChevD size={16} className="text-[#8A836C]" />}
-              </div>
-            </button>
-            {open && (
-              <div className="px-4 pb-4 space-y-2 border-t border-[#EDE7D6] pt-3">
-                <div className="text-sm font-mono space-y-1 text-[#3D3A2D]">
-                  <div className="flex justify-between"><span>Expenses logged</span><span>{fmt(r.expenses)}</span></div>
-                  <div className="flex justify-between"><span>→ Spending</span><span>+{fmt(r.spendAdd)}</span></div>
-                  <div className="flex justify-between"><span>→ Credit card</span><span>-{fmt(r.ccPayment)}</span></div>
-                  <div className="flex justify-between"><span>→ Personal debt</span><span>-{fmt(r.motherPayment)}</span></div>
-                  <div className="flex justify-between"><span>→ Trip fund</span><span>+{fmt(r.tripAdd)}</span></div>
-                </div>
-                {r.notes && <div className="text-[13px] text-[#6B6552] italic">"{r.notes}"</div>}
-                <button onClick={() => onDelete(r.id)} className="flex items-center gap-1.5 text-[#93463A] text-[13px] font-medium mt-1"><ITrash size={14} /> Delete entry</button>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function DebtsAndCosts({ fixedCosts, setFixedCosts, otherDebt, setOtherDebt }) {
-  const [name, setName] = useState(""); const [amount, setAmount] = useState(""); const [cadence, setCadence] = useState("Monthly");
-  const monthlyTotal = fixedCosts.reduce((sum, c) => sum + c.amount * (c.cadence === "Weekly" ? 4.33 : c.cadence === "Two months" ? 0.5 : 1), 0);
-  function addCost(e) {
-    e.preventDefault();
-    if (!name.trim() || !amount) return;
-    setFixedCosts([...fixedCosts, { id: uid(), name: name.trim(), amount: Number(amount), cadence, note: "" }]);
-    setName(""); setAmount("");
-  }
-  const remainder = Math.max(0, otherDebt.original - otherDebt.paid);
-  const pctPaid = otherDebt.original > 0 ? Math.min(1, otherDebt.paid / otherDebt.original) : 0;
-  const field = "rounded-xl border border-[#E4DEC9] bg-white/80 px-3 py-2 text-[14px] text-[#24261F] outline-none focus:border-[#96751A]";
-  return (
-    <div className="space-y-5 pb-4">
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-[#8A836C] font-medium"><ILandmark size={13} /> {otherDebt.name}</div>
-        <div className="h-2.5 rounded-full bg-[#EDE7D6] overflow-hidden">
-          <div className="h-full bg-gradient-to-r from-[#6E8F6F] to-[#3E5B44] rounded-full transition-all" style={{ width: `${pctPaid * 100}%` }} />
-        </div>
-        <div className="flex justify-between font-mono text-sm text-[#3D3A2D]"><span>{fmt(otherDebt.paid)} paid</span><span>{fmt(remainder)} left</span></div>
-        <div className="grid grid-cols-2 gap-2">
-          <input type="number" inputMode="decimal" className={field} placeholder="Original amount" value={otherDebt.original} onChange={(e) => setOtherDebt({ ...otherDebt, original: Number(e.target.value) || 0 })} />
-          <input type="number" inputMode="decimal" className={field} placeholder="Paid so far" value={otherDebt.paid} onChange={(e) => setOtherDebt({ ...otherDebt, paid: Number(e.target.value) || 0 })} />
-        </div>
-      </div>
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-[#8A836C] font-medium"><IReceipt size={13} /> Fixed costs</div>
-          <span className="font-mono text-sm text-[#24261F]">{fmt(monthlyTotal)}/mo</span>
-        </div>
-        <div className="divide-y divide-[#EDE7D6]">
-          {fixedCosts.map((c) => (
-            <div key={c.id} className="flex items-center justify-between py-2 text-sm">
-              <div><div className="text-[#24261F]">{c.name}</div><div className="text-[11px] text-[#8A836C]">{c.cadence}{c.note ? ` · ${c.note}` : ""}</div></div>
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-[#24261F]">{fmt(c.amount)}</span>
-                <button onClick={() => setFixedCosts(fixedCosts.filter((x) => x.id !== c.id))}><ITrash size={14} className="text-[#B5695D]" /></button>
-              </div>
-            </div>
-          ))}
-          {!fixedCosts.length && <div className="py-3 text-sm text-[#8A836C]">No fixed costs added yet.</div>}
-        </div>
-        <form onSubmit={addCost} className="flex flex-wrap gap-2 pt-1">
-          <input className={`${field} flex-1 min-w-[110px]`} placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} />
-          <input className={`${field} w-24`} placeholder="Amount" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
-          <select className={field} value={cadence} onChange={(e) => setCadence(e.target.value)}><option>Weekly</option><option>Monthly</option><option>Two months</option></select>
-          <button className="rounded-xl bg-[#24261F] text-[#F7F4EB] px-3 flex items-center gap-1 text-sm font-medium"><IPlus size={14} /> Add</button>
+        <form onSubmit={submit} style={{display:'flex',flexDirection:'column',gap:12}}>
+          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email"/>
+          <input type="password" placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} required minLength={6} autoComplete="current-password"/>
+          {err && <div style={{fontSize:13,color:'var(--red)',lineHeight:1.4}}>{err}</div>}
+          <button className="btn-primary" disabled={busy} style={{marginTop:4}}>
+            {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
+          </button>
+          <button type="button" className="btn-ghost" onClick={()=>setMode(m=>m==='signin'?'signup':'signin')}>
+            {mode === 'signin' ? 'No account? Sign up' : 'Already have an account'}
+          </button>
         </form>
       </div>
     </div>
   );
 }
 
-function SettingsPane({ settings, setSettings, onSignOut }) {
-  const [local, setLocal] = useState(settings);
-  useEffect(() => setLocal(settings), [settings]);
-  const num = (v) => (v === "" ? "" : Number(v));
-  const field = "w-full rounded-xl border border-[#E4DEC9] bg-white/80 px-3 py-2 text-[14px] text-[#24261F] outline-none focus:border-[#96751A]";
-  const row = "grid grid-cols-2 gap-3 items-center";
-  const lbl = "text-[13px] text-[#4A473C]";
-  function save() {
-    setSettings({
-      ...local,
-      tripGoal: Number(local.tripGoal) || 0, spendingPct: Number(local.spendingPct) || 0, ccApr: Number(local.ccApr) || 0,
-      motherPct: Number(local.motherPct) || 0, motherLeftoverShare: Number(local.motherLeftoverShare) || 0,
-      tripPct: Number(local.tripPct) || 0, tripLeftoverShare: Number(local.tripLeftoverShare) || 0,
-      initialSpending: Number(local.initialSpending) || 0, initialCC: Number(local.initialCC) || 0,
-      initialMother: Number(local.initialMother) || 0, initialTrip: Number(local.initialTrip) || 0,
-      initialSavings: Number(local.initialSavings) || 0,
-    });
-  }
-  return (
-    <div className="space-y-5 pb-4">
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">Currency</div>
-        <div className={row}><span className={lbl}>Symbol</span><input className={field} value={local.currencySymbol} onChange={(e) => setLocal({ ...local, currencySymbol: e.target.value })} maxLength={2} /></div>
-      </div>
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">Trip fund</div>
-        <div className={row}><span className={lbl}>Fund name</span><input className={field} value={local.tripName} onChange={(e) => setLocal({ ...local, tripName: e.target.value })} /></div>
-        <div className={row}><span className={lbl}>Goal amount</span><input className={field} inputMode="decimal" value={local.tripGoal} onChange={(e) => setLocal({ ...local, tripGoal: num(e.target.value) })} /></div>
-      </div>
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">How each paycheck splits</div>
-        <div className={row}><span className={lbl}>% to spending account</span><input className={field} inputMode="decimal" value={local.spendingPct} onChange={(e) => setLocal({ ...local, spendingPct: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Credit card APR</span><input className={field} inputMode="decimal" value={local.ccApr} onChange={(e) => setLocal({ ...local, ccApr: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>{local.motherLabel} label</span><input className={field} value={local.motherLabel} onChange={(e) => setLocal({ ...local, motherLabel: e.target.value })} /></div>
-        <div className={row}><span className={lbl}>% of income to it</span><input className={field} inputMode="decimal" value={local.motherPct} onChange={(e) => setLocal({ ...local, motherPct: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Its share of leftover</span><input className={field} inputMode="decimal" value={local.motherLeftoverShare} onChange={(e) => setLocal({ ...local, motherLeftoverShare: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>% of income to trip fund</span><input className={field} inputMode="decimal" value={local.tripPct} onChange={(e) => setLocal({ ...local, tripPct: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Its share of leftover</span><input className={field} inputMode="decimal" value={local.tripLeftoverShare} onChange={(e) => setLocal({ ...local, tripLeftoverShare: num(e.target.value) })} /></div>
-        <p className="text-[11px] text-[#8A836C] leading-relaxed">Leftover = half of income minus that period's credit card payment. Once {local.motherLabel.toLowerCase()} hits 0, its share redirects to the trip fund automatically.</p>
-      </div>
-      <div className="rounded-2xl border border-[#E4DEC9] bg-white/70 p-4 space-y-3">
-        <div className="text-[11px] uppercase tracking-wider text-[#8A836C] font-medium">Starting balances</div>
-        <p className="text-[11px] text-[#8A836C] leading-relaxed -mt-1">Update these whenever your real balances change, e.g. after checking your banking app.</p>
-        <div className={row}><span className={lbl}>Spending account</span><input className={field} inputMode="decimal" value={local.initialSpending} onChange={(e) => setLocal({ ...local, initialSpending: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Credit card debt</span><input className={field} inputMode="decimal" value={local.initialCC} onChange={(e) => setLocal({ ...local, initialCC: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>{local.motherLabel}</span><input className={field} inputMode="decimal" value={local.initialMother} onChange={(e) => setLocal({ ...local, initialMother: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Trip fund</span><input className={field} inputMode="decimal" value={local.initialTrip} onChange={(e) => setLocal({ ...local, initialTrip: num(e.target.value) })} /></div>
-        <div className={row}><span className={lbl}>Savings</span><input className={field} inputMode="decimal" value={local.initialSavings} onChange={(e) => setLocal({ ...local, initialSavings: num(e.target.value) })} /></div>
-      </div>
-      <button onClick={save} className="w-full rounded-xl bg-[#24261F] text-[#F7F4EB] font-medium py-3 active:scale-[0.98] transition">Save settings</button>
-      <button onClick={onSignOut} className="w-full rounded-xl border border-[#E4DEC9] text-[#6B6552] font-medium py-3">Sign out</button>
-    </div>
-  );
-}
+/* ── Payday Flow ── */
+function PaydayFlow({ data, onSave }) {
+  const [step, setStep] = useState(0); // 0=income, 1=split, 2=spent, 3=done
+  const [income, setIncome] = useState('');
+  const [spent, setSpent] = useState('');
+  const incomeNum = parseFloat(income) || 0;
+  const spentNum = parseFloat(spent) || 0;
+  const hasCC = data.balances.creditCard > 0;
 
-/* ------------------------------------- Auth gate ------------------------------------- */
-function AuthGate({ onReady }) {
-  const [mode, setMode] = useState("signin"); // signin | signup
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const field = "w-full rounded-xl border border-[#E4DEC9] bg-white/80 px-3 py-2.5 text-[15px] text-[#24261F] outline-none focus:border-[#96751A]";
-
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true); setError("");
-    try {
-      if (mode === "signin") {
-        await auth.signInWithEmailAndPassword(email, password);
-      } else {
-        await auth.createUserWithEmailAndPassword(email, password);
-      }
-      onReady();
-    } catch (err) {
-      setError(err.message);
+  const split = useMemo(() => {
+    if (!incomeNum) return null;
+    if (hasCC) {
+      return {
+        florasii: incomeNum * 0.50,
+        spending: incomeNum * 0.25,
+        creditCard: incomeNum * 0.25,
+      };
     }
-    setBusy(false);
+    return {
+      florasii: incomeNum * 0.75,
+      spending: incomeNum * 0.25,
+      creditCard: 0,
+    };
+  }, [incomeNum, hasCC]);
+
+  function confirm() {
+    const newBalances = { ...data.balances };
+    newBalances.current = newBalances.current + split.spending - spentNum;
+    newBalances.florasii = newBalances.florasii + split.florasii;
+    if (split.creditCard) {
+      newBalances.creditCard = Math.max(0, newBalances.creditCard - split.creditCard);
+    }
+    const newPaycheck = {
+      id: uid(),
+      date: new Date().toISOString(),
+      income: incomeNum,
+      spent: spentNum,
+      split,
+    };
+    onSave({
+      ...data,
+      balances: newBalances,
+      paychecks: [newPaycheck, ...(data.paychecks || [])],
+    });
+    setStep(3);
   }
 
-  return (
-    <div className="min-h-screen bg-[#FAF8F1] flex items-center justify-center px-6">
-      <form onSubmit={submit} className="w-full max-w-sm space-y-4">
-        <div className="text-center mb-2">
-          <div className="font-display text-2xl font-semibold text-[#24261F]">Financial Freedom</div>
-          <div className="text-[13px] text-[#8A836C]">{mode === "signin" ? "Sign in to your private ledger" : "Create your account"}</div>
+  function reset() { setStep(0); setIncome(''); setSpent(''); }
+
+  if (step === 0) return (
+    <div className="screen">
+      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1}}>
+        <div className="step-number">Step 1 of 3</div>
+        <div className="step-title">You got paid 💰</div>
+        <div className="step-sub">How much landed in your account?</div>
+        <div className="big-input-wrap">
+          <span className="currency">£</span>
+          <input className="big-input" inputMode="decimal" placeholder="0.00" value={income} onChange={e=>setIncome(e.target.value)} autoFocus/>
         </div>
-        <input type="email" required className={field} placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input type="password" required minLength={6} className={field} placeholder="Password (6+ characters)" value={password} onChange={(e) => setPassword(e.target.value)} />
-        {error && <div className="text-[13px] text-[#93463A]">{error}</div>}
-        <button disabled={busy} type="submit" className="w-full rounded-xl bg-[#24261F] text-[#F7F4EB] font-medium py-3 active:scale-[0.98] transition disabled:opacity-60">
-          {busy ? "Please wait…" : mode === "signin" ? "Sign in" : "Sign up"}
-        </button>
-        <button type="button" onClick={() => setMode(mode === "signin" ? "signup" : "signin")} className="w-full text-center text-[13px] text-[#6B6552]">
-          {mode === "signin" ? "No account yet? Sign up" : "Already have an account? Sign in"}
-        </button>
-      </form>
+        {data.balances.creditCard > 0 && (
+          <div style={{background:'var(--red-dim)',borderRadius:12,padding:'12px 14px',marginBottom:20,fontSize:13,color:'var(--red)',lineHeight:1.5}}>
+            Credit card balance: {fmt(data.balances.creditCard)} — split will be 50/25/25 this payday.
+          </div>
+        )}
+        <button className="btn-primary" disabled={!incomeNum} onClick={()=>setStep(1)}>See my split →</button>
+      </div>
+    </div>
+  );
+
+  if (step === 1) return (
+    <div className="screen">
+      <div className="content">
+        <div className="step-number">Step 2 of 3</div>
+        <div className="step-title">Here's the plan</div>
+        <div className="step-sub">Move these amounts now, before you spend anything.</div>
+
+        <div className="instruction">
+          <div>
+            <div className="instruction-label">→ Florasii Fund</div>
+            <div className="instruction-action">Transfer to savings</div>
+          </div>
+          <div className="instruction-amount">{fmt(split.florasii)}</div>
+        </div>
+
+        {split.creditCard > 0 && (
+          <div className="instruction red">
+            <div>
+              <div className="instruction-label">→ Credit Card</div>
+              <div className="instruction-action">Pay off balance</div>
+            </div>
+            <div className="instruction-amount">{fmt(split.creditCard)}</div>
+          </div>
+        )}
+
+        <div className="instruction amber">
+          <div>
+            <div className="instruction-label">→ Daily Spending</div>
+            <div className="instruction-action">Keep in current account</div>
+          </div>
+          <div className="instruction-amount">{fmt(split.spending)}</div>
+        </div>
+
+        <div style={{background:'var(--surface2)',borderRadius:12,padding:'12px 14px',margin:'20px 0',fontSize:13,color:'var(--text2)',lineHeight:1.6}}>
+          Total: {fmt(incomeNum)} · Subscriptions this month cost ~{fmt(data.subscriptions.reduce((s,x)=>s+x.amount,0))} — that comes out of your spending pot.
+        </div>
+
+        <div style={{display:'flex',gap:10}}>
+          <button className="btn-ghost" style={{flex:1}} onClick={()=>setStep(0)}>← Back</button>
+          <button className="btn-primary" style={{flex:2}} onClick={()=>setStep(2)}>Done, what did I spend? →</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step === 2) return (
+    <div className="screen">
+      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1}}>
+        <div className="step-number">Step 3 of 3</div>
+        <div className="step-title">What did you spend?</div>
+        <div className="step-sub">Since your last payday — not including subscriptions, those are tracked separately.</div>
+        <div className="big-input-wrap">
+          <span className="currency">£</span>
+          <input className="big-input" inputMode="decimal" placeholder="0.00" value={spent} onChange={e=>setSpent(e.target.value)} autoFocus/>
+        </div>
+        <div style={{display:'flex',gap:10}}>
+          <button className="btn-ghost" style={{flex:1}} onClick={()=>setStep(1)}>← Back</button>
+          <button className="btn-primary" style={{flex:2}} onClick={confirm}>Confirm & save →</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (step === 3) return (
+    <div className="screen">
+      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1,textAlign:'center'}}>
+        <div className="done-icon"><CheckIcon/></div>
+        <div style={{fontSize:26,fontWeight:700,marginBottom:8}}>All sorted 🎉</div>
+        <div style={{fontSize:14,color:'var(--text2)',marginBottom:40,lineHeight:1.6}}>
+          {fmt(split.florasii)} moved to Florasii.<br/>
+          Your balances are updated.
+        </div>
+        <button className="btn-primary" onClick={reset}>Log another paycheck</button>
+      </div>
     </div>
   );
 }
 
-/* ------------------------------------- App ------------------------------------- */
+/* ── Overview ── */
+function Overview({ data }) {
+  const { balances, paychecks, goals, subscriptions } = data;
+  const subTotal = subscriptions.reduce((s, x) => s + x.amount, 0);
+  const recentPays = (paychecks || []).slice(0, 5);
+  const totalIncome = (paychecks || []).reduce((s, p) => s + p.income, 0);
+
+  return (
+    <div className="content" style={{paddingBottom:100}}>
+      <div className="section-header">Balances</div>
+      <div className="card">
+        <div className="balance-row">
+          <div>
+            <div className="balance-label">Current Account</div>
+          </div>
+          <div className="balance-value" style={{color: balances.current < 0 ? 'var(--red)' : 'var(--text)'}}>{fmt(balances.current)}</div>
+        </div>
+        <div className="balance-row">
+          <div className="balance-label">Florasii Fund</div>
+          <div className="balance-value" style={{color:'var(--green)'}}>{fmt(balances.florasii)}</div>
+        </div>
+        <div className="balance-row">
+          <div className="balance-label">Personal Savings</div>
+          <div className="balance-value">{fmt(balances.personalSavings)}</div>
+        </div>
+        {balances.creditCard > 0 && (
+          <div className="balance-row">
+            <div className="balance-label">Credit Card (owed)</div>
+            <div className="balance-value" style={{color:'var(--red)'}}>{fmt(balances.creditCard)}</div>
+          </div>
+        )}
+      </div>
+
+      <div className="section-header">Florasii Progress</div>
+      <div className="card">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:8}}>
+          <div>
+            <div style={{fontSize:28,fontWeight:700,fontFamily:'Space Mono',color:'var(--green)'}}>{fmt(balances.florasii)}</div>
+            <div style={{fontSize:13,color:'var(--text2)',marginTop:2}}>of £15,000 goal</div>
+          </div>
+          <div style={{fontSize:22,fontWeight:700,color:'var(--text2)'}}>{Math.round(balances.florasii/15000*100)}%</div>
+        </div>
+        <div className="prog-wrap">
+          <div className="prog-fill" style={{width:`${Math.min(100,balances.florasii/15000*100)}%`}}/>
+        </div>
+      </div>
+
+      <div className="section-header">Subscriptions · {fmt(subTotal)}/mo</div>
+      <div className="card">
+        {data.subscriptions.map(s => (
+          <div className="sub-item" key={s.id}>
+            <div className="sub-name">{s.name}</div>
+            <div className="sub-amount">{fmt(s.amount)}</div>
+          </div>
+        ))}
+        <div style={{display:'flex',justifyContent:'space-between',paddingTop:14,marginTop:4}}>
+          <div style={{fontSize:13,color:'var(--text2)',fontWeight:600}}>Total / month</div>
+          <div style={{fontFamily:'Space Mono',fontSize:14,fontWeight:700,color:'var(--amber)'}}>{fmt(subTotal)}</div>
+        </div>
+      </div>
+
+      {recentPays.length > 0 && <>
+        <div className="section-header">Recent Paychecks</div>
+        {recentPays.map(p => (
+          <div className="history-item" key={p.id}>
+            <div>
+              <div style={{fontWeight:600}}>{fmt(p.income)}</div>
+              <div className="history-date">{new Date(p.date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</div>
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:13,color:'var(--green)'}}>+{fmt(p.split.florasii)} Florasii</div>
+              <div style={{fontSize:12,color:'var(--text3)',marginTop:2}}>spent {fmt(p.spent)}</div>
+            </div>
+          </div>
+        ))}
+        <div style={{textAlign:'center',marginTop:8,fontSize:13,color:'var(--text3)'}}>
+          Total tracked: {fmt(totalIncome)} across {paychecks.length} paychecks
+        </div>
+      </>}
+    </div>
+  );
+}
+
+/* ── Settings ── */
+function Settings({ data, onSave, onSignOut }) {
+  const [balances, setBalances] = useState(data.balances);
+  const [subs, setSubs] = useState(data.subscriptions);
+  const [newSub, setNewSub] = useState({ name: '', amount: '' });
+
+  function saveAll() {
+    onSave({ ...data, balances: { current: parseFloat(balances.current)||0, creditCard: parseFloat(balances.creditCard)||0, florasii: parseFloat(balances.florasii)||0, personalSavings: parseFloat(balances.personalSavings)||0 }, subscriptions: subs });
+  }
+
+  function addSub(e) {
+    e.preventDefault();
+    if (!newSub.name || !newSub.amount) return;
+    setSubs([...subs, { id: uid(), name: newSub.name, amount: parseFloat(newSub.amount)||0 }]);
+    setNewSub({ name: '', amount: '' });
+  }
+
+  const fld = (label, val, key) => (
+    <div style={{marginBottom:12}}>
+      <div style={{fontSize:12,color:'var(--text3)',marginBottom:6,letterSpacing:0.5}}>{label}</div>
+      <input inputMode="decimal" value={val} onChange={e=>setBalances({...balances,[key]:e.target.value})} />
+    </div>
+  );
+
+  return (
+    <div className="content" style={{paddingBottom:100}}>
+      <div className="section-header">Update Balances</div>
+      <div className="card">
+        {fld('Current Account (£)', balances.current, 'current')}
+        {fld('Florasii Fund (£)', balances.florasii, 'florasii')}
+        {fld('Personal Savings (£)', balances.personalSavings, 'personalSavings')}
+        {fld('Credit Card Owed (£)', balances.creditCard, 'creditCard')}
+        <button className="btn-primary" onClick={saveAll} style={{marginTop:8}}>Save balances</button>
+      </div>
+
+      <div className="section-header">Subscriptions</div>
+      <div className="card">
+        {subs.map(s => (
+          <div className="sub-item" key={s.id}>
+            <div className="sub-name">{s.name}</div>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <div className="sub-amount">{fmt(s.amount)}</div>
+              <button style={{background:'none',color:'var(--red)',padding:0}} onClick={()=>setSubs(subs.filter(x=>x.id!==s.id))}><TrashIcon/></button>
+            </div>
+          </div>
+        ))}
+        <form onSubmit={addSub} style={{display:'flex',gap:8,marginTop:14}}>
+          <input placeholder="Name" value={newSub.name} onChange={e=>setNewSub({...newSub,name:e.target.value})} style={{flex:2}}/>
+          <input placeholder="£" inputMode="decimal" value={newSub.amount} onChange={e=>setNewSub({...newSub,amount:e.target.value})} style={{flex:1}}/>
+          <button type="submit" style={{background:'var(--green)',color:'#000',borderRadius:12,padding:'0 16px',fontWeight:700,whiteSpace:'nowrap'}}>Add</button>
+        </form>
+        <button className="btn-ghost" style={{marginTop:12}} onClick={saveAll}>Save subscriptions</button>
+      </div>
+
+      <div style={{marginTop:32}}>
+        <button className="btn-ghost" onClick={onSignOut}>Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main App ── */
 function App() {
-  const [session, setSession] = useState(undefined); // undefined = checking, null = signed out
-  const [entries, setEntries] = useState([]);
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  CURRENCY = settings.currencySymbol || "£";
-  const [fixedCosts, setFixedCosts] = useState(DEFAULT_FIXED_COSTS);
-  const [otherDebt, setOtherDebt] = useState(DEFAULT_OTHER_DEBT);
-  const [loaded, setLoaded] = useState(false);
-  const [tab, setTab] = useState("dashboard");
-  const [saveError, setSaveError] = useState(false);
+  const [user, setUser] = useState(undefined);
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState('home');
+  const [payday, setPayday] = useState(false);
 
   useEffect(() => {
-    const unsub = auth.onAuthStateChanged((user) => setSession(user));
-    return unsub;
+    return auth.onAuthStateChanged(u => setUser(u));
   }, []);
 
   useEffect(() => {
-    if (!session) return;
-    (async () => {
-      try {
-        const snap = await db.ref(`users/${session.uid}`).once("value");
-        const d = snap.val();
-        if (d) {
-          if (d.entries) setEntries(d.entries);
-          if (d.settings) setSettings({ ...DEFAULT_SETTINGS, ...d.settings });
-          if (d.fixedCosts) setFixedCosts(d.fixedCosts);
-          if (d.otherDebt) setOtherDebt(d.otherDebt);
-        }
-      } catch (err) {
-        // no saved data yet, or a permissions/config issue — defaults stand
-      } finally {
-        setLoaded(true);
-      }
-    })();
-  }, [session]);
+    if (!user) return;
+    db.ref(`users/${user.uid}`).once('value').then(snap => {
+      const val = snap.val();
+      setData(val ? { ...DEFAULT_DATA, ...val, balances: { ...DEFAULT_DATA.balances, ...(val.balances||{}) }, subscriptions: val.subscriptions || DEFAULT_DATA.subscriptions } : DEFAULT_DATA);
+    });
+  }, [user]);
 
   const persist = useCallback(async (next) => {
-    if (!session) return;
-    try {
-      await db.ref(`users/${session.uid}`).set(next);
-      setSaveError(false);
-    } catch (err) {
-      setSaveError(true);
-    }
-  }, [session]);
+    if (!user) return;
+    await db.ref(`users/${user.uid}`).set(next);
+    setData(next);
+  }, [user]);
 
-  useEffect(() => {
-    if (!loaded) return;
-    persist({ entries, settings, fixedCosts, otherDebt });
-  }, [loaded, entries, settings, fixedCosts, otherDebt, persist]);
-
-  const rows = useMemo(() => computeSeries(entries, settings), [entries, settings]);
-
-  if (session === undefined) {
-    return <div className="min-h-screen bg-[#FAF8F1] flex items-center justify-center text-[#8A836C] text-sm">Loading…</div>;
+  if (user === undefined || (user && !data)) {
+    return <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:14}}>Loading…</div>;
   }
-  if (!session) {
-    return <AuthGate onReady={() => {}} />;
-  }
+  if (!user) return <AuthScreen />;
 
-  function addEntry(entry) { setEntries((prev) => [...prev, entry]); }
-  function deleteEntry(id) { setEntries((prev) => prev.filter((e) => e.id !== id)); }
-  function signOut() { auth.signOut(); setLoaded(false); }
+  if (payday) return (
+    <PaydayFlow data={data} onSave={next => { persist(next); setPayday(false); setTab('home'); }} />
+  );
 
   const tabs = [
-    { id: "dashboard", label: "Overview", icon: ICompass },
-    { id: "add", label: "Add", icon: IPlus },
-    { id: "history", label: "Ledger", icon: IReceipt },
-    { id: "debts", label: "Debts", icon: ICard },
-    { id: "settings", label: "Settings", icon: IGear },
+    { id: 'home', label: 'Overview', icon: <HomeIcon/> },
+    { id: 'settings', label: 'Settings', icon: <SettingsIcon/> },
   ];
 
   return (
-    <div className="min-h-screen bg-[#FAF8F1] flex flex-col">
-      <header className="px-5 pt-6 pb-4 border-b border-[#E4DEC9] bg-[#FAF8F1] sticky top-0 z-10">
-        <div className="font-display text-[22px] font-semibold text-[#24261F] leading-tight">Financial Freedom</div>
-        <div className="text-[12px] text-[#8A836C]">
-          {loaded ? "Every paycheck, split automatically." : "Loading your ledger…"}
-          {saveError && <span className="text-[#93463A]"> · couldn't save — check connection</span>}
+    <div className="screen">
+      <div style={{flex:1,overflowY:'auto'}}>
+        <div style={{paddingTop:'max(20px,env(safe-area-inset-top))'}}>
+          {tab === 'home' && (
+            <>
+              <div style={{padding:'20px 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{fontSize:12,color:'var(--text3)',letterSpacing:2,textTransform:'uppercase'}}>Your money</div>
+                  <div style={{fontSize:22,fontWeight:700,marginTop:2}}>Financial Freedom</div>
+                </div>
+                <button onClick={()=>setPayday(true)} style={{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:12,fontWeight:700,fontSize:14}}>
+                  I got paid
+                </button>
+              </div>
+              <Overview data={data}/>
+            </>
+          )}
+          {tab === 'settings' && (
+            <>
+              <div style={{padding:'20px 20px 0'}}>
+                <div style={{fontSize:12,color:'var(--text3)',letterSpacing:2,textTransform:'uppercase'}}>Manage</div>
+                <div style={{fontSize:22,fontWeight:700,marginTop:2}}>Settings</div>
+              </div>
+              <Settings data={data} onSave={persist} onSignOut={()=>auth.signOut()} />
+            </>
+          )}
         </div>
-      </header>
-      <main className="flex-1 px-5 pt-4 max-w-lg w-full mx-auto">
-        {tab === "dashboard" && <Dashboard rows={rows} settings={settings} otherDebt={otherDebt} />}
-        {tab === "add" && <AddEntry onAdd={addEntry} settings={settings} />}
-        {tab === "history" && <History rows={rows} onDelete={deleteEntry} />}
-        {tab === "debts" && <DebtsAndCosts fixedCosts={fixedCosts} setFixedCosts={setFixedCosts} otherDebt={otherDebt} setOtherDebt={setOtherDebt} />}
-        {tab === "settings" && <SettingsPane settings={settings} setSettings={setSettings} onSignOut={signOut} />}
-      </main>
-      <nav className="sticky bottom-0 bg-[#FAF8F1]/95 backdrop-blur border-t border-[#E4DEC9] px-2 py-2 flex justify-around max-w-lg w-full mx-auto">
-        {tabs.map((t) => {
-          const Icn = t.icon; const active = tab === t.id;
-          return (
-            <button key={t.id} onClick={() => setTab(t.id)} className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl transition ${active ? "text-[#24261F]" : "text-[#B0A98F]"}`}>
-              <Icn size={19} /><span className="text-[10px] font-medium">{t.label}</span>
-            </button>
-          );
-        })}
+      </div>
+      <nav className="nav">
+        {tabs.map(t => (
+          <button key={t.id} className={`nav-btn${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>
+            {t.icon}
+            <span>{t.label}</span>
+          </button>
+        ))}
+        <button className="nav-btn" style={{color:'var(--green)'}} onClick={()=>setPayday(true)}>
+          <div style={{width:44,height:44,background:'var(--green)',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginTop:-20,boxShadow:'0 0 20px #00E67640'}}>
+            <PlusIcon/>
+          </div>
+          <span style={{marginTop:4}}>Payday</span>
+        </button>
       </nav>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 </body>
 </html>
