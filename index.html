@@ -688,6 +688,23 @@ function hoursScreen(){
   // History
   const histWrap = el('div',{});
 
+  let filterYear = 'all';
+  let filterMonth = 'all';
+
+  // Filter bar
+  const filterBar = el('div',{style:{display:'flex',gap:'8px',marginBottom:'12px',flexWrap:'wrap'}});
+  const yearSel = el('select',{style:{flex:'1',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 10px',fontSize:'13px'}});
+  const monthSel = el('select',{style:{flex:'1',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 10px',fontSize:'13px'}});
+
+  const years = ['all','2025','2026','2027'];
+  const months = ['all','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  years.forEach(y => { const o = el('option',{value:y},y==='all'?'All years':y); yearSel.append(o); });
+  months.forEach((m,i) => { const o = el('option',{value:i===0?'all':String(i)},m==='all'?'All months':m); monthSel.append(o); });
+
+  yearSel.addEventListener('change',()=>{ filterYear=yearSel.value; renderAll(); });
+  monthSel.addEventListener('change',()=>{ filterMonth=monthSel.value; renderAll(); });
+  filterBar.append(yearSel, monthSel);
+
   function renderAll(){
     histWrap.innerHTML='';
     const log = appData.hoursLog||[];
@@ -707,10 +724,20 @@ function hoursScreen(){
     for(let i=0;i<sorted.length;i+=2){
       pairs.push({w1: sorted[i], w2: sorted[i+1]});
     }
-    // Show newest pay period first
-    pairs.reverse();
 
-    for(const {w1,w2} of pairs){
+    // Apply filter
+    const filtered = pairs.filter(({w1}) => {
+      const d = parseLabel(w1.label);
+      if(filterYear !== 'all' && String(d.getFullYear()) !== filterYear) return false;
+      if(filterMonth !== 'all' && String(d.getMonth()+1) !== filterMonth) return false;
+      return true;
+    });
+
+    if(filtered.length === 0){
+      histWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'20px',color:'var(--text2)',fontSize:'13px'}},'No pay periods match this filter.'));
+    }
+
+    for(const {w1,w2} of filtered){
       const totalH = w1.total + (w2?w2.total:0);
       const predicted = predictedPay(totalH);
       const actualKey = w1.id + '_actual';
@@ -728,18 +755,68 @@ function hoursScreen(){
       );
       header.append(labelDiv,payDiv);
 
-      // day breakdown
-      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px',marginBottom:'12px'}});
-      for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
-        const h1 = w1[d]||0;
-        const h2 = w2?w2[d]||0:0;
-        const total = h1+h2;
-        const col = el('div',{style:{textAlign:'center'}},
-          el('div',{style:{fontSize:'9px',color:'var(--text3)',textTransform:'uppercase',marginBottom:'2px'}},d.slice(0,2)),
-          el('div',{style:{fontSize:'12px',fontFamily:"'Space Mono',monospace",color:total>0?'var(--text)':'var(--text3)'}},total>0?total.toFixed(1):'—')
-        );
-        breakdown.append(col);
+      // day breakdown — with edit toggle
+      let editMode = false;
+      const dayInputs = {};
+      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px',marginBottom:'8px'}});
+
+      function renderBreakdown(){
+        breakdown.innerHTML='';
+        for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+          const h1 = w1[d]||0;
+          const h2 = w2?w2[d]||0:0;
+          const total = h1+h2;
+          const col = el('div',{style:{textAlign:'center'}},
+            el('div',{style:{fontSize:'9px',color:'var(--text3)',textTransform:'uppercase',marginBottom:'3px'}},d.slice(0,2))
+          );
+          if(editMode){
+            const inp = el('input',{inputmode:'decimal',value:total||'',style:{padding:'4px 2px',textAlign:'center',fontSize:'12px',borderRadius:'8px',width:'100%'}});
+            dayInputs[d] = inp;
+            col.append(inp);
+          } else {
+            col.append(el('div',{style:{fontSize:'12px',fontFamily:"'Space Mono',monospace",color:total>0?'var(--text)':'var(--text3)'}},total>0?total.toFixed(1):'—'));
+          }
+          breakdown.append(col);
+        }
       }
+      renderBreakdown();
+
+      // edit/save row
+      const editRow = el('div',{style:{display:'flex',gap:'8px',marginBottom:'10px'}});
+      const editBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',borderRadius:'10px',padding:'6px 12px',fontSize:'12px',border:'1px solid var(--border)'}},'Edit hours');
+      editBtn.addEventListener('click',async()=>{
+        if(!editMode){
+          editMode=true;
+          editBtn.textContent='Save hours';
+          editBtn.style.background='var(--green)';
+          editBtn.style.color='#000';
+          renderBreakdown();
+        } else {
+          // save edited hours back to w1 (split proportionally if w2 exists)
+          const newLog = (appData.hoursLog||[]).map(w => {
+            if(w.id === w1.id){
+              const updated = {...w};
+              for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+                const val = parseFloat(dayInputs[d]?.value)||0;
+                const h2 = w2?w2[d]||0:0;
+                updated[d] = Math.max(0, val - h2);
+              }
+              updated.total = ['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+updated[d],0);
+              updated.total = Math.round(updated.total*100)/100;
+              updated.predicted = predictedPay(updated.total);
+              return updated;
+            }
+            return w;
+          });
+          await save({...appData, hoursLog:newLog});
+          editMode=false;
+          editBtn.textContent='Edit hours';
+          editBtn.style.background='var(--surface2)';
+          editBtn.style.color='var(--text2)';
+          renderBreakdown();
+        }
+      });
+      editRow.append(editBtn);
 
       // Actual pay row
       const actualWrap = el('div',{style:{display:'flex',alignItems:'center',gap:'8px',borderTop:'1px solid var(--border)',paddingTop:'10px'}});
@@ -749,7 +826,6 @@ function hoursScreen(){
         const val = parseFloat(actualInput.value)||0;
         const newActual = {...(appData.actualPay||{}), [actualKey]: val};
         await save({...appData, actualPay:newActual});
-        // update variance display
         const diff = val - predicted;
         varianceDiv.textContent = val > 0 ? (diff >= 0 ? '+' : '') + fmt(diff) + ' vs predicted' : '';
         varianceDiv.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
@@ -771,7 +847,7 @@ function hoursScreen(){
         renderAll();
       });
 
-      card.append(header, breakdown, actualWrap, delBtn);
+      card.append(header, breakdown, editRow, actualWrap, delBtn);
       histWrap.append(card);
     }
 
@@ -831,12 +907,14 @@ function hoursScreen(){
 
       const graphCard = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px',marginBottom:'12px'}});
       graphCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#64B5F6;margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Hours per week · avg ${avgH.toFixed(1)}h</div>${svg}`;
-      histWrap.append(graphCard);
+      graphWrap.innerHTML = '';
+      graphWrap.append(graphCard);
     }
 
-    // Summary
+    // Summary — use sorted (chronological) to get most recent weeks
     const totalAllHours = log.reduce((s,w)=>s+w.total,0);
-    const avgPerPeriod = log.length >= 2 ? predictedPay((log[0].total+(log[1]?log[1].total:0))) : 0;
+    const recentTwo = sortedForGraph.slice(-2);
+    const nextPredicted = recentTwo.reduce((s,w)=>s+w.total,0);
     histWrap.append(
       el('div',{class:'section-hdr'},'Summary'),
       el('div',{class:'card'},
@@ -849,9 +927,9 @@ function hoursScreen(){
           el('div',{class:'balance-value'},fmt(RATE)+'/hr')
         ),
         el('div',{class:'balance-row'},
-          el('div',{class:'balance-label'},'Next predicted pay'),
+          el('div',{class:'balance-label'},'Current period predicted'),
           el('div',{class:'balance-value',style:{color:'var(--green)'}},
-            log.length>=2 ? fmt(predictedPay(log[0].total+(log[1]?log[1].total:0))) : '—'
+            recentTwo.length >= 1 ? fmt(predictedPay(nextPredicted)) : '—'
           )
         )
       )
@@ -860,12 +938,17 @@ function hoursScreen(){
 
   renderAll();
 
+  const graphWrap = el('div',{});
+
   content.append(
+    el('div',{class:'section-hdr'},'Hours per week'),
+    graphWrap,
     el('div',{class:'section-hdr'},'Hourly Rate'),
     rateWrap,
     el('div',{class:'section-hdr'},'Log Hours'),
     logWrap,
     el('div',{class:'section-hdr'},'Pay Periods'),
+    filterBar,
     histWrap
   );
   return content;
