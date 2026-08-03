@@ -557,7 +557,7 @@ function trendsScreen(){
     el('div',{class:'section-hdr'},'Florasii Fund — running balance'),
     makeGraph('Florasii Fund', 'var(--green)', florasiiSeries, dates),
     el('div',{class:'section-hdr'},'Current Account — running balance'),
-    makeGraph('Current Account', '#64B5F6', currentSeries, dates),
+    makeGraph('Current Account', '#64B5F6', currentSeries, dates)
   );
 
   if(ccSeries.some(v=>v>0)){
@@ -782,6 +782,8 @@ function hoursScreen(){
   );
   return content;
 }
+
+function mainScreen(startTab='home'){
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
   let tab = startTab;
