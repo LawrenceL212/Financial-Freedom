@@ -687,6 +687,7 @@ function hoursScreen(){
 
   // History
   const histWrap = el('div',{});
+  const graphWrap = el('div',{});
 
   let filterYear = 'all';
   let filterMonth = 'all';
@@ -937,8 +938,6 @@ function hoursScreen(){
   }
 
   renderAll();
-
-  const graphWrap = el('div',{});
 
   content.append(
     el('div',{class:'section-hdr'},'Hours per week'),
