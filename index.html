@@ -696,22 +696,30 @@ function hoursScreen(){
       return;
     }
 
-    // Group pairs into pay periods (every 2 weeks)
+    // Sort by date ascending, then pair oldest→newest into pay periods
+    const parseLabel = l => {
+      const parts = l.split('/');
+      return new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    };
+    const sorted = [...log].sort((a,b) => parseLabel(a.label) - parseLabel(b.label));
+
     const pairs = [];
-    for(let i=0;i<log.length;i+=2){
-      const w1 = log[i];
-      const w2 = log[i+1];
-      pairs.push({w1, w2});
+    for(let i=0;i<sorted.length;i+=2){
+      pairs.push({w1: sorted[i], w2: sorted[i+1]});
     }
+    // Show newest pay period first
+    pairs.reverse();
 
     for(const {w1,w2} of pairs){
       const totalH = w1.total + (w2?w2.total:0);
       const predicted = predictedPay(totalH);
+      const actualKey = w1.id + '_actual';
+      const savedActual = appData.actualPay && appData.actualPay[actualKey] ? appData.actualPay[actualKey] : 0;
       const card = el('div',{class:'card',style:{marginBottom:'10px'}});
 
       const header = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'12px'}});
       const labelDiv = el('div',{},
-        el('div',{style:{fontWeight:'600',fontSize:'14px'}}, w1.label + (w2?' → '+w2.label:'')),
+        el('div',{style:{fontWeight:'600',fontSize:'14px'}}, w1.label + (w2?' → '+w2.label:' (in progress)')),
         el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},totalH.toFixed(2)+'h total')
       );
       const payDiv = el('div',{style:{textAlign:'right'}},
@@ -721,7 +729,7 @@ function hoursScreen(){
       header.append(labelDiv,payDiv);
 
       // day breakdown
-      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px'}});
+      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px',marginBottom:'12px'}});
       for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
         const h1 = w1[d]||0;
         const h2 = w2?w2[d]||0:0;
@@ -733,8 +741,29 @@ function hoursScreen(){
         breakdown.append(col);
       }
 
+      // Actual pay row
+      const actualWrap = el('div',{style:{display:'flex',alignItems:'center',gap:'8px',borderTop:'1px solid var(--border)',paddingTop:'10px'}});
+      const actualInput = el('input',{inputmode:'decimal',placeholder:'Actual pay received (£)',value:savedActual||'',style:{flex:'1',padding:'8px 12px',fontSize:'13px'}});
+      const saveActualBtn = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'10px',padding:'8px 12px',fontWeight:'700',fontSize:'12px',whiteSpace:'nowrap'}},'Save');
+      saveActualBtn.addEventListener('click',async()=>{
+        const val = parseFloat(actualInput.value)||0;
+        const newActual = {...(appData.actualPay||{}), [actualKey]: val};
+        await save({...appData, actualPay:newActual});
+        // update variance display
+        const diff = val - predicted;
+        varianceDiv.textContent = val > 0 ? (diff >= 0 ? '+' : '') + fmt(diff) + ' vs predicted' : '';
+        varianceDiv.style.color = diff >= 0 ? 'var(--green)' : 'var(--red)';
+        saveActualBtn.textContent = '✓';
+        setTimeout(()=>saveActualBtn.textContent='Save', 1500);
+      });
+      const diff = savedActual ? savedActual - predicted : 0;
+      const varianceDiv = el('div',{style:{fontSize:'11px',color:diff>=0?'var(--green)':'var(--red)',minWidth:'80px',textAlign:'right'}},
+        savedActual > 0 ? (diff>=0?'+':'')+fmt(diff)+' vs predicted' : ''
+      );
+      actualWrap.append(actualInput, saveActualBtn, varianceDiv);
+
       // delete button
-      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'10px'}},'Remove');
+      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'8px'}},'Remove period');
       delBtn.addEventListener('click',async()=>{
         const ids = [w1.id, w2&&w2.id].filter(Boolean);
         const newLog = (appData.hoursLog||[]).filter(w=>!ids.includes(w.id));
@@ -742,8 +771,67 @@ function hoursScreen(){
         renderAll();
       });
 
-      card.append(header,breakdown,delBtn);
+      card.append(header, breakdown, actualWrap, delBtn);
       histWrap.append(card);
+    }
+
+    // Hours graph
+    const sortedForGraph = [...log].sort((a,b) => parseLabel(a.label) - parseLabel(b.label));
+    if(sortedForGraph.length >= 2){
+      const values = sortedForGraph.map(w => w.total);
+      const dates = sortedForGraph.map(w => w.label);
+      const W = Math.min(window.innerWidth - 40, 440);
+      const H = 150;
+      const PAD = {top:10, right:16, bottom:28, left:36};
+      const iW = W - PAD.left - PAD.right;
+      const iH = H - PAD.top - PAD.bottom;
+      const min = 0;
+      const max = Math.max(...values, 1);
+      const xStep = values.length > 1 ? iW / (values.length - 1) : iW;
+      const yScale = v => iH - ((v - min) / (max - min)) * iH;
+      const pts = values.map((v,i) => [PAD.left + i*xStep, PAD.top + yScale(v)]);
+      const polyline = pts.map(p=>p.join(',')).join(' ');
+      const fillPath = `M${pts[0][0]},${PAD.top+iH} L${pts.map(p=>p.join(',')).join(' L')} L${pts[pts.length-1][0]},${PAD.top+iH} Z`;
+
+      const avgH = values.reduce((s,v)=>s+v,0)/values.length;
+      const avgY = PAD.top + yScale(avgH);
+
+      const xLabels = dates.map((d,i) => {
+        if(values.length > 8 && i % Math.ceil(values.length/6) !== 0 && i !== values.length-1) return '';
+        const x = PAD.left + i*xStep;
+        const parts = d.split('/');
+        const lbl = parts[0]+'/'+parts[1];
+        return `<text x="${x}" y="${H-4}" text-anchor="middle" fill="#555" font-size="8" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
+      }).join('');
+
+      const yLabels = [0, Math.round(max/2), Math.round(max)].map(v => {
+        const y = PAD.top + yScale(v);
+        return `<text x="${PAD.left-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="Space Mono,monospace">${v}h</text>`;
+      }).join('');
+
+      const dots = values.map((v,i) => {
+        const [x,y] = pts[i];
+        const isHigh = v === Math.max(...values);
+        const isLow = v === Math.min(...values);
+        const color = isHigh ? 'var(--green)' : isLow ? 'var(--red)' : '#64B5F6';
+        return `<circle cx="${x}" cy="${y}" r="${isHigh||isLow?4:2.5}" fill="${color}" stroke="#0D0D0D" stroke-width="1.5"/>`;
+      }).join('');
+
+      const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
+        <defs><linearGradient id="hoursGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#64B5F6" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="#64B5F6" stop-opacity="0"/>
+        </linearGradient></defs>
+        <path d="${fillPath}" fill="url(#hoursGrad)"/>
+        <line x1="${PAD.left}" y1="${avgY}" x2="${PAD.left+iW}" y2="${avgY}" stroke="#555" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="${PAD.left+iW+2}" y="${avgY+3}" fill="#555" font-size="8" font-family="Space Mono,monospace">avg</text>
+        <polyline points="${polyline}" fill="none" stroke="#64B5F6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        ${yLabels}${xLabels}${dots}
+      </svg>`;
+
+      const graphCard = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px',marginBottom:'12px'}});
+      graphCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#64B5F6;margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Hours per week · avg ${avgH.toFixed(1)}h</div>${svg}`;
+      histWrap.append(graphCard);
     }
 
     // Summary
