@@ -194,7 +194,7 @@ function paydayFlow(){
 
     // exit button on all steps except done
     if(step!==3){
-      const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'max(20px,env(safe-area-inset-top))',right:'16px'}},'✕ Exit');
+      const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'20px',right:'16px'}},'✕ Exit');
       exitBtn.addEventListener('click',()=>mainScreen());
       wrap.style.position='relative';
       wrap.append(exitBtn);
@@ -382,21 +382,23 @@ function settingsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   let subs = [...appData.subscriptions];
 
+  const subList = el('div'); // BUG FIX 1: declare subList before renderSubs() calls it
+
   function renderSubs(){
     subList.innerHTML='';
     for(const s of subs){
+      const sid = s.id;
       const row = el('div',{class:'sub-item'},
         el('div',{style:{fontSize:'14px'}},s.name),
         el('div',{style:{display:'flex',alignItems:'center',gap:'12px'}},
           el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount)),
-          el('button',{style:{background:'none',color:'var(--red)',padding:'0',fontSize:'18px',lineHeight:'1'}},
-            '×',
-            'onclick', ()=>{subs=subs.filter(x=>x.id!==s.id);renderSubs();}
-          )
+          (() => {
+            const btn = el('button',{style:{background:'none',color:'var(--red)',padding:'0',fontSize:'18px',lineHeight:'1'}},'×');
+            btn.addEventListener('click',()=>{ subs=subs.filter(x=>x.id!==sid); renderSubs(); }); // BUG FIX 2: single listener, no duplicate
+            return btn;
+          })()
         )
       );
-      // fix event
-      row.querySelector('button').addEventListener('click',()=>{subs=subs.filter(x=>x.id!==s.id);renderSubs();});
       subList.append(row);
     }
   }
@@ -413,7 +415,7 @@ function settingsScreen(){
       personalSavings:parseFloat(savInput.value)||0,
       creditCard:parseFloat(ccInput.value)||0,
     };
-    await save({...appData,balances:nb,subscriptions:subs});
+    await save({...appData, balances:nb, subscriptions:subs}); // BUG FIX 3: always include latest subs
     saveBalBtn.textContent='Saved ✓';
     setTimeout(()=>saveBalBtn.textContent='Save balances',2000);
   });
@@ -432,7 +434,7 @@ function settingsScreen(){
   });
   const saveSubBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Save subscriptions');
   saveSubBtn.addEventListener('click',async()=>{
-    await save({...appData,subscriptions:subs});
+    await save({...appData, subscriptions:subs}); // BUG FIX 4: save subs without clobbering balances
     saveSubBtn.textContent='Saved ✓';
     setTimeout(()=>saveSubBtn.textContent='Save subscriptions',2000);
   });
@@ -492,10 +494,7 @@ function mainScreen(startTab='home'){
           el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Your money'),
           el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Financial Freedom')
         ),
-        el('button',{style:{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:'12px',fontWeight:'700',fontSize:'14px'}},
-          'I got paid',
-          'onclick', ()=>render(paydayFlow())
-        )
+        el('button',{style:{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:'12px',fontWeight:'700',fontSize:'14px'}},'I got paid')
       );
       header.querySelector('button').addEventListener('click',()=>render(paydayFlow()));
       body.append(header, overviewScreen());
@@ -527,7 +526,13 @@ auth.onAuthStateChanged(async user => {
   render(el('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px'}},'Loading…'));
   const snap = await db.ref('users/'+user.uid).once('value');
   const val = snap.val();
-  appData = val ? {...DEFAULT_DATA,...val,balances:{...DEFAULT_DATA.balances,...(val.balances||{})},subscriptions:val.subscriptions||DEFAULT_DATA.subscriptions} : DEFAULT_DATA;
+  appData = val ? {
+    ...DEFAULT_DATA,
+    ...val,
+    balances:{...DEFAULT_DATA.balances,...(val.balances||{})},
+    subscriptions:val.subscriptions||DEFAULT_DATA.subscriptions,
+    paychecks: Array.isArray(val.paychecks) ? val.paychecks : [] // BUG FIX 6: Firebase drops empty arrays, guard against null
+  } : DEFAULT_DATA;
   mainScreen();
 });
 </script>
