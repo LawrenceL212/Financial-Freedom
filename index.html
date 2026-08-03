@@ -192,6 +192,14 @@ function paydayFlow(){
     wrap.innerHTML='';
     const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1'}});
 
+    // exit button on all steps except done
+    if(step!==3){
+      const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'max(20px,env(safe-area-inset-top))',right:'16px'}},'✕ Exit');
+      exitBtn.addEventListener('click',()=>mainScreen());
+      wrap.style.position='relative';
+      wrap.append(exitBtn);
+    }
+
     if(step===0){
       const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
       const btn = el('button',{class:'btn-primary'},'See my split →');
