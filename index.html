@@ -475,129 +475,231 @@ function settingsScreen(){
 
 function trendsScreen(){
   const paychecks = (appData.paychecks || []).filter(p => p.snapshot);
+  const hoursLog = appData.hoursLog || [];
+  const actualPay = appData.actualPay || {};
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const subTotal = (appData.subscriptions||[]).reduce((s,x)=>s+x.amount,0);
 
-  if(paychecks.length < 2){
-    content.append(
-      el('div',{class:'section-hdr'},'Trends'),
-      el('div',{class:'card',style:{textAlign:'center',padding:'40px 20px'}},
-        el('div',{style:{fontSize:'32px',marginBottom:'12px'}},'📈'),
-        el('div',{style:{fontWeight:'600',marginBottom:'6px'}},'Not enough data yet'),
-        el('div',{style:{fontSize:'13px',color:'var(--text2)',lineHeight:'1.6'}},'Log at least 2 paychecks to see your trends.')
-      )
-    );
+  if(paychecks.length < 2 && hoursLog.length < 4){
+    content.append(el('div',{class:'card',style:{textAlign:'center',padding:'40px 20px'}},
+      el('div',{style:{fontSize:'32px',marginBottom:'12px'}},'📈'),
+      el('div',{style:{fontWeight:'600'}},'Not enough data yet')
+    ));
     return content;
   }
 
-  const sorted = [...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
+  const fmtK = v => {
+    const abs = Math.abs(v);
+    if(abs>=1000) return (v<0?'-':'')+'£'+(abs/1000).toFixed(1)+'k';
+    return (v<0?'-£':'£')+Math.round(abs);
+  };
 
-  function makeGraph(label, color, values, dates){
-    const W = Math.min(window.innerWidth - 40, 440);
-    const H = 160;
-    const PAD = {top:10, right:16, bottom:28, left:56};
-    const iW = W - PAD.left - PAD.right;
-    const iH = H - PAD.top - PAD.bottom;
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = max - min || 1;
-    const xStep = iW / (values.length - 1);
-    const yScale = v => iH - ((v - min) / range) * iH;
-    const pts = values.map((v,i) => [PAD.left + i*xStep, PAD.top + yScale(v)]);
-    const polyline = pts.map(p=>p.join(',')).join(' ');
-    const fillPath = `M${pts[0][0]},${pts[0][1]} L${pts.map(p=>p.join(',')).join(' L')} L${pts[pts.length-1][0]},${PAD.top+iH} L${pts[0][0]},${PAD.top+iH} Z`;
-
-    const fmtK = v => {
-      const abs = Math.abs(v);
-      if(abs >= 1000) return (v<0?'-':'')+'£'+(abs/1000).toFixed(1)+'k';
-      return (v<0?'-£':'£')+Math.round(abs);
-    };
-
-    const yLabels = [min, min+range*0.5, max].map(v => {
-      const y = PAD.top + yScale(v);
-      return `<text x="${PAD.left-6}" y="${y+4}" text-anchor="end" fill="#555" font-size="10" font-family="Space Mono,monospace">${fmtK(v)}</text>`;
+  function makeGraph(label, color, values, dates, fromZero){
+    if(values.length < 2) return el('div',{});
+    const W=Math.min(window.innerWidth-40,440),H=150;
+    const PAD={top:10,right:16,bottom:28,left:52};
+    const iW=W-PAD.left-PAD.right, iH=H-PAD.top-PAD.bottom;
+    const min=fromZero?0:Math.min(...values), max=Math.max(...values,1), range=max-min||1;
+    const xStep=values.length>1?iW/(values.length-1):iW;
+    const yScale=v=>iH-((v-min)/range)*iH;
+    const pts=values.map((v,i)=>[PAD.left+i*xStep,PAD.top+yScale(v)]);
+    const polyline=pts.map(p=>p.join(',')).join(' ');
+    const fillPath=`M${pts[0][0]},${PAD.top+iH} L${pts.map(p=>p.join(',')).join(' L')} L${pts[pts.length-1][0]},${PAD.top+iH} Z`;
+    const yLabels=[min,min+range*0.5,max].map(v=>{
+      const y=PAD.top+yScale(v);
+      return `<text x="${PAD.left-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="Space Mono,monospace">${fmtK(v)}</text>`;
     }).join('');
-
-    const xLabels = dates.map((d,i) => {
-      if(values.length > 6 && i !== 0 && i !== values.length-1 && i % Math.ceil(values.length/5) !== 0) return '';
-      const x = PAD.left + i*xStep;
-      const lbl = new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-      return `<text x="${x}" y="${H-4}" text-anchor="middle" fill="#555" font-size="9" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
+    const xLabels=dates.map((d,i)=>{
+      if(values.length>8&&i%Math.ceil(values.length/5)!==0&&i!==values.length-1) return '';
+      const x=PAD.left+i*xStep;
+      const parts=d.includes('/')?d.split('/'):[]; 
+      const lbl=parts.length>=2?parts[0]+'/'+parts[1]:new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+      return `<text x="${x}" y="${H-4}" text-anchor="middle" fill="#555" font-size="8" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
     }).join('');
-
-    const dots = values.map((v,i) => {
-      const [x,y] = pts[i];
-      return `<circle cx="${x}" cy="${y}" r="3" fill="${color}" stroke="#0D0D0D" stroke-width="2"/>`;
+    const dots=values.map((v,i)=>{
+      const [x,y]=pts[i];
+      const isMax=v===Math.max(...values),isMin=v===Math.min(...values);
+      const c=isMax?'var(--green)':isMin?'var(--red)':color;
+      return `<circle cx="${x}" cy="${y}" r="${isMax||isMin?4:2.5}" fill="${c}" stroke="#0D0D0D" stroke-width="1.5"/>`;
     }).join('');
-
-    const gradId = 'g'+label.replace(/\W/g,'');
-    const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
-      <defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+    const gid='g'+Math.random().toString(36).slice(2,6);
+    const svg=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
+      <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stop-color="${color}" stop-opacity="0.25"/>
         <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
       </linearGradient></defs>
-      <path d="${fillPath}" fill="url(#${gradId})"/>
+      <path d="${fillPath}" fill="url(#${gid})"/>
       <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      ${yLabels}${xLabels}${dots}
-    </svg>`;
-
-    const wrap = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
-    wrap.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:12px;font-family:'Space Grotesk',sans-serif">${label}</div>${svg}`;
+      ${yLabels}${xLabels}${dots}</svg>`;
+    const wrap=el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
+    wrap.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:10px;font-family:'Space Grotesk',sans-serif">${label}</div>${svg}`;
     return wrap;
   }
 
-  const dates = sorted.map(p => p.date);
-  const florasiiSeries = sorted.map(p => p.snapshot.florasii);
-  const currentSeries = sorted.map(p => p.snapshot.current);
-  const ccSeries = sorted.map(p => p.snapshot.creditCard);
-  const incomeSeries = sorted.filter(p=>p.income>0).map(p => p.income);
-  const incomeDates = sorted.filter(p=>p.income>0).map(p => p.date);
-  const spentSeries = sorted.filter(p=>p.income>0).map(p => p.spent);
+  function makeBarChart(label, color, values, labels){
+    if(values.length===0) return el('div',{});
+    const W=Math.min(window.innerWidth-40,440),H=150;
+    const PAD={top:10,right:8,bottom:28,left:52};
+    const iW=W-PAD.left-PAD.right,iH=H-PAD.top-PAD.bottom;
+    const max=Math.max(...values,1);
+    const barW=Math.max(4,iW/values.length*0.7),gap=iW/values.length;
+    const bars=values.map((v,i)=>{
+      const x=PAD.left+i*gap+(gap-barW)/2;
+      const bh=(v/max)*iH, y=PAD.top+iH-bh;
+      const isMax=v===Math.max(...values),isMin=v>0&&v===Math.min(...values.filter(x=>x>0));
+      const c=isMax?'var(--green)':isMin?'var(--red)':color;
+      return `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="${c}" rx="3"/>`;
+    }).join('');
+    const xLbls=labels.map((l,i)=>{
+      if(values.length>10&&i%Math.ceil(values.length/8)!==0&&i!==values.length-1) return '';
+      return `<text x="${PAD.left+i*gap+gap/2}" y="${H-4}" text-anchor="middle" fill="#555" font-size="8" font-family="Space Grotesk,sans-serif">${l}</text>`;
+    }).join('');
+    const yLbls=[0,Math.round(max/2),Math.round(max)].map(v=>{
+      const y=PAD.top+iH-(v/max)*iH;
+      return `<text x="${PAD.left-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="Space Mono,monospace">${fmtK(v)}</text>`;
+    }).join('');
+    const svg=`<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">${bars}${yLbls}${xLbls}</svg>`;
+    const wrap=el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
+    wrap.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:10px;font-family:'Space Grotesk',sans-serif">${label}</div>${svg}`;
+    return wrap;
+  }
 
-  content.append(
-    el('div',{class:'section-hdr'},'Florasii Fund — running balance'),
-    makeGraph('Florasii Fund', 'var(--green)', florasiiSeries, dates),
-    el('div',{class:'section-hdr'},'Current Account — running balance'),
-    makeGraph('Current Account', '#64B5F6', currentSeries, dates)
-  );
+  const sorted=[...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
+  const dates=sorted.map(p=>p.date.slice(0,10));
+  const florasiiSeries=sorted.map(p=>p.snapshot.florasii);
+  const currentSeries=sorted.map(p=>p.snapshot.current);
+  const ccSeries=sorted.map(p=>p.snapshot.creditCard);
+  const realPays=sorted.filter(p=>p.income>0);
+  const incomeSeries=realPays.map(p=>p.income);
+  const incomeDates=realPays.map(p=>p.date.slice(0,10));
+  const spentSeries=realPays.map(p=>p.spent||0);
+  const totalIncome=realPays.reduce((s,p)=>s+p.income,0);
+  const totalSpent=realPays.reduce((s,p)=>s+(p.spent||0),0);
+  const avgIncome=totalIncome/Math.max(realPays.length,1);
+  const netWorthSeries=sorted.map(p=>p.snapshot.florasii+(p.snapshot.personalSavings||0)-p.snapshot.creditCard);
 
-  if(ccSeries.some(v=>v>0)){
-    content.append(
-      el('div',{class:'section-hdr'},'Credit Card — amount owed'),
-      makeGraph('Credit Card', 'var(--red)', ccSeries, dates)
-    );
+  const monthlyIncome={},monthlySpend={};
+  for(const p of realPays){
+    const d=new Date(p.date);
+    const key=d.toLocaleDateString('en-GB',{month:'short',year:'2-digit'});
+    monthlyIncome[key]=(monthlyIncome[key]||0)+p.income;
+    monthlySpend[key]=(monthlySpend[key]||0)+(p.spent||0);
+  }
+  const monthKeys=Object.keys(monthlyIncome);
+
+  const parseLabel=l=>{const p=l.split('/');return new Date(`${p[2]}-${p[1]}-${p[0]}`);};
+  const sortedHours=[...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
+  const pairs=[];
+  for(let i=0;i<sortedHours.length;i+=2) pairs.push({w1:sortedHours[i],w2:sortedHours[i+1]});
+  const pairsWithActual=pairs.filter(({w1})=>actualPay[w1.id+'_actual']);
+  const predictedVals=pairsWithActual.map(({w1,w2})=>(w1.total+(w2?w2.total:0))*14.5);
+  const actualVals=pairsWithActual.map(({w1})=>actualPay[w1.id+'_actual']);
+  const pairLabels=pairsWithActual.map(({w1})=>w1.label.slice(0,5));
+  const predVsActualDiff=pairsWithActual.map((_,i)=>actualVals[i]-predictedVals[i]);
+
+  const florasiiNow=appData.balances?.florasii||0;
+  const florasiiGoal=15000;
+  const florasiiRemaining=Math.max(0,florasiiGoal-florasiiNow);
+  const florasiiGrowth=florasiiSeries.length>1?florasiiSeries[florasiiSeries.length-1]-florasiiSeries[0]:0;
+  const avgFlorasiiPerPay=florasiiGrowth/Math.max(realPays.length,1);
+  const paysToGoal=avgFlorasiiPerPay>0?Math.ceil(florasiiRemaining/avgFlorasiiPerPay):'?';
+  const weeksToGoal=typeof paysToGoal==='number'?paysToGoal*2:'?';
+  const subPct=avgIncome>0?((subTotal/avgIncome)*100).toFixed(1):0;
+  const pct=Math.min(100,Math.round(florasiiNow/florasiiGoal*100));
+  const r=42,c=2*Math.PI*r;
+  const bestMonth=monthKeys.length?monthKeys[Object.values(monthlyIncome).indexOf(Math.max(...Object.values(monthlyIncome)))]:'-';
+
+  const countdownCard=el('div',{class:'card',style:{display:'flex',alignItems:'center',gap:'16px'}});
+  const dialDiv=el('div',{style:{position:'relative',width:'100px',height:'100px',flexShrink:'0'}});
+  dialDiv.innerHTML=`<svg width="100" height="100" viewBox="0 0 100 100" style="transform:rotate(-90deg)">
+    <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--surface2)" stroke-width="9"/>
+    <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--green)" stroke-width="9"
+      stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c*(1-pct/100)).toFixed(1)}" stroke-linecap="round"/>
+  </svg><div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+    <span style="font-family:'Space Mono',monospace;font-size:20px;font-weight:700">${pct}%</span>
+    <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">to goal</span>
+  </div>`;
+  countdownCard.append(dialDiv, el('div',{style:{flex:'1'}},
+    el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'4px'}},'Florasii Fund'),
+    el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'22px',fontWeight:'700',color:'var(--green)'}},fmt(florasiiNow)),
+    el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'4px'}},fmt(florasiiRemaining)+' remaining'),
+    el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'6px'}},
+      typeof paysToGoal==='number'?`~${paysToGoal} paychecks (${weeksToGoal} weeks) at current rate`:'Log more paychecks to estimate')
+  ));
+
+  const subCard=el('div',{class:'card'});
+  subCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--red);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Subscriptions impact</div>
+    <div class="balance-row"><span class="balance-label">Monthly cost</span><span class="balance-value" style="color:var(--red)">${fmt(subTotal)}</span></div>
+    <div class="balance-row"><span class="balance-label">% of avg paycheck</span><span class="balance-value" style="color:var(--red)">${subPct}%</span></div>
+    <div class="balance-row"><span class="balance-label">Annual cost</span><span class="balance-value" style="color:var(--red)">${fmt(subTotal*12)}</span></div>
+    <div class="balance-row" style="border:none"><span class="balance-label">Paychecks/year on subs</span><span class="balance-value">${(subTotal*12/avgIncome).toFixed(1)}</span></div>`;
+
+  const statsCard=el('div',{class:'card'});
+  statsCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">All time</div>
+    <div class="balance-row"><span class="balance-label">Total income tracked</span><span class="balance-value" style="color:var(--green)">${fmt(totalIncome)}</span></div>
+    <div class="balance-row"><span class="balance-label">Total spent (logged)</span><span class="balance-value" style="color:var(--amber)">${fmt(totalSpent)}</span></div>
+    <div class="balance-row"><span class="balance-label">Avg income / paycheck</span><span class="balance-value">${fmt(avgIncome)}</span></div>
+    <div class="balance-row"><span class="balance-label">Best month</span><span class="balance-value" style="color:var(--green)">${bestMonth}</span></div>
+    <div class="balance-row" style="border:none"><span class="balance-label">Paychecks logged</span><span class="balance-value">${realPays.length}</span></div>`;
+
+  let accuracyCard=null;
+  if(predVsActualDiff.length>=3){
+    const avgDiff=predVsActualDiff.reduce((s,v)=>s+v,0)/predVsActualDiff.length;
+    const W=Math.min(window.innerWidth-40,440),H=130;
+    const PAD={top:10,right:8,bottom:28,left:52};
+    const iW=W-PAD.left-PAD.right,iH=H-PAD.top-PAD.bottom;
+    const maxAbs=Math.max(...predVsActualDiff.map(Math.abs),1);
+    const midY=PAD.top+iH/2,gap=iW/predVsActualDiff.length;
+    const barW=Math.max(4,gap*0.7);
+    const bars=predVsActualDiff.map((v,i)=>{
+      const x=PAD.left+i*gap+(gap-barW)/2,bh=(Math.abs(v)/maxAbs)*(iH/2);
+      const y=v>=0?midY-bh:midY;
+      return `<rect x="${x}" y="${y}" width="${barW}" height="${bh}" fill="${v>=0?'var(--green)':'var(--red)'}" rx="2"/>`;
+    }).join('');
+    const xLbls=pairLabels.map((l,i)=>{
+      if(predVsActualDiff.length>8&&i%Math.ceil(predVsActualDiff.length/6)!==0) return '';
+      return `<text x="${PAD.left+i*gap+gap/2}" y="${H-4}" text-anchor="middle" fill="#555" font-size="7" font-family="Space Grotesk,sans-serif">${l}</text>`;
+    }).join('');
+    accuracyCard=el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
+    accuracyCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#CE93D8;margin-bottom:4px;font-family:'Space Grotesk',sans-serif">Actual vs predicted pay</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">Avg ${avgDiff>=0?'+':''}${fmt(avgDiff)} per paycheck vs estimate</div>
+    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
+      <line x1="${PAD.left}" y1="${midY}" x2="${PAD.left+iW}" y2="${midY}" stroke="var(--border)" stroke-width="1"/>
+      <text x="${PAD.left-4}" y="${midY+3}" text-anchor="end" fill="#555" font-size="8" font-family="Space Mono,monospace">0</text>
+      ${bars}${xLbls}</svg>`;
   }
 
   content.append(
-    el('div',{class:'section-hdr'},'Income per paycheck'),
-    makeGraph('Income', 'var(--amber)', incomeSeries, incomeDates),
-    el('div',{class:'section-hdr'},'Spending per paycheck'),
-    makeGraph('Spending', '#CE93D8', spentSeries, incomeDates)
+    el('div',{class:'section-hdr'},'Florasii Goal'),
+    countdownCard,
+    el('div',{class:'section-hdr'},'Net Worth over time'),
+    makeGraph('Net worth (Florasii + savings − credit card)','#64B5F6',netWorthSeries,dates),
+    el('div',{class:'section-hdr'},'Florasii Fund'),
+    makeGraph('Florasii Fund — running balance','var(--green)',florasiiSeries,dates),
+    el('div',{class:'section-hdr'},'Current Account'),
+    makeGraph('Current Account — running balance','#4FC3F7',currentSeries,dates)
   );
-
-  const totalIncome = sorted.reduce((s,p)=>s+p.income,0);
-  const totalSpent = sorted.reduce((s,p)=>s+(p.spent||0),0);
-  const realPays = sorted.filter(p=>p.income>0);
-
+  if(ccSeries.some(v=>v>0)) content.append(
+    el('div',{class:'section-hdr'},'Credit Card'),
+    makeGraph('Credit Card — amount owed','var(--red)',ccSeries,dates)
+  );
   content.append(
-    el('div',{class:'section-hdr'},'Summary'),
-    el('div',{class:'card'},
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Total income tracked'),
-        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmt(totalIncome))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Total spent'),
-        el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmt(totalSpent))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Avg income / paycheck'),
-        el('div',{class:'balance-value'},fmt(totalIncome/Math.max(realPays.length,1)))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Paychecks logged'),
-        el('div',{class:'balance-value'},String(realPays.length))
-      )
-    )
+    el('div',{class:'section-hdr'},'Monthly income'),
+    makeBarChart('Income by month','var(--amber)',monthKeys.map(k=>monthlyIncome[k]),monthKeys),
+    el('div',{class:'section-hdr'},'Monthly spending'),
+    makeBarChart('Spending by month','#CE93D8',monthKeys.map(k=>monthlySpend[k]),monthKeys),
+    el('div',{class:'section-hdr'},'Income per paycheck'),
+    makeGraph('Income per paycheck','var(--amber)',incomeSeries,incomeDates,true)
+  );
+  if(accuracyCard) content.append(
+    el('div',{class:'section-hdr'},'Prediction accuracy'),
+    accuracyCard
+  );
+  content.append(
+    el('div',{class:'section-hdr'},'Subscriptions'),
+    subCard,
+    el('div',{class:'section-hdr'},'All time stats'),
+    statsCard
   );
   return content;
 }
