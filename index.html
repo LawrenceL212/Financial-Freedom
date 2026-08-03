@@ -983,28 +983,65 @@ function hoursScreen(){
       );
       header.append(labelDiv,payDiv);
 
-      // day breakdown — with edit toggle
+      // day breakdown — two separate week rows with edit toggle
       let editMode = false;
-      const dayInputs = {};
-      const breakdown = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'4px',marginBottom:'8px'}});
+      const dayInputs1 = {}, dayInputs2 = {};
+      const breakdown = el('div',{style:{marginBottom:'8px'}});
 
       function renderBreakdown(){
         breakdown.innerHTML='';
-        for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
-          const h1 = w1[d]||0;
-          const h2 = w2?w2[d]||0:0;
-          const total = h1+h2;
-          const col = el('div',{style:{textAlign:'center'}},
-            el('div',{style:{fontSize:'9px',color:'var(--text3)',textTransform:'uppercase',marginBottom:'3px'}},d.slice(0,2))
-          );
+        const days = ['mon','tue','wed','thu','fri','sat','sun'];
+
+        // header row
+        const hdrRow = el('div',{style:{display:'grid',gridTemplateColumns:'52px repeat(7,1fr)',gap:'4px',marginBottom:'4px'}});
+        hdrRow.append(el('div',{}));
+        for(const d of days){
+          hdrRow.append(el('div',{style:{textAlign:'center',fontSize:'9px',color:'var(--text3)',textTransform:'uppercase'}},d.slice(0,2)));
+        }
+        breakdown.append(hdrRow);
+
+        // week 1 row
+        const w1Row = el('div',{style:{display:'grid',gridTemplateColumns:'52px repeat(7,1fr)',gap:'4px',marginBottom:'4px'}});
+        const w1LabelEl = el('div',{style:{fontSize:'9px',color:'var(--text2)',display:'flex',alignItems:'center',paddingRight:'4px',whiteSpace:'nowrap',overflow:'hidden'}}, w1.label.slice(0,5));
+        w1Row.append(w1LabelEl);
+        for(const d of days){
+          const h = w1[d]||0;
+          const col = el('div',{style:{textAlign:'center'}});
           if(editMode){
-            const inp = el('input',{inputmode:'decimal',value:total||'',style:{padding:'4px 2px',textAlign:'center',fontSize:'12px',borderRadius:'8px',width:'100%'}});
-            dayInputs[d] = inp;
-            col.append(inp);
+            const inp = el('input',{inputmode:'decimal',value:h||'',style:{padding:'3px 2px',textAlign:'center',fontSize:'11px',borderRadius:'6px',width:'100%'}});
+            dayInputs1[d]=inp; col.append(inp);
           } else {
-            col.append(el('div',{style:{fontSize:'12px',fontFamily:"'Space Mono',monospace",color:total>0?'var(--text)':'var(--text3)'}},total>0?total.toFixed(1):'—'));
+            col.append(el('div',{style:{fontSize:'11px',fontFamily:"'Space Mono',monospace",color:h>0?'var(--text)':'var(--text3)'}},h>0?h.toFixed(1):'—'));
           }
-          breakdown.append(col);
+          w1Row.append(col);
+        }
+        breakdown.append(w1Row);
+
+        // week 1 total
+        const w1TotalRow = el('div',{style:{display:'flex',justifyContent:'flex-end',fontSize:'11px',color:'var(--text2)',marginBottom:'6px',paddingRight:'2px'}});
+        w1TotalRow.textContent = w1.total.toFixed(1)+'h';
+        breakdown.append(w1TotalRow);
+
+        if(w2){
+          // week 2 row
+          const w2Row = el('div',{style:{display:'grid',gridTemplateColumns:'52px repeat(7,1fr)',gap:'4px',marginBottom:'4px',borderTop:'1px solid var(--border)',paddingTop:'6px'}});
+          const w2LabelEl = el('div',{style:{fontSize:'9px',color:'var(--text2)',display:'flex',alignItems:'center',paddingRight:'4px',whiteSpace:'nowrap',overflow:'hidden'}}, w2.label.slice(0,5));
+          w2Row.append(w2LabelEl);
+          for(const d of days){
+            const h = w2[d]||0;
+            const col = el('div',{style:{textAlign:'center'}});
+            if(editMode){
+              const inp = el('input',{inputmode:'decimal',value:h||'',style:{padding:'3px 2px',textAlign:'center',fontSize:'11px',borderRadius:'6px',width:'100%'}});
+              dayInputs2[d]=inp; col.append(inp);
+            } else {
+              col.append(el('div',{style:{fontSize:'11px',fontFamily:"'Space Mono',monospace",color:h>0?'var(--text)':'var(--text3)'}},h>0?h.toFixed(1):'—'));
+            }
+            w2Row.append(col);
+          }
+          breakdown.append(w2Row);
+          const w2TotalRow = el('div',{style:{display:'flex',justifyContent:'flex-end',fontSize:'11px',color:'var(--text2)',marginBottom:'4px',paddingRight:'2px'}});
+          w2TotalRow.textContent = w2.total.toFixed(1)+'h';
+          breakdown.append(w2TotalRow);
         }
       }
       renderBreakdown();
@@ -1020,17 +1057,22 @@ function hoursScreen(){
           editBtn.style.color='#000';
           renderBreakdown();
         } else {
-          // save edited hours back to w1 (split proportionally if w2 exists)
           const newLog = (appData.hoursLog||[]).map(w => {
             if(w.id === w1.id){
               const updated = {...w};
               for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
-                const val = parseFloat(dayInputs[d]?.value)||0;
-                const h2 = w2?w2[d]||0:0;
-                updated[d] = Math.max(0, val - h2);
+                updated[d] = parseFloat(dayInputs1[d]?.value)||0;
               }
-              updated.total = ['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+updated[d],0);
-              updated.total = Math.round(updated.total*100)/100;
+              updated.total = Math.round(['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+updated[d],0)*100)/100;
+              updated.predicted = predictedPay(updated.total);
+              return updated;
+            }
+            if(w2 && w.id === w2.id){
+              const updated = {...w};
+              for(const d of ['mon','tue','wed','thu','fri','sat','sun']){
+                updated[d] = parseFloat(dayInputs2[d]?.value)||0;
+              }
+              updated.total = Math.round(['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+updated[d],0)*100)/100;
               updated.predicted = predictedPay(updated.total);
               return updated;
             }
