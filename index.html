@@ -463,17 +463,173 @@ function settingsScreen(){
   return content;
 }
 
+function trendsScreen(){
+  const paychecks = appData.paychecks || [];
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  if(paychecks.length < 2){
+    content.append(
+      el('div',{class:'section-hdr'},'Trends'),
+      el('div',{class:'card',style:{textAlign:'center',padding:'40px 20px'}},
+        el('div',{style:{fontSize:'32px',marginBottom:'12px'}},'📈'),
+        el('div',{style:{fontWeight:'600',marginBottom:'6px'}},'Not enough data yet'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',lineHeight:'1.6'}},'Log at least 2 paychecks to see your trends.')
+      )
+    );
+    return content;
+  }
+
+  const sorted = [...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
+
+  function makeGraph(label, color, values, formatter){
+    const W = Math.min(window.innerWidth - 40, 440);
+    const H = 160;
+    const PAD = {top:10, right:16, bottom:28, left:52};
+    const iW = W - PAD.left - PAD.right;
+    const iH = H - PAD.top - PAD.bottom;
+
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+
+    const xStep = iW / (values.length - 1);
+    const yScale = v => iH - ((v - min) / range) * iH;
+
+    const points = values.map((v,i) => `${PAD.left + i * xStep},${PAD.top + yScale(v)}`);
+    const polyline = points.join(' ');
+    const firstP = points[0].split(',');
+    const lastP = points[points.length-1].split(',');
+    const fillPath = `M${firstP[0]},${parseFloat(firstP[1])} L${polyline.replace(/ /g,' L')} L${lastP[0]},${PAD.top+iH} L${firstP[0]},${PAD.top+iH} Z`;
+
+    // y axis labels
+    const yLabels = [min, min+range*0.5, max].map((v,i) => {
+      const y = PAD.top + yScale(v);
+      return `<text x="${PAD.left - 6}" y="${y+4}" text-anchor="end" fill="#555" font-size="10" font-family="Space Mono,monospace">${formatter(v)}</text>`;
+    }).join('');
+
+    // x axis labels (dates)
+    const xLabels = sorted.map((p,i) => {
+      const x = PAD.left + i * xStep;
+      const d = new Date(p.date);
+      const lbl = d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+      if(sorted.length > 5 && i !== 0 && i !== sorted.length-1 && i % Math.ceil(sorted.length/4) !== 0) return '';
+      return `<text x="${x}" y="${H-4}" text-anchor="middle" fill="#555" font-size="9" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
+    }).join('');
+
+    // dots
+    const dots = values.map((v,i) => {
+      const x = PAD.left + i * xStep;
+      const y = PAD.top + yScale(v);
+      return `<circle cx="${x}" cy="${y}" r="3" fill="${color}" stroke="var(--bg)" stroke-width="2"/>`;
+    }).join('');
+
+    const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
+      <defs>
+        <linearGradient id="grad_${label.replace(/\s/g,'')}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${color}" stop-opacity="0.3"/>
+          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d="${fillPath}" fill="url(#grad_${label.replace(/\s/g,'')})" />
+      <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${yLabels}
+      ${xLabels}
+      ${dots}
+    </svg>`;
+
+    const wrap = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
+    wrap.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:12px;font-family:'Space Grotesk',sans-serif">${label}</div>` + svg;
+    return wrap;
+  }
+
+  // build data series
+  const florasiiVals = sorted.map(p => {
+    // reconstruct running florasii from initial + splits up to this point
+    return p.split ? p.split.florasii : 0;
+  });
+
+  // running totals
+  let runFlorasii = appData.balances.florasii;
+  const florasiiRunning = [];
+  for(let i = sorted.length-1; i >= 0; i--){
+    runFlorasii -= (sorted[i].split?.florasii || 0);
+    florasiiRunning.unshift(runFlorasii + (sorted[i].split?.florasii || 0));
+  }
+  // recalc properly: start from initial minus all splits, then add back
+  let base = appData.balances.florasii;
+  for(const p of sorted) base -= (p.split?.florasii||0);
+  const florasiiSeries = sorted.map((p,i) => {
+    base += (p.split?.florasii||0);
+    return base;
+  });
+
+  const incomeSeries = sorted.map(p => p.income);
+  const spentSeries = sorted.map(p => p.spent||0);
+
+  const fmtK = v => {
+    const abs = Math.abs(v);
+    if(abs >= 1000) return (v<0?'-':'')+'£'+(abs/1000).toFixed(1)+'k';
+    return (v<0?'-£':'£')+Math.round(abs);
+  };
+
+  content.append(
+    el('div',{class:'section-hdr'},'Florasii Fund growth'),
+    makeGraph('Florasii Fund', 'var(--green)', florasiiSeries, fmtK),
+    el('div',{class:'section-hdr'},'Income per paycheck'),
+    makeGraph('Income', '#64B5F6', incomeSeries, fmtK),
+    el('div',{class:'section-hdr'},'Spending per paycheck'),
+    makeGraph('Spending', 'var(--amber)', spentSeries, fmtK)
+  );
+
+  // summary stats
+  const totalIncome = sorted.reduce((s,p)=>s+p.income,0);
+  const totalSpent = sorted.reduce((s,p)=>s+(p.spent||0),0);
+  const avgIncome = totalIncome / sorted.length;
+  const avgSpent = totalSpent / sorted.length;
+
+  content.append(
+    el('div',{class:'section-hdr'},'Summary'),
+    el('div',{class:'card'},
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Total income tracked'),
+        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmtK(totalIncome))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Total spent'),
+        el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmtK(totalSpent))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Avg income / paycheck'),
+        el('div',{class:'balance-value'},fmtK(avgIncome))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Avg spending / paycheck'),
+        el('div',{class:'balance-value'},fmtK(avgSpent))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Paychecks logged'),
+        el('div',{class:'balance-value'},String(sorted.length))
+      )
+    )
+  );
+
+  return content;
+}
+
 function mainScreen(startTab='home'){
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
   let tab = startTab;
 
   const svgHome = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>';
+  const svgChart = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-4 4 4 4-6"/></svg>';
   const svgGear = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>';
   const svgPlus = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
   const homeBtn = el('button',{class:'nav-btn active'});
   homeBtn.innerHTML = svgHome + '<span>Overview</span>';
+  const trendsBtn = el('button',{class:'nav-btn'});
+  trendsBtn.innerHTML = svgChart + '<span>Trends</span>';
   const settBtn = el('button',{class:'nav-btn'});
   settBtn.innerHTML = svgGear + '<span>Settings</span>';
   const payBtn = el('button',{class:'nav-btn',style:{color:'var(--green)'}});
@@ -484,6 +640,7 @@ function mainScreen(startTab='home'){
   function setTab(t){
     tab=t;
     homeBtn.className='nav-btn'+(t==='home'?' active':'');
+    trendsBtn.className='nav-btn'+(t==='trends'?' active':'');
     settBtn.className='nav-btn'+(t==='settings'?' active':'');
     body.innerHTML='';
     const header = el('div',{style:{padding:'max(20px,env(safe-area-inset-top)) 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0'}});
@@ -497,22 +654,27 @@ function mainScreen(startTab='home'){
       );
       header.querySelector('button').addEventListener('click',()=>render(paydayFlow()));
       body.append(header, overviewScreen());
+    } else if(t==='trends'){
+      header.append(el('div',{},
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Your progress'),
+        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Trends')
+      ));
+      body.append(header, trendsScreen());
     } else {
-      header.append(
-        el('div',{},
-          el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Manage'),
-          el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Settings')
-        )
-      );
+      header.append(el('div',{},
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Manage'),
+        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Settings')
+      ));
       body.append(header, settingsScreen());
     }
   }
 
   homeBtn.addEventListener('click',()=>setTab('home'));
+  trendsBtn.addEventListener('click',()=>setTab('trends'));
   settBtn.addEventListener('click',()=>setTab('settings'));
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, payBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, settBtn);
   wrap.append(body, nav);
   setTab(startTab);
   render(wrap);
