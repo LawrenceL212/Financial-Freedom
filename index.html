@@ -8,618 +8,520 @@
 <meta name="theme-color" content="#0D0D0D" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
-
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-:root {
-  --bg: #0D0D0D;
-  --surface: #161616;
-  --surface2: #1E1E1E;
-  --border: #2A2A2A;
-  --green: #00E676;
-  --green-dim: #00E67620;
-  --red: #FF5252;
-  --red-dim: #FF525220;
-  --amber: #FFB300;
-  --amber-dim: #FFB30020;
-  --text: #F0F0F0;
-  --text2: #888;
-  --text3: #555;
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0D0D0D;--surface:#161616;--surface2:#1E1E1E;--border:#2A2A2A;
+  --green:#00E676;--green-dim:#00E67615;--red:#FF5252;--red-dim:#FF525215;
+  --amber:#FFB300;--amber-dim:#FFB30015;--text:#F0F0F0;--text2:#888;--text3:#444;
 }
-body {
-  font-family: 'Space Grotesk', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  min-height: 100dvh;
-  overscroll-behavior: none;
-}
-.mono { font-family: 'Space Mono', monospace; }
-
-/* scrollbar */
-::-webkit-scrollbar { width: 0; }
-
-/* input reset */
-input, select, button { font-family: inherit; }
-input { background: var(--surface2); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 14px 16px; font-size: 16px; width: 100%; outline: none; transition: border-color 0.15s; }
-input:focus { border-color: var(--green); }
-input::placeholder { color: var(--text3); }
-
-button { cursor: pointer; border: none; border-radius: 12px; font-size: 15px; font-weight: 600; transition: all 0.15s; -webkit-tap-highlight-color: transparent; }
-button:active { transform: scale(0.97); }
-
-.btn-primary { background: var(--green); color: #000; padding: 16px; width: 100%; font-size: 16px; border-radius: 16px; letter-spacing: 0.3px; }
-.btn-ghost { background: var(--surface2); color: var(--text2); padding: 14px; width: 100%; border: 1px solid var(--border); }
-
-/* layout */
-.screen { min-height: 100dvh; display: flex; flex-direction: column; }
-.content { flex: 1; padding: 24px 20px; max-width: 480px; margin: 0 auto; width: 100%; }
-
-/* cards */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 20px; }
-.card + .card { margin-top: 12px; }
-
-/* balance pill */
-.balance-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
-.balance-row:last-child { border-bottom: none; padding-bottom: 0; }
-.balance-row:first-child { padding-top: 0; }
-.balance-label { font-size: 14px; color: var(--text2); }
-.balance-value { font-family: 'Space Mono', monospace; font-size: 16px; font-weight: 700; }
-
-/* step flow */
-.step-number { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text3); margin-bottom: 8px; }
-.step-title { font-size: 26px; font-weight: 700; line-height: 1.2; margin-bottom: 6px; }
-.step-sub { font-size: 14px; color: var(--text2); margin-bottom: 28px; line-height: 1.5; }
-
-/* split instruction card */
-.instruction { background: var(--surface2); border-radius: 16px; padding: 16px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; border-left: 3px solid var(--green); }
-.instruction.red { border-left-color: var(--red); }
-.instruction.amber { border-left-color: var(--amber); }
-.instruction-label { font-size: 14px; color: var(--text2); margin-bottom: 2px; }
-.instruction-action { font-size: 15px; font-weight: 600; }
-.instruction-amount { font-family: 'Space Mono', monospace; font-size: 20px; font-weight: 700; color: var(--green); }
-.instruction.red .instruction-amount { color: var(--red); }
-.instruction.amber .instruction-amount { color: var(--amber); }
-
-/* big input */
-.big-input-wrap { position: relative; margin-bottom: 24px; }
-.big-input-wrap .currency { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-family: 'Space Mono', monospace; font-size: 28px; font-weight: 700; color: var(--text3); pointer-events: none; }
-.big-input { font-family: 'Space Mono', monospace !important; font-size: 28px !important; font-weight: 700 !important; padding: 20px 20px 20px 44px !important; border-radius: 16px !important; letter-spacing: -0.5px; }
-
-/* nav */
-.nav { display: flex; justify-content: space-around; padding: 10px 0 max(10px, env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--border); position: sticky; bottom: 0; }
-.nav-btn { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 16px; background: none; color: var(--text3); font-size: 11px; border-radius: 12px; min-width: 60px; }
-.nav-btn.active { color: var(--green); }
-.nav-btn svg { width: 22px; height: 22px; }
-
-/* progress bar */
-.prog-wrap { background: var(--surface2); border-radius: 100px; height: 8px; overflow: hidden; margin: 8px 0; }
-.prog-fill { height: 100%; border-radius: 100px; background: var(--green); transition: width 0.6s cubic-bezier(.4,0,.2,1); }
-.prog-fill.red { background: var(--red); }
-.prog-fill.amber { background: var(--amber); }
-
-/* sub item */
-.sub-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
-.sub-item:last-child { border-bottom: none; }
-.sub-name { font-size: 14px; }
-.sub-amount { font-family: 'Space Mono', monospace; font-size: 14px; color: var(--text2); }
-
-/* paycheck history */
-.history-item { background: var(--surface2); border-radius: 14px; padding: 14px 16px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
-.history-date { font-size: 12px; color: var(--text3); margin-top: 2px; }
-
-/* tag */
-.tag { display: inline-block; padding: 3px 10px; border-radius: 100px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
-.tag-green { background: var(--green-dim); color: var(--green); }
-.tag-red { background: var(--red-dim); color: var(--red); }
-
-/* done checkmark animation */
-@keyframes pop { 0% { transform: scale(0.5); opacity: 0; } 70% { transform: scale(1.2); } 100% { transform: scale(1); opacity: 1; } }
-.done-icon { animation: pop 0.4s cubic-bezier(.4,0,.2,1) forwards; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px; border-radius: 50%; background: var(--green-dim); margin: 0 auto 20px; }
-
-/* section header */
-.section-header { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text3); margin-bottom: 14px; margin-top: 28px; }
-.section-header:first-child { margin-top: 0; }
-
-/* toggle */
-.toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 14px 0; border-bottom: 1px solid var(--border); }
-.toggle-row:last-child { border-bottom: none; }
+body{font-family:'Space Grotesk',sans-serif;background:var(--bg);color:var(--text);min-height:100dvh;overscroll-behavior:none}
+::-webkit-scrollbar{width:0}
+input,button{font-family:inherit}
+input{background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:14px 16px;font-size:16px;width:100%;outline:none;transition:border-color .15s}
+input:focus{border-color:var(--green)}
+input::placeholder{color:var(--text3)}
+button{cursor:pointer;border:none;border-radius:12px;font-size:15px;font-weight:600;transition:all .15s;-webkit-tap-highlight-color:transparent}
+button:active{transform:scale(.97)}
+.btn-primary{background:var(--green);color:#000;padding:16px;width:100%;font-size:16px;border-radius:16px}
+.btn-ghost{background:var(--surface2);color:var(--text2);padding:14px;width:100%;border:1px solid var(--border)}
+.btn-primary:disabled{opacity:.5}
+.screen{min-height:100dvh;display:flex;flex-direction:column}
+.content{flex:1;padding:24px 20px;max-width:480px;margin:0 auto;width:100%}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:20px;margin-bottom:12px}
+.balance-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
+.balance-row:last-child{border-bottom:none;padding-bottom:0}
+.balance-row:first-child{padding-top:0}
+.balance-label{font-size:14px;color:var(--text2)}
+.balance-value{font-family:'Space Mono',monospace;font-size:16px;font-weight:700}
+.step-num{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:8px}
+.step-title{font-size:26px;font-weight:700;line-height:1.2;margin-bottom:6px}
+.step-sub{font-size:14px;color:var(--text2);margin-bottom:28px;line-height:1.5}
+.instruction{background:var(--surface2);border-radius:16px;padding:16px;margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;border-left:3px solid var(--green)}
+.instruction-label{font-size:13px;color:var(--text2);margin-bottom:2px}
+.instruction-action{font-size:15px;font-weight:600}
+.instruction-amount{font-family:'Space Mono',monospace;font-size:20px;font-weight:700;color:var(--green)}
+.big-wrap{position:relative;margin-bottom:24px}
+.big-wrap .sym{position:absolute;left:16px;top:50%;transform:translateY(-50%);font-family:'Space Mono',monospace;font-size:28px;font-weight:700;color:var(--text3);pointer-events:none}
+.big-input{font-family:'Space Mono',monospace!important;font-size:28px!important;font-weight:700!important;padding:20px 20px 20px 44px!important;border-radius:16px!important}
+.nav{display:flex;justify-content:space-around;padding:10px 0 max(10px,env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);position:sticky;bottom:0}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 12px;background:none;color:var(--text3);font-size:11px;border-radius:12px;min-width:56px}
+.nav-btn.active{color:var(--green)}
+.prog-wrap{background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin:8px 0}
+.prog-fill{height:100%;border-radius:100px;background:var(--green);transition:width .6s}
+.sub-item{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}
+.sub-item:last-child{border-bottom:none}
+.history-item{background:var(--surface2);border-radius:14px;padding:14px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.section-hdr{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;margin-top:28px}
+.section-hdr:first-child{margin-top:0}
+@keyframes pop{0%{transform:scale(.5);opacity:0}70%{transform:scale(1.2)}100%{transform:scale(1);opacity:1}}
+.done-icon{animation:pop .4s forwards;display:flex;align-items:center;justify-content:center;width:72px;height:72px;border-radius:50%;background:var(--green-dim);margin:0 auto 20px}
+.row{display:flex;gap:10px}
+.error-msg{font-size:13px;color:var(--red);line-height:1.4;margin-top:4px}
+.info-box{border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.6}
 </style>
 </head>
 <body>
-<div id="root"></div>
-
+<div id="app"></div>
 <script>
-  window.FIREBASE_CONFIG = {
-    apiKey: "AIzaSyBqjVFKGnQujQQ0rQqsPZ2px1DCCkjlzyA",
-    authDomain: "financial-freedom-eb995.firebaseapp.com",
-    databaseURL: "https://financial-freedom-eb995-default-rtdb.europe-west1.firebasedatabase.app",
-    projectId: "financial-freedom-eb995",
-    storageBucket: "financial-freedom-eb995.firebasestorage.app",
-    messagingSenderId: "610515737665",
-    appId: "1:610515737665:web:7f497468aaa3d484aafac0"
-  };
-</script>
-
-<script type="text/babel">
-const { useState, useEffect, useMemo, useCallback, useRef } = React;
-firebase.initializeApp(window.FIREBASE_CONFIG);
+firebase.initializeApp({
+  apiKey:"AIzaSyBqjVFKGnQujQQ0rQqsPZ2px1DCCkjlzyA",
+  authDomain:"financial-freedom-eb995.firebaseapp.com",
+  databaseURL:"https://financial-freedom-eb995-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId:"financial-freedom-eb995",
+  storageBucket:"financial-freedom-eb995.firebasestorage.app",
+  messagingSenderId:"610515737665",
+  appId:"1:610515737665:web:7f497468aaa3d484aafac0"
+});
 const auth = firebase.auth();
 const db = firebase.database();
 
-const uid = () => Math.random().toString(36).slice(2, 10);
-const fmt = (n) => {
-  const abs = Math.abs(n).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  return (n < 0 ? '-£' : '£') + abs;
+const fmt = n => (n<0?'-£':'£') + Math.abs(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2});
+const uid = () => Math.random().toString(36).slice(2,10);
+const el = (tag, props={}, ...kids) => {
+  const e = document.createElement(tag);
+  for(const [k,v] of Object.entries(props)){
+    if(k==='class') e.className=v;
+    else if(k==='style') Object.assign(e.style,v);
+    else if(k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(),v);
+    else e.setAttribute(k,v);
+  }
+  for(const k of kids){
+    if(k==null||k===false) continue;
+    e.append(typeof k==='string'||typeof k==='number' ? document.createTextNode(String(k)) : k);
+  }
+  return e;
 };
-const fmtShort = (n) => '£' + Math.round(Math.abs(n)).toLocaleString('en-GB');
 
 const DEFAULT_DATA = {
-  balances: {
-    current: -5.40,
-    creditCard: 0,
-    florasii: 1973.24,
-    personalSavings: 0.51,
-  },
-  paychecks: [],
-  goals: [
-    { id: 'g1', name: 'Florasii Fund', target: 15000, current: 1973.24, color: 'green' },
-  ],
-  subscriptions: [
-    { id: 's1', name: 'Spotify', amount: 12.99 },
-    { id: 's2', name: 'Amazon Prime', amount: 8.99 },
-    { id: 's3', name: 'Discord Nitro', amount: 7.99 },
-    { id: 's4', name: 'Prime Video', amount: 2.99 },
-    { id: 's5', name: 'BH Live (Gym)', amount: 47.00 },
-    { id: 's6', name: 'Aloha VPN', amount: 4.99 },
-    { id: 's7', name: 'Crunchyroll', amount: 6.99 },
-    { id: 's8', name: 'iCloud+', amount: 8.99 },
-    { id: 's9', name: 'OKOK (Scale)', amount: 9.99 },
-    { id: 's10', name: 'Runna', amount: 15.99 },
-    { id: 's11', name: 'YouTube Premium', amount: 16.99 },
-  ],
+  balances:{current:-5.40,creditCard:0,florasii:1973.24,personalSavings:0.51},
+  paychecks:[],
+  subscriptions:[
+    {id:'s1',name:'Spotify',amount:12.99},
+    {id:'s2',name:'Amazon Prime',amount:8.99},
+    {id:'s3',name:'Discord Nitro',amount:7.99},
+    {id:'s4',name:'Prime Video',amount:2.99},
+    {id:'s5',name:'BH Live (Gym)',amount:47.00},
+    {id:'s6',name:'Aloha VPN',amount:4.99},
+    {id:'s7',name:'Crunchyroll',amount:6.99},
+    {id:'s8',name:'iCloud+',amount:8.99},
+    {id:'s9',name:'OKOK (Scale)',amount:9.99},
+    {id:'s10',name:'Runna',amount:15.99},
+    {id:'s11',name:'YouTube Premium',amount:16.99},
+  ]
 };
 
-/* ── icons ── */
-const I = ({ d, size=22, color='currentColor', strokeWidth=1.8 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-    {d}
-  </svg>
-);
-const HomeIcon = () => <I d={<><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></>} />;
-const PayIcon = () => <I d={<><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></>} />;
-const ChartIcon = () => <I d={<><path d="M3 3v18h18"/><path d="M7 16l4-4 4 4 4-6"/></>} />;
-const SettingsIcon = () => <I d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></>} />;
-const CheckIcon = () => <I d={<path d="M20 6L9 17l-5-5"/>} size={36} color="var(--green)" strokeWidth={2.5}/>;
-const PlusIcon = () => <I d={<path d="M12 5v14M5 12h14"/>} />;
-const TrashIcon = () => <I d={<><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></>} size={16}/>;
+let appData = null;
+let currentUser = null;
 
-/* ── Auth ── */
-function AuthScreen() {
-  const [mode, setMode] = useState('signin');
-  const [email, setEmail] = useState('');
-  const [pass, setPass] = useState('');
-  const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
+// ── render engine ──
+const app = document.getElementById('app');
+function render(node){ app.innerHTML=''; app.append(node); }
 
-  async function submit(e) {
-    e.preventDefault();
-    setBusy(true); setErr('');
-    try {
-      if (mode === 'signin') await auth.signInWithEmailAndPassword(email, pass);
-      else await auth.createUserWithEmailAndPassword(email, pass);
-    } catch(ex) { setErr(ex.message); }
-    setBusy(false);
-  }
-
-  return (
-    <div className="screen" style={{justifyContent:'center'}}>
-      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',minHeight:'100dvh'}}>
-        <div style={{marginBottom:40}}>
-          <div style={{fontSize:13,letterSpacing:3,textTransform:'uppercase',color:'var(--text3)',marginBottom:8}}>Your money</div>
-          <div style={{fontSize:36,fontWeight:700,lineHeight:1.1}}>Financial<br/>Freedom</div>
-        </div>
-        <form onSubmit={submit} style={{display:'flex',flexDirection:'column',gap:12}}>
-          <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} required autoComplete="email"/>
-          <input type="password" placeholder="Password" value={pass} onChange={e=>setPass(e.target.value)} required minLength={6} autoComplete="current-password"/>
-          {err && <div style={{fontSize:13,color:'var(--red)',lineHeight:1.4}}>{err}</div>}
-          <button className="btn-primary" disabled={busy} style={{marginTop:4}}>
-            {busy ? 'Please wait…' : mode === 'signin' ? 'Sign in' : 'Create account'}
-          </button>
-          <button type="button" className="btn-ghost" onClick={()=>setMode(m=>m==='signin'?'signup':'signin')}>
-            {mode === 'signin' ? 'No account? Sign up' : 'Already have an account'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
+// ── persist ──
+async function save(data){
+  appData = data;
+  if(currentUser) await db.ref('users/'+currentUser.uid).set(data);
 }
 
-/* ── Payday Flow ── */
-function PaydayFlow({ data, onSave }) {
-  const [step, setStep] = useState(0); // 0=income, 1=split, 2=spent, 3=done
-  const [income, setIncome] = useState('');
-  const [spent, setSpent] = useState('');
-  const incomeNum = parseFloat(income) || 0;
-  const spentNum = parseFloat(spent) || 0;
-  const hasCC = data.balances.creditCard > 0;
+// ── screens ──
+function authScreen(){
+  let mode = 'signin';
+  const wrap = el('div',{class:'screen',style:{justifyContent:'center'}});
+  const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',minHeight:'100dvh'}});
+  
+  const heading = el('div',{style:{marginBottom:'40px'}},
+    el('div',{style:{fontSize:'13px',letterSpacing:'3px',textTransform:'uppercase',color:'var(--text3)',marginBottom:'8px'}},'Your money'),
+    el('div',{style:{fontSize:'36px',fontWeight:'700',lineHeight:'1.1'}},'Financial Freedom')
+  );
 
-  const split = useMemo(() => {
-    if (!incomeNum) return null;
-    if (hasCC) {
-      return {
-        florasii: incomeNum * 0.50,
-        spending: incomeNum * 0.25,
-        creditCard: incomeNum * 0.25,
-      };
+  const emailInput = el('input',{type:'email',placeholder:'Email',autocomplete:'email',required:true});
+  const passInput = el('input',{type:'password',placeholder:'Password',autocomplete:'current-password',required:true,minlength:'6'});
+  const errDiv = el('div',{class:'error-msg'});
+  const submitBtn = el('button',{class:'btn-primary'},'Sign in');
+  const toggleBtn = el('button',{class:'btn-ghost',type:'button'},'No account? Sign up');
+
+  submitBtn.addEventListener('click', async()=>{
+    const email = emailInput.value.trim();
+    const pass = passInput.value;
+    if(!email||!pass) return;
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Please wait…';
+    errDiv.textContent = '';
+    try{
+      if(mode==='signin') await auth.signInWithEmailAndPassword(email,pass);
+      else await auth.createUserWithEmailAndPassword(email,pass);
+    }catch(e){
+      errDiv.textContent = e.message;
+      submitBtn.disabled = false;
+      submitBtn.textContent = mode==='signin'?'Sign in':'Create account';
     }
-    return {
-      florasii: incomeNum * 0.75,
-      spending: incomeNum * 0.25,
-      creditCard: 0,
-    };
-  }, [incomeNum, hasCC]);
+  });
 
-  function confirm() {
-    const newBalances = { ...data.balances };
-    newBalances.current = newBalances.current + split.spending - spentNum;
-    newBalances.florasii = newBalances.florasii + split.florasii;
-    if (split.creditCard) {
-      newBalances.creditCard = Math.max(0, newBalances.creditCard - split.creditCard);
+  toggleBtn.addEventListener('click',()=>{
+    mode = mode==='signin'?'signup':'signin';
+    submitBtn.textContent = mode==='signin'?'Sign in':'Create account';
+    toggleBtn.textContent = mode==='signin'?'No account? Sign up':'Already have an account';
+  });
+
+  const form = el('div',{style:{display:'flex',flexDirection:'column',gap:'12px'}},
+    emailInput, passInput, errDiv, submitBtn, toggleBtn
+  );
+  content.append(heading, form);
+  wrap.append(content);
+  return wrap;
+}
+
+function paydayFlow(){
+  let step = 0;
+  let income = 0;
+  let spent = 0;
+  let split = null;
+  const wrap = el('div',{class:'screen'});
+
+  function calcSplit(inc){
+    const hasCC = appData.balances.creditCard > 0;
+    if(hasCC) return {florasii:inc*0.50, spending:inc*0.25, creditCard:inc*0.25};
+    return {florasii:inc*0.75, spending:inc*0.25, creditCard:0};
+  }
+
+  function show(){
+    wrap.innerHTML='';
+    const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1'}});
+
+    if(step===0){
+      const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
+      const btn = el('button',{class:'btn-primary'},'See my split →');
+      btn.disabled = true;
+      inp.addEventListener('input',()=>{ btn.disabled=!parseFloat(inp.value); });
+      btn.addEventListener('click',()=>{ income=parseFloat(inp.value)||0; split=calcSplit(income); step=1; show(); });
+      content.append(
+        el('div',{class:'step-num'},'Step 1 of 3'),
+        el('div',{class:'step-title'},'You got paid 💰'),
+        el('div',{class:'step-sub'},'How much landed in your account?'),
+        el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
+        appData.balances.creditCard>0 ? el('div',{class:'info-box',style:{background:'var(--red-dim)',color:'var(--red)',marginBottom:'16px'}},
+          'Credit card balance: '+fmt(appData.balances.creditCard)+' — split will be 50/25/25 this payday.') : el('span'),
+        btn
+      );
     }
-    const newPaycheck = {
-      id: uid(),
-      date: new Date().toISOString(),
-      income: incomeNum,
-      spent: spentNum,
-      split,
+
+    if(step===1){
+      const subTotal = appData.subscriptions.reduce((s,x)=>s+x.amount,0);
+      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
+      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done, what did I spend? →');
+      backBtn.addEventListener('click',()=>{step=0;show();});
+      nextBtn.addEventListener('click',()=>{step=2;show();});
+
+      const instructions = [
+        el('div',{class:'instruction'},
+          el('div',{}, el('div',{class:'instruction-label'},'→ Florasii Fund'), el('div',{class:'instruction-action'},'Transfer to savings')),
+          el('div',{class:'instruction-amount'},fmt(split.florasii))
+        )
+      ];
+      if(split.creditCard>0){
+        const cc = el('div',{class:'instruction',style:{borderLeftColor:'var(--red)'}},
+          el('div',{}, el('div',{class:'instruction-label'},'→ Credit Card'), el('div',{class:'instruction-action'},'Pay off balance')),
+          el('div',{class:'instruction-amount',style:{color:'var(--red)'}},fmt(split.creditCard))
+        );
+        instructions.push(cc);
+      }
+      instructions.push(
+        el('div',{class:'instruction',style:{borderLeftColor:'var(--amber)'}},
+          el('div',{}, el('div',{class:'instruction-label'},'→ Daily Spending'), el('div',{class:'instruction-action'},'Keep in current account')),
+          el('div',{class:'instruction-amount',style:{color:'var(--amber)'}},fmt(split.spending))
+        )
+      );
+
+      content.style.justifyContent='flex-start';
+      content.append(
+        el('div',{class:'step-num'},'Step 2 of 3'),
+        el('div',{class:'step-title'},'Here\'s the plan'),
+        el('div',{class:'step-sub'},'Move these amounts now, before you spend anything.'),
+        ...instructions,
+        el('div',{class:'info-box',style:{background:'var(--surface2)',color:'var(--text2)',margin:'16px 0'}},
+          'Total: '+fmt(income)+' · Subscriptions ~'+fmt(subTotal)+'/mo come out of your spending pot.'),
+        el('div',{class:'row'}, backBtn, nextBtn)
+      );
+    }
+
+    if(step===2){
+      const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
+      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
+      const confirmBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Confirm & save →');
+      backBtn.addEventListener('click',()=>{step=1;show();});
+      confirmBtn.addEventListener('click',async()=>{
+        spent = parseFloat(inp.value)||0;
+        const nb = {...appData.balances};
+        nb.current = nb.current + split.spending - spent;
+        nb.florasii = nb.florasii + split.florasii;
+        if(split.creditCard) nb.creditCard = Math.max(0, nb.creditCard - split.creditCard);
+        const newPay = {id:uid(),date:new Date().toISOString(),income,spent,split};
+        await save({...appData, balances:nb, paychecks:[newPay,...(appData.paychecks||[])]});
+        step=3; show();
+      });
+      content.append(
+        el('div',{class:'step-num'},'Step 3 of 3'),
+        el('div',{class:'step-title'},'What did you spend?'),
+        el('div',{class:'step-sub'},'Since your last payday — not including subscriptions.'),
+        el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
+        el('div',{class:'row'}, backBtn, confirmBtn)
+      );
+    }
+
+    if(step===3){
+      content.style.textAlign='center';
+      const doneBtn = el('button',{class:'btn-primary'},'Back to overview');
+      doneBtn.addEventListener('click',()=>mainScreen());
+      content.append(
+        el('div',{class:'done-icon'},
+          el('svg',{width:'36',height:'36',viewBox:'0 0 24 24',fill:'none',stroke:'var(--green)','stroke-width':'2.5','stroke-linecap':'round','stroke-linejoin':'round'},
+            el('path',{d:'M20 6L9 17l-5-5'})
+          )
+        ),
+        el('div',{style:{fontSize:'26px',fontWeight:'700',marginBottom:'8px'}},'All sorted 🎉'),
+        el('div',{style:{fontSize:'14px',color:'var(--text2)',marginBottom:'40px',lineHeight:'1.6'}},
+          fmt(split.florasii)+' moved to Florasii. Your balances are updated.'),
+        doneBtn
+      );
+    }
+
+    wrap.append(content);
+  }
+  show();
+  return wrap;
+}
+
+function overviewScreen(){
+  const {balances,paychecks,subscriptions} = appData;
+  const subTotal = subscriptions.reduce((s,x)=>s+x.amount,0);
+  const recent = (paychecks||[]).slice(0,5);
+  const totalInc = (paychecks||[]).reduce((s,p)=>s+p.income,0);
+  const pct = Math.min(100,Math.round(balances.florasii/15000*100));
+
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  content.append(
+    el('div',{class:'section-hdr'},'Balances'),
+    el('div',{class:'card'},
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Current Account'),
+        el('div',{class:'balance-value',style:{color:balances.current<0?'var(--red)':'var(--text)'}},fmt(balances.current))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Florasii Fund'),
+        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmt(balances.florasii))
+      ),
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Personal Savings'),
+        el('div',{class:'balance-value'},fmt(balances.personalSavings))
+      ),
+      ...(balances.creditCard>0?[el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Credit Card (owed)'),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(balances.creditCard))
+      )]:[] )
+    ),
+    el('div',{class:'section-hdr'},'Florasii Progress'),
+    el('div',{class:'card'},
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'8px'}},
+        el('div',{},
+          el('div',{style:{fontSize:'28px',fontWeight:'700',fontFamily:"'Space Mono',monospace",color:'var(--green)'}},fmt(balances.florasii)),
+          el('div',{style:{fontSize:'13px',color:'var(--text2)',marginTop:'2px'}},'of £15,000 goal')
+        ),
+        el('div',{style:{fontSize:'22px',fontWeight:'700',color:'var(--text2)'}},pct+'%')
+      ),
+      el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:pct+'%'}}))
+    ),
+    el('div',{class:'section-hdr'},'Subscriptions · '+fmt(subTotal)+'/mo'),
+    el('div',{class:'card'},
+      ...subscriptions.map(s=>
+        el('div',{class:'sub-item'},
+          el('div',{style:{fontSize:'14px'}},s.name),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount))
+        )
+      ),
+      el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'14px',marginTop:'4px'}},
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},'Total / month'),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700',color:'var(--amber)'}},fmt(subTotal))
+      )
+    )
+  );
+
+  if(recent.length>0){
+    content.append(el('div',{class:'section-hdr'},'Recent Paychecks'));
+    for(const p of recent){
+      content.append(el('div',{class:'history-item'},
+        el('div',{},
+          el('div',{style:{fontWeight:'600'}},fmt(p.income)),
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},new Date(p.date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}))
+        ),
+        el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontSize:'13px',color:'var(--green)'}},'+'+fmt(p.split.florasii)+' Florasii'),
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},'spent '+fmt(p.spent))
+        )
+      ));
+    }
+    content.append(el('div',{style:{textAlign:'center',marginTop:'8px',fontSize:'13px',color:'var(--text3)'}},
+      'Total tracked: '+fmt(totalInc)+' across '+paychecks.length+' paychecks'));
+  }
+  return content;
+}
+
+function settingsScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  let subs = [...appData.subscriptions];
+
+  function renderSubs(){
+    subList.innerHTML='';
+    for(const s of subs){
+      const row = el('div',{class:'sub-item'},
+        el('div',{style:{fontSize:'14px'}},s.name),
+        el('div',{style:{display:'flex',alignItems:'center',gap:'12px'}},
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount)),
+          el('button',{style:{background:'none',color:'var(--red)',padding:'0',fontSize:'18px',lineHeight:'1'}},
+            '×',
+            'onclick', ()=>{subs=subs.filter(x=>x.id!==s.id);renderSubs();}
+          )
+        )
+      );
+      // fix event
+      row.querySelector('button').addEventListener('click',()=>{subs=subs.filter(x=>x.id!==s.id);renderSubs();});
+      subList.append(row);
+    }
+  }
+
+  const curInput = el('input',{inputmode:'decimal',value:String(appData.balances.current)});
+  const florInput = el('input',{inputmode:'decimal',value:String(appData.balances.florasii)});
+  const savInput = el('input',{inputmode:'decimal',value:String(appData.balances.personalSavings)});
+  const ccInput = el('input',{inputmode:'decimal',value:String(appData.balances.creditCard)});
+  const saveBalBtn = el('button',{class:'btn-primary',style:{marginTop:'8px'}},'Save balances');
+  saveBalBtn.addEventListener('click',async()=>{
+    const nb = {
+      current:parseFloat(curInput.value)||0,
+      florasii:parseFloat(florInput.value)||0,
+      personalSavings:parseFloat(savInput.value)||0,
+      creditCard:parseFloat(ccInput.value)||0,
     };
-    onSave({
-      ...data,
-      balances: newBalances,
-      paychecks: [newPaycheck, ...(data.paychecks || [])],
-    });
-    setStep(3);
-  }
+    await save({...appData,balances:nb,subscriptions:subs});
+    saveBalBtn.textContent='Saved ✓';
+    setTimeout(()=>saveBalBtn.textContent='Save balances',2000);
+  });
 
-  function reset() { setStep(0); setIncome(''); setSpent(''); }
+  const subList = el('div');
+  renderSubs();
 
-  if (step === 0) return (
-    <div className="screen">
-      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1}}>
-        <div className="step-number">Step 1 of 3</div>
-        <div className="step-title">You got paid 💰</div>
-        <div className="step-sub">How much landed in your account?</div>
-        <div className="big-input-wrap">
-          <span className="currency">£</span>
-          <input className="big-input" inputMode="decimal" placeholder="0.00" value={income} onChange={e=>setIncome(e.target.value)} autoFocus/>
-        </div>
-        {data.balances.creditCard > 0 && (
-          <div style={{background:'var(--red-dim)',borderRadius:12,padding:'12px 14px',marginBottom:20,fontSize:13,color:'var(--red)',lineHeight:1.5}}>
-            Credit card balance: {fmt(data.balances.creditCard)} — split will be 50/25/25 this payday.
-          </div>
-        )}
-        <button className="btn-primary" disabled={!incomeNum} onClick={()=>setStep(1)}>See my split →</button>
-      </div>
-    </div>
+  const newName = el('input',{placeholder:'Name',style:{flex:'2'}});
+  const newAmt = el('input',{placeholder:'£',inputmode:'decimal',style:{flex:'1'}});
+  const addBtn = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'12px',padding:'0 16px',fontWeight:'700',whiteSpace:'nowrap'}},'Add');
+  addBtn.addEventListener('click',()=>{
+    if(!newName.value||!newAmt.value) return;
+    subs.push({id:uid(),name:newName.value.trim(),amount:parseFloat(newAmt.value)||0});
+    newName.value=''; newAmt.value='';
+    renderSubs();
+  });
+  const saveSubBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Save subscriptions');
+  saveSubBtn.addEventListener('click',async()=>{
+    await save({...appData,subscriptions:subs});
+    saveSubBtn.textContent='Saved ✓';
+    setTimeout(()=>saveSubBtn.textContent='Save subscriptions',2000);
+  });
+
+  const signOutBtn = el('button',{class:'btn-ghost',style:{marginTop:'32px'}},'Sign out');
+  signOutBtn.addEventListener('click',()=>auth.signOut());
+
+  const mkLabel = txt => el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'6px',letterSpacing:'0.5px'}},txt);
+
+  content.append(
+    el('div',{class:'section-hdr'},'Update Balances'),
+    el('div',{class:'card'},
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Current Account (£)'), curInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Florasii Fund (£)'), florInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Personal Savings (£)'), savInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Credit Card Owed (£)'), ccInput),
+      saveBalBtn
+    ),
+    el('div',{class:'section-hdr'},'Subscriptions'),
+    el('div',{class:'card'},
+      subList,
+      el('div',{style:{display:'flex',gap:'8px',marginTop:'14px'}}, newName, newAmt, addBtn),
+      saveSubBtn
+    ),
+    signOutBtn
   );
-
-  if (step === 1) return (
-    <div className="screen">
-      <div className="content">
-        <div className="step-number">Step 2 of 3</div>
-        <div className="step-title">Here's the plan</div>
-        <div className="step-sub">Move these amounts now, before you spend anything.</div>
-
-        <div className="instruction">
-          <div>
-            <div className="instruction-label">→ Florasii Fund</div>
-            <div className="instruction-action">Transfer to savings</div>
-          </div>
-          <div className="instruction-amount">{fmt(split.florasii)}</div>
-        </div>
-
-        {split.creditCard > 0 && (
-          <div className="instruction red">
-            <div>
-              <div className="instruction-label">→ Credit Card</div>
-              <div className="instruction-action">Pay off balance</div>
-            </div>
-            <div className="instruction-amount">{fmt(split.creditCard)}</div>
-          </div>
-        )}
-
-        <div className="instruction amber">
-          <div>
-            <div className="instruction-label">→ Daily Spending</div>
-            <div className="instruction-action">Keep in current account</div>
-          </div>
-          <div className="instruction-amount">{fmt(split.spending)}</div>
-        </div>
-
-        <div style={{background:'var(--surface2)',borderRadius:12,padding:'12px 14px',margin:'20px 0',fontSize:13,color:'var(--text2)',lineHeight:1.6}}>
-          Total: {fmt(incomeNum)} · Subscriptions this month cost ~{fmt(data.subscriptions.reduce((s,x)=>s+x.amount,0))} — that comes out of your spending pot.
-        </div>
-
-        <div style={{display:'flex',gap:10}}>
-          <button className="btn-ghost" style={{flex:1}} onClick={()=>setStep(0)}>← Back</button>
-          <button className="btn-primary" style={{flex:2}} onClick={()=>setStep(2)}>Done, what did I spend? →</button>
-        </div>
-      </div>
-    </div>
-  );
-
-  if (step === 2) return (
-    <div className="screen">
-      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1}}>
-        <div className="step-number">Step 3 of 3</div>
-        <div className="step-title">What did you spend?</div>
-        <div className="step-sub">Since your last payday — not including subscriptions, those are tracked separately.</div>
-        <div className="big-input-wrap">
-          <span className="currency">£</span>
-          <input className="big-input" inputMode="decimal" placeholder="0.00" value={spent} onChange={e=>setSpent(e.target.value)} autoFocus/>
-        </div>
-        <div style={{display:'flex',gap:10}}>
-          <button className="btn-ghost" style={{flex:1}} onClick={()=>setStep(1)}>← Back</button>
-          <button className="btn-primary" style={{flex:2}} onClick={confirm}>Confirm & save →</button>
-        </div>
-      </div>
-    </div>
-  );
-
-  if (step === 3) return (
-    <div className="screen">
-      <div className="content" style={{display:'flex',flexDirection:'column',justifyContent:'center',flex:1,textAlign:'center'}}>
-        <div className="done-icon"><CheckIcon/></div>
-        <div style={{fontSize:26,fontWeight:700,marginBottom:8}}>All sorted 🎉</div>
-        <div style={{fontSize:14,color:'var(--text2)',marginBottom:40,lineHeight:1.6}}>
-          {fmt(split.florasii)} moved to Florasii.<br/>
-          Your balances are updated.
-        </div>
-        <button className="btn-primary" onClick={reset}>Log another paycheck</button>
-      </div>
-    </div>
-  );
+  return content;
 }
 
-/* ── Overview ── */
-function Overview({ data }) {
-  const { balances, paychecks, goals, subscriptions } = data;
-  const subTotal = subscriptions.reduce((s, x) => s + x.amount, 0);
-  const recentPays = (paychecks || []).slice(0, 5);
-  const totalIncome = (paychecks || []).reduce((s, p) => s + p.income, 0);
+function mainScreen(startTab='home'){
+  const wrap = el('div',{class:'screen'});
+  const body = el('div',{style:{flex:'1',overflowY:'auto'}});
+  let tab = startTab;
 
-  return (
-    <div className="content" style={{paddingBottom:100}}>
-      <div className="section-header">Balances</div>
-      <div className="card">
-        <div className="balance-row">
-          <div>
-            <div className="balance-label">Current Account</div>
-          </div>
-          <div className="balance-value" style={{color: balances.current < 0 ? 'var(--red)' : 'var(--text)'}}>{fmt(balances.current)}</div>
-        </div>
-        <div className="balance-row">
-          <div className="balance-label">Florasii Fund</div>
-          <div className="balance-value" style={{color:'var(--green)'}}>{fmt(balances.florasii)}</div>
-        </div>
-        <div className="balance-row">
-          <div className="balance-label">Personal Savings</div>
-          <div className="balance-value">{fmt(balances.personalSavings)}</div>
-        </div>
-        {balances.creditCard > 0 && (
-          <div className="balance-row">
-            <div className="balance-label">Credit Card (owed)</div>
-            <div className="balance-value" style={{color:'var(--red)'}}>{fmt(balances.creditCard)}</div>
-          </div>
-        )}
-      </div>
+  const svgHome = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>';
+  const svgGear = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>';
+  const svgPlus = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
-      <div className="section-header">Florasii Progress</div>
-      <div className="card">
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:8}}>
-          <div>
-            <div style={{fontSize:28,fontWeight:700,fontFamily:'Space Mono',color:'var(--green)'}}>{fmt(balances.florasii)}</div>
-            <div style={{fontSize:13,color:'var(--text2)',marginTop:2}}>of £15,000 goal</div>
-          </div>
-          <div style={{fontSize:22,fontWeight:700,color:'var(--text2)'}}>{Math.round(balances.florasii/15000*100)}%</div>
-        </div>
-        <div className="prog-wrap">
-          <div className="prog-fill" style={{width:`${Math.min(100,balances.florasii/15000*100)}%`}}/>
-        </div>
-      </div>
+  const homeBtn = el('button',{class:'nav-btn active'});
+  homeBtn.innerHTML = svgHome + '<span>Overview</span>';
+  const settBtn = el('button',{class:'nav-btn'});
+  settBtn.innerHTML = svgGear + '<span>Settings</span>';
+  const payBtn = el('button',{class:'nav-btn',style:{color:'var(--green)'}});
+  const payCircle = el('div',{style:{width:'44px',height:'44px',background:'var(--green)',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginTop:'-20px',boxShadow:'0 0 20px #00E67640'}});
+  payCircle.innerHTML = svgPlus;
+  payBtn.append(payCircle, el('span',{style:{marginTop:'4px'}},'Payday'));
 
-      <div className="section-header">Subscriptions · {fmt(subTotal)}/mo</div>
-      <div className="card">
-        {data.subscriptions.map(s => (
-          <div className="sub-item" key={s.id}>
-            <div className="sub-name">{s.name}</div>
-            <div className="sub-amount">{fmt(s.amount)}</div>
-          </div>
-        ))}
-        <div style={{display:'flex',justifyContent:'space-between',paddingTop:14,marginTop:4}}>
-          <div style={{fontSize:13,color:'var(--text2)',fontWeight:600}}>Total / month</div>
-          <div style={{fontFamily:'Space Mono',fontSize:14,fontWeight:700,color:'var(--amber)'}}>{fmt(subTotal)}</div>
-        </div>
-      </div>
-
-      {recentPays.length > 0 && <>
-        <div className="section-header">Recent Paychecks</div>
-        {recentPays.map(p => (
-          <div className="history-item" key={p.id}>
-            <div>
-              <div style={{fontWeight:600}}>{fmt(p.income)}</div>
-              <div className="history-date">{new Date(p.date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})}</div>
-            </div>
-            <div style={{textAlign:'right'}}>
-              <div style={{fontSize:13,color:'var(--green)'}}>+{fmt(p.split.florasii)} Florasii</div>
-              <div style={{fontSize:12,color:'var(--text3)',marginTop:2}}>spent {fmt(p.spent)}</div>
-            </div>
-          </div>
-        ))}
-        <div style={{textAlign:'center',marginTop:8,fontSize:13,color:'var(--text3)'}}>
-          Total tracked: {fmt(totalIncome)} across {paychecks.length} paychecks
-        </div>
-      </>}
-    </div>
-  );
-}
-
-/* ── Settings ── */
-function Settings({ data, onSave, onSignOut }) {
-  const [balances, setBalances] = useState(data.balances);
-  const [subs, setSubs] = useState(data.subscriptions);
-  const [newSub, setNewSub] = useState({ name: '', amount: '' });
-
-  function saveAll() {
-    onSave({ ...data, balances: { current: parseFloat(balances.current)||0, creditCard: parseFloat(balances.creditCard)||0, florasii: parseFloat(balances.florasii)||0, personalSavings: parseFloat(balances.personalSavings)||0 }, subscriptions: subs });
+  function setTab(t){
+    tab=t;
+    homeBtn.className='nav-btn'+(t==='home'?' active':'');
+    settBtn.className='nav-btn'+(t==='settings'?' active':'');
+    body.innerHTML='';
+    const header = el('div',{style:{padding:'max(20px,env(safe-area-inset-top)) 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0'}});
+    if(t==='home'){
+      header.append(
+        el('div',{},
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Your money'),
+          el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Financial Freedom')
+        ),
+        el('button',{style:{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:'12px',fontWeight:'700',fontSize:'14px'}},
+          'I got paid',
+          'onclick', ()=>render(paydayFlow())
+        )
+      );
+      header.querySelector('button').addEventListener('click',()=>render(paydayFlow()));
+      body.append(header, overviewScreen());
+    } else {
+      header.append(
+        el('div',{},
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Manage'),
+          el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Settings')
+        )
+      );
+      body.append(header, settingsScreen());
+    }
   }
 
-  function addSub(e) {
-    e.preventDefault();
-    if (!newSub.name || !newSub.amount) return;
-    setSubs([...subs, { id: uid(), name: newSub.name, amount: parseFloat(newSub.amount)||0 }]);
-    setNewSub({ name: '', amount: '' });
-  }
+  homeBtn.addEventListener('click',()=>setTab('home'));
+  settBtn.addEventListener('click',()=>setTab('settings'));
+  payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const fld = (label, val, key) => (
-    <div style={{marginBottom:12}}>
-      <div style={{fontSize:12,color:'var(--text3)',marginBottom:6,letterSpacing:0.5}}>{label}</div>
-      <input inputMode="decimal" value={val} onChange={e=>setBalances({...balances,[key]:e.target.value})} />
-    </div>
-  );
-
-  return (
-    <div className="content" style={{paddingBottom:100}}>
-      <div className="section-header">Update Balances</div>
-      <div className="card">
-        {fld('Current Account (£)', balances.current, 'current')}
-        {fld('Florasii Fund (£)', balances.florasii, 'florasii')}
-        {fld('Personal Savings (£)', balances.personalSavings, 'personalSavings')}
-        {fld('Credit Card Owed (£)', balances.creditCard, 'creditCard')}
-        <button className="btn-primary" onClick={saveAll} style={{marginTop:8}}>Save balances</button>
-      </div>
-
-      <div className="section-header">Subscriptions</div>
-      <div className="card">
-        {subs.map(s => (
-          <div className="sub-item" key={s.id}>
-            <div className="sub-name">{s.name}</div>
-            <div style={{display:'flex',alignItems:'center',gap:12}}>
-              <div className="sub-amount">{fmt(s.amount)}</div>
-              <button style={{background:'none',color:'var(--red)',padding:0}} onClick={()=>setSubs(subs.filter(x=>x.id!==s.id))}><TrashIcon/></button>
-            </div>
-          </div>
-        ))}
-        <form onSubmit={addSub} style={{display:'flex',gap:8,marginTop:14}}>
-          <input placeholder="Name" value={newSub.name} onChange={e=>setNewSub({...newSub,name:e.target.value})} style={{flex:2}}/>
-          <input placeholder="£" inputMode="decimal" value={newSub.amount} onChange={e=>setNewSub({...newSub,amount:e.target.value})} style={{flex:1}}/>
-          <button type="submit" style={{background:'var(--green)',color:'#000',borderRadius:12,padding:'0 16px',fontWeight:700,whiteSpace:'nowrap'}}>Add</button>
-        </form>
-        <button className="btn-ghost" style={{marginTop:12}} onClick={saveAll}>Save subscriptions</button>
-      </div>
-
-      <div style={{marginTop:32}}>
-        <button className="btn-ghost" onClick={onSignOut}>Sign out</button>
-      </div>
-    </div>
-  );
+  const nav = el('div',{class:'nav'}, homeBtn, payBtn, settBtn);
+  wrap.append(body, nav);
+  setTab(startTab);
+  render(wrap);
 }
 
-/* ── Main App ── */
-function App() {
-  const [user, setUser] = useState(undefined);
-  const [data, setData] = useState(null);
-  const [tab, setTab] = useState('home');
-  const [payday, setPayday] = useState(false);
-
-  useEffect(() => {
-    return auth.onAuthStateChanged(u => setUser(u));
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    db.ref(`users/${user.uid}`).once('value').then(snap => {
-      const val = snap.val();
-      setData(val ? { ...DEFAULT_DATA, ...val, balances: { ...DEFAULT_DATA.balances, ...(val.balances||{}) }, subscriptions: val.subscriptions || DEFAULT_DATA.subscriptions } : DEFAULT_DATA);
-    });
-  }, [user]);
-
-  const persist = useCallback(async (next) => {
-    if (!user) return;
-    await db.ref(`users/${user.uid}`).set(next);
-    setData(next);
-  }, [user]);
-
-  if (user === undefined || (user && !data)) {
-    return <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:14}}>Loading…</div>;
-  }
-  if (!user) return <AuthScreen />;
-
-  if (payday) return (
-    <PaydayFlow data={data} onSave={next => { persist(next); setPayday(false); setTab('home'); }} />
-  );
-
-  const tabs = [
-    { id: 'home', label: 'Overview', icon: <HomeIcon/> },
-    { id: 'settings', label: 'Settings', icon: <SettingsIcon/> },
-  ];
-
-  return (
-    <div className="screen">
-      <div style={{flex:1,overflowY:'auto'}}>
-        <div style={{paddingTop:'max(20px,env(safe-area-inset-top))'}}>
-          {tab === 'home' && (
-            <>
-              <div style={{padding:'20px 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div>
-                  <div style={{fontSize:12,color:'var(--text3)',letterSpacing:2,textTransform:'uppercase'}}>Your money</div>
-                  <div style={{fontSize:22,fontWeight:700,marginTop:2}}>Financial Freedom</div>
-                </div>
-                <button onClick={()=>setPayday(true)} style={{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:12,fontWeight:700,fontSize:14}}>
-                  I got paid
-                </button>
-              </div>
-              <Overview data={data}/>
-            </>
-          )}
-          {tab === 'settings' && (
-            <>
-              <div style={{padding:'20px 20px 0'}}>
-                <div style={{fontSize:12,color:'var(--text3)',letterSpacing:2,textTransform:'uppercase'}}>Manage</div>
-                <div style={{fontSize:22,fontWeight:700,marginTop:2}}>Settings</div>
-              </div>
-              <Settings data={data} onSave={persist} onSignOut={()=>auth.signOut()} />
-            </>
-          )}
-        </div>
-      </div>
-      <nav className="nav">
-        {tabs.map(t => (
-          <button key={t.id} className={`nav-btn${tab===t.id?' active':''}`} onClick={()=>setTab(t.id)}>
-            {t.icon}
-            <span>{t.label}</span>
-          </button>
-        ))}
-        <button className="nav-btn" style={{color:'var(--green)'}} onClick={()=>setPayday(true)}>
-          <div style={{width:44,height:44,background:'var(--green)',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginTop:-20,boxShadow:'0 0 20px #00E67640'}}>
-            <PlusIcon/>
-          </div>
-          <span style={{marginTop:4}}>Payday</span>
-        </button>
-      </nav>
-    </div>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+// ── boot ──
+auth.onAuthStateChanged(async user => {
+  currentUser = user;
+  if(!user){ render(authScreen()); return; }
+  render(el('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px'}},'Loading…'));
+  const snap = await db.ref('users/'+user.uid).once('value');
+  const val = snap.val();
+  appData = val ? {...DEFAULT_DATA,...val,balances:{...DEFAULT_DATA.balances,...(val.balances||{})},subscriptions:val.subscriptions||DEFAULT_DATA.subscriptions} : DEFAULT_DATA;
+  mainScreen();
+});
 </script>
 </body>
 </html>
