@@ -267,7 +267,17 @@ function paydayFlow(){
         nb.current = nb.current + split.spending - spent;
         nb.florasii = nb.florasii + split.florasii;
         if(split.creditCard) nb.creditCard = Math.max(0, nb.creditCard - split.creditCard);
-        const newPay = {id:uid(),date:new Date().toISOString(),income,spent,split};
+        const newPay = {
+          id:uid(),
+          date:new Date().toISOString(),
+          income,spent,split,
+          snapshot:{
+            florasii: nb.florasii,
+            current: nb.current,
+            creditCard: nb.creditCard,
+            personalSavings: nb.personalSavings
+          }
+        };
         await save({...appData, balances:nb, paychecks:[newPay,...(appData.paychecks||[])]});
         step=3; show();
       });
@@ -464,7 +474,7 @@ function settingsScreen(){
 }
 
 function trendsScreen(){
-  const paychecks = appData.paychecks || [];
+  const paychecks = (appData.paychecks || []).filter(p => p.snapshot);
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
   if(paychecks.length < 2){
@@ -481,138 +491,114 @@ function trendsScreen(){
 
   const sorted = [...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
 
-  function makeGraph(label, color, values, formatter){
+  function makeGraph(label, color, values, dates){
     const W = Math.min(window.innerWidth - 40, 440);
     const H = 160;
-    const PAD = {top:10, right:16, bottom:28, left:52};
+    const PAD = {top:10, right:16, bottom:28, left:56};
     const iW = W - PAD.left - PAD.right;
     const iH = H - PAD.top - PAD.bottom;
-
     const min = Math.min(...values);
     const max = Math.max(...values);
     const range = max - min || 1;
-
     const xStep = iW / (values.length - 1);
     const yScale = v => iH - ((v - min) / range) * iH;
+    const pts = values.map((v,i) => [PAD.left + i*xStep, PAD.top + yScale(v)]);
+    const polyline = pts.map(p=>p.join(',')).join(' ');
+    const fillPath = `M${pts[0][0]},${pts[0][1]} L${pts.map(p=>p.join(',')).join(' L')} L${pts[pts.length-1][0]},${PAD.top+iH} L${pts[0][0]},${PAD.top+iH} Z`;
 
-    const points = values.map((v,i) => `${PAD.left + i * xStep},${PAD.top + yScale(v)}`);
-    const polyline = points.join(' ');
-    const firstP = points[0].split(',');
-    const lastP = points[points.length-1].split(',');
-    const fillPath = `M${firstP[0]},${parseFloat(firstP[1])} L${polyline.replace(/ /g,' L')} L${lastP[0]},${PAD.top+iH} L${firstP[0]},${PAD.top+iH} Z`;
+    const fmtK = v => {
+      const abs = Math.abs(v);
+      if(abs >= 1000) return (v<0?'-':'')+'£'+(abs/1000).toFixed(1)+'k';
+      return (v<0?'-£':'£')+Math.round(abs);
+    };
 
-    // y axis labels
-    const yLabels = [min, min+range*0.5, max].map((v,i) => {
+    const yLabels = [min, min+range*0.5, max].map(v => {
       const y = PAD.top + yScale(v);
-      return `<text x="${PAD.left - 6}" y="${y+4}" text-anchor="end" fill="#555" font-size="10" font-family="Space Mono,monospace">${formatter(v)}</text>`;
+      return `<text x="${PAD.left-6}" y="${y+4}" text-anchor="end" fill="#555" font-size="10" font-family="Space Mono,monospace">${fmtK(v)}</text>`;
     }).join('');
 
-    // x axis labels (dates)
-    const xLabels = sorted.map((p,i) => {
-      const x = PAD.left + i * xStep;
-      const d = new Date(p.date);
-      const lbl = d.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
-      if(sorted.length > 5 && i !== 0 && i !== sorted.length-1 && i % Math.ceil(sorted.length/4) !== 0) return '';
+    const xLabels = dates.map((d,i) => {
+      if(values.length > 6 && i !== 0 && i !== values.length-1 && i % Math.ceil(values.length/5) !== 0) return '';
+      const x = PAD.left + i*xStep;
+      const lbl = new Date(d).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
       return `<text x="${x}" y="${H-4}" text-anchor="middle" fill="#555" font-size="9" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
     }).join('');
 
-    // dots
     const dots = values.map((v,i) => {
-      const x = PAD.left + i * xStep;
-      const y = PAD.top + yScale(v);
-      return `<circle cx="${x}" cy="${y}" r="3" fill="${color}" stroke="var(--bg)" stroke-width="2"/>`;
+      const [x,y] = pts[i];
+      return `<circle cx="${x}" cy="${y}" r="3" fill="${color}" stroke="#0D0D0D" stroke-width="2"/>`;
     }).join('');
 
+    const gradId = 'g'+label.replace(/\W/g,'');
     const svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">
-      <defs>
-        <linearGradient id="grad_${label.replace(/\s/g,'')}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="${color}" stop-opacity="0.3"/>
-          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
-        </linearGradient>
-      </defs>
-      <path d="${fillPath}" fill="url(#grad_${label.replace(/\s/g,'')})" />
+      <defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="${color}" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient></defs>
+      <path d="${fillPath}" fill="url(#${gradId})"/>
       <polyline points="${polyline}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      ${yLabels}
-      ${xLabels}
-      ${dots}
+      ${yLabels}${xLabels}${dots}
     </svg>`;
 
     const wrap = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px'}});
-    wrap.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:12px;font-family:'Space Grotesk',sans-serif">${label}</div>` + svg;
+    wrap.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${color};margin-bottom:12px;font-family:'Space Grotesk',sans-serif">${label}</div>${svg}`;
     return wrap;
   }
 
-  // build data series
-  const florasiiVals = sorted.map(p => {
-    // reconstruct running florasii from initial + splits up to this point
-    return p.split ? p.split.florasii : 0;
-  });
-
-  // running totals
-  let runFlorasii = appData.balances.florasii;
-  const florasiiRunning = [];
-  for(let i = sorted.length-1; i >= 0; i--){
-    runFlorasii -= (sorted[i].split?.florasii || 0);
-    florasiiRunning.unshift(runFlorasii + (sorted[i].split?.florasii || 0));
-  }
-  // recalc properly: start from initial minus all splits, then add back
-  let base = appData.balances.florasii;
-  for(const p of sorted) base -= (p.split?.florasii||0);
-  const florasiiSeries = sorted.map((p,i) => {
-    base += (p.split?.florasii||0);
-    return base;
-  });
-
-  const incomeSeries = sorted.map(p => p.income);
-  const spentSeries = sorted.map(p => p.spent||0);
-
-  const fmtK = v => {
-    const abs = Math.abs(v);
-    if(abs >= 1000) return (v<0?'-':'')+'£'+(abs/1000).toFixed(1)+'k';
-    return (v<0?'-£':'£')+Math.round(abs);
-  };
+  const dates = sorted.map(p => p.date);
+  const florasiiSeries = sorted.map(p => p.snapshot.florasii);
+  const currentSeries = sorted.map(p => p.snapshot.current);
+  const ccSeries = sorted.map(p => p.snapshot.creditCard);
+  const incomeSeries = sorted.filter(p=>p.income>0).map(p => p.income);
+  const incomeDates = sorted.filter(p=>p.income>0).map(p => p.date);
+  const spentSeries = sorted.filter(p=>p.income>0).map(p => p.spent);
 
   content.append(
-    el('div',{class:'section-hdr'},'Florasii Fund growth'),
-    makeGraph('Florasii Fund', 'var(--green)', florasiiSeries, fmtK),
-    el('div',{class:'section-hdr'},'Income per paycheck'),
-    makeGraph('Income', '#64B5F6', incomeSeries, fmtK),
-    el('div',{class:'section-hdr'},'Spending per paycheck'),
-    makeGraph('Spending', 'var(--amber)', spentSeries, fmtK)
+    el('div',{class:'section-hdr'},'Florasii Fund — running balance'),
+    makeGraph('Florasii Fund', 'var(--green)', florasiiSeries, dates),
+    el('div',{class:'section-hdr'},'Current Account — running balance'),
+    makeGraph('Current Account', '#64B5F6', currentSeries, dates),
   );
 
-  // summary stats
+  if(ccSeries.some(v=>v>0)){
+    content.append(
+      el('div',{class:'section-hdr'},'Credit Card — amount owed'),
+      makeGraph('Credit Card', 'var(--red)', ccSeries, dates)
+    );
+  }
+
+  content.append(
+    el('div',{class:'section-hdr'},'Income per paycheck'),
+    makeGraph('Income', 'var(--amber)', incomeSeries, incomeDates),
+    el('div',{class:'section-hdr'},'Spending per paycheck'),
+    makeGraph('Spending', '#CE93D8', spentSeries, incomeDates)
+  );
+
   const totalIncome = sorted.reduce((s,p)=>s+p.income,0);
   const totalSpent = sorted.reduce((s,p)=>s+(p.spent||0),0);
-  const avgIncome = totalIncome / sorted.length;
-  const avgSpent = totalSpent / sorted.length;
+  const realPays = sorted.filter(p=>p.income>0);
 
   content.append(
     el('div',{class:'section-hdr'},'Summary'),
     el('div',{class:'card'},
       el('div',{class:'balance-row'},
         el('div',{class:'balance-label'},'Total income tracked'),
-        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmtK(totalIncome))
+        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmt(totalIncome))
       ),
       el('div',{class:'balance-row'},
         el('div',{class:'balance-label'},'Total spent'),
-        el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmtK(totalSpent))
+        el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmt(totalSpent))
       ),
       el('div',{class:'balance-row'},
         el('div',{class:'balance-label'},'Avg income / paycheck'),
-        el('div',{class:'balance-value'},fmtK(avgIncome))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Avg spending / paycheck'),
-        el('div',{class:'balance-value'},fmtK(avgSpent))
+        el('div',{class:'balance-value'},fmt(totalIncome/Math.max(realPays.length,1)))
       ),
       el('div',{class:'balance-row'},
         el('div',{class:'balance-label'},'Paychecks logged'),
-        el('div',{class:'balance-value'},String(sorted.length))
+        el('div',{class:'balance-value'},String(realPays.length))
       )
     )
   );
-
   return content;
 }
 
