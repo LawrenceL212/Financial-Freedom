@@ -85,7 +85,10 @@ const el = (tag, props={}, ...kids) => {
   const e = document.createElement(tag);
   for(const [k,v] of Object.entries(props)){
     if(k==='class') e.className=v;
-    else if(k==='style') Object.assign(e.style,v);
+    else if(k==='style'){
+      if(typeof v === 'string') e.setAttribute('style', v);
+      else Object.assign(e.style, v);
+    }
     else if(k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(),v);
     else e.setAttribute(k,v);
   }
@@ -212,12 +215,12 @@ function paydayFlow(){
     // ── Step 1: enter current Barclays balances ──
     if(step===1){
       content.style.justifyContent='flex-start';
-      const field = 'width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px 14px;font-size:16px;outline:none;font-family:Space Mono,monospace;font-weight:700;';
+      const fieldStyle = {width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'16px',outline:'none',fontFamily:'Space Mono,monospace',fontWeight:'700'};
 
-      const curInp  = el('input',{inputmode:'decimal',placeholder: prev.current >= 0 ? fmt(prev.current) : fmt(prev.current), style:field});
-      const florInp = el('input',{inputmode:'decimal',placeholder:fmt(prev.florasii), style:field});
-      const ccInp   = el('input',{inputmode:'decimal',placeholder:fmt(prev.creditCard), style:field});
-      const savInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.personalSavings), style:field});
+      const curInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.current), style:fieldStyle});
+      const florInp = el('input',{inputmode:'decimal',placeholder:fmt(prev.florasii), style:fieldStyle});
+      const ccInp   = el('input',{inputmode:'decimal',placeholder:fmt(prev.creditCard), style:fieldStyle});
+      const savInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.personalSavings), style:fieldStyle});
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
       const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Calculate →');
