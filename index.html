@@ -744,7 +744,9 @@ function trendsScreen(){
     el('div',{class:'section-hdr'},'Monthly spending'),
     makeBarChart('Spending by month','#CE93D8',monthKeys.map(k=>monthlySpend[k]),monthKeys),
     el('div',{class:'section-hdr'},'Income per paycheck'),
-    makeGraph('Income per paycheck','var(--amber)',incomeSeries,incomeDates,true)
+    makeGraph('Income per paycheck','var(--amber)',incomeSeries,incomeDates,true),
+    el('div',{class:'section-hdr'},'Spending per paycheck'),
+    makeGraph('Spending per paycheck','#CE93D8',spentSeries,incomeDates,true),
   );
   // ── Pay consistency score ──
   const consistencyCard = el('div',{class:'card'});
