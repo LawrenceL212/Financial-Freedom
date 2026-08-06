@@ -178,21 +178,14 @@ function authScreen(){
 function paydayFlow(){
   let step = 0;
   let income = 0;
-  let spent = 0;
-  let split = null;
+  let newBalances = {};
+  const prev = {...appData.balances};
   const wrap = el('div',{class:'screen'});
-
-  function calcSplit(inc){
-    const hasCC = appData.balances.creditCard > 0;
-    if(hasCC) return {florasii:inc*0.50, spending:inc*0.25, creditCard:inc*0.25};
-    return {florasii:inc*0.75, spending:inc*0.25, creditCard:0};
-  }
 
   function show(){
     wrap.innerHTML='';
     const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1'}});
 
-    // exit button on all steps except done
     if(step!==3){
       const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'20px',right:'16px'}},'✕ Exit');
       exitBtn.addEventListener('click',()=>mainScreen());
@@ -200,96 +193,154 @@ function paydayFlow(){
       wrap.append(exitBtn);
     }
 
+    // ── Step 0: income ──
     if(step===0){
       const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
-      const btn = el('button',{class:'btn-primary'},'See my split →');
+      const btn = el('button',{class:'btn-primary'},'Next →');
       btn.disabled = true;
       inp.addEventListener('input',()=>{ btn.disabled=!parseFloat(inp.value); });
-      btn.addEventListener('click',()=>{ income=parseFloat(inp.value)||0; split=calcSplit(income); step=1; show(); });
+      btn.addEventListener('click',()=>{ income=parseFloat(inp.value)||0; step=1; show(); });
       content.append(
         el('div',{class:'step-num'},'Step 1 of 3'),
         el('div',{class:'step-title'},'You got paid 💰'),
         el('div',{class:'step-sub'},'How much landed in your account?'),
         el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
-        appData.balances.creditCard>0 ? el('div',{class:'info-box',style:{background:'var(--red-dim)',color:'var(--red)',marginBottom:'16px'}},
-          'Credit card balance: '+fmt(appData.balances.creditCard)+' — split will be 50/25/25 this payday.') : el('span'),
         btn
       );
     }
 
+    // ── Step 1: enter current Barclays balances ──
     if(step===1){
-      const subTotal = appData.subscriptions.reduce((s,x)=>s+x.amount,0);
-      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
-      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done, what did I spend? →');
-      backBtn.addEventListener('click',()=>{step=0;show();});
-      nextBtn.addEventListener('click',()=>{step=2;show();});
-
-      const instructions = [
-        el('div',{class:'instruction'},
-          el('div',{}, el('div',{class:'instruction-label'},'→ Florasii Fund'), el('div',{class:'instruction-action'},'Transfer to savings')),
-          el('div',{class:'instruction-amount'},fmt(split.florasii))
-        )
-      ];
-      if(split.creditCard>0){
-        const cc = el('div',{class:'instruction',style:{borderLeftColor:'var(--red)'}},
-          el('div',{}, el('div',{class:'instruction-label'},'→ Credit Card'), el('div',{class:'instruction-action'},'Pay off balance')),
-          el('div',{class:'instruction-amount',style:{color:'var(--red)'}},fmt(split.creditCard))
-        );
-        instructions.push(cc);
-      }
-      instructions.push(
-        el('div',{class:'instruction',style:{borderLeftColor:'var(--amber)'}},
-          el('div',{}, el('div',{class:'instruction-label'},'→ Daily Spending'), el('div',{class:'instruction-action'},'Keep in current account')),
-          el('div',{class:'instruction-amount',style:{color:'var(--amber)'}},fmt(split.spending))
-        )
-      );
-
       content.style.justifyContent='flex-start';
+      const field = 'width:100%;background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:12px;padding:12px 14px;font-size:16px;outline:none;font-family:Space Mono,monospace;font-weight:700;';
+
+      const curInp  = el('input',{inputmode:'decimal',placeholder: prev.current >= 0 ? fmt(prev.current) : fmt(prev.current), style:field});
+      const florInp = el('input',{inputmode:'decimal',placeholder:fmt(prev.florasii), style:field});
+      const ccInp   = el('input',{inputmode:'decimal',placeholder:fmt(prev.creditCard), style:field});
+      const savInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.personalSavings), style:field});
+
+      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
+      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Calculate →');
+      backBtn.addEventListener('click',()=>{step=0;show();});
+      nextBtn.addEventListener('click',()=>{
+        newBalances = {
+          current:       parseFloat(curInp.value)  ?? prev.current,
+          florasii:      parseFloat(florInp.value) ?? prev.florasii,
+          creditCard:    parseFloat(ccInp.value)   ?? prev.creditCard,
+          personalSavings: parseFloat(savInp.value) ?? prev.personalSavings,
+        };
+        // fill blanks with previous
+        if(isNaN(newBalances.current))         newBalances.current = prev.current;
+        if(isNaN(newBalances.florasii))        newBalances.florasii = prev.florasii;
+        if(isNaN(newBalances.creditCard))      newBalances.creditCard = prev.creditCard;
+        if(isNaN(newBalances.personalSavings)) newBalances.personalSavings = prev.personalSavings;
+        step=2; show();
+      });
+
+      const mkRow = (label, prevVal, inp) => {
+        const row = el('div',{style:{marginBottom:'14px'}});
+        row.append(
+          el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'6px'}},
+            el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},label),
+            el('div',{style:{fontSize:'12px',color:'var(--text3)'}},'was '+fmt(prevVal))
+          ),
+          inp
+        );
+        return row;
+      };
+
       content.append(
         el('div',{class:'step-num'},'Step 2 of 3'),
-        el('div',{class:'step-title'},'Here\'s the plan'),
-        el('div',{class:'step-sub'},'Move these amounts now, before you spend anything.'),
-        ...instructions,
-        el('div',{class:'info-box',style:{background:'var(--surface2)',color:'var(--text2)',margin:'16px 0'}},
-          'Total: '+fmt(income)+' · Subscriptions ~'+fmt(subTotal)+'/mo come out of your spending pot.'),
-        el('div',{class:'row'}, backBtn, nextBtn)
+        el('div',{class:'step-title'},'Open Barclays'),
+        el('div',{class:'step-sub'},'Enter what each account shows right now.'),
+        mkRow('Current Account (after income landed)', prev.current, curInp),
+        mkRow('Florasii Fund', prev.florasii, florInp),
+        mkRow('Credit Card (owed)', prev.creditCard, ccInp),
+        mkRow('Personal Savings', prev.personalSavings, savInp),
+        el('div',{class:'row',style:{marginTop:'8px'}}, backBtn, nextBtn)
       );
     }
 
+    // ── Step 2: show calculated breakdown ──
     if(step===2){
-      const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
-      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
-      const confirmBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Confirm & save →');
+      content.style.justifyContent='flex-start';
+
+      const florasiiChange = newBalances.florasii - prev.florasii;
+      const ccChange = newBalances.creditCard - prev.creditCard;
+      const savingsChange = newBalances.personalSavings - prev.personalSavings;
+      const currentChange = newBalances.current - prev.current;
+      const ccPaid = Math.max(0, -ccChange);
+
+      // Income lands in current first, then you transfer to Florasii + Savings
+      // Whatever remains in current vs before (minus income) is what you kept
+      // Spending = income - what you moved to Florasii - what you moved to Savings - net current increase
+      // If Florasii went DOWN, you withdrew from it (adds to what you had available)
+      // CC growing means you spent on it (adds to spending)
+      const spent = income - florasiiChange - savingsChange - currentChange + Math.max(0, ccChange);
+
+      const changeRow = (label, value, invert) => {
+        const positive = invert ? value < 0 : value > 0;
+        const color = value === 0 ? 'var(--text2)' : positive ? 'var(--green)' : 'var(--red)';
+        const prefix = value > 0 ? '+' : '';
+        return el('div',{style:{display:'flex',justifyContent:'space-between',padding:'10px 0',borderBottom:'1px solid var(--border)'}},
+          el('div',{style:{fontSize:'14px',color:'var(--text2)'}},label),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color}},prefix+fmt(value))
+        );
+      };
+
+      const confirmBtn = el('button',{class:'btn-primary',style:{marginTop:'16px'}},'Save & update balances →');
+      const backBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'← Back');
       backBtn.addEventListener('click',()=>{step=1;show();});
+
       confirmBtn.addEventListener('click',async()=>{
-        spent = parseFloat(inp.value)||0;
-        const nb = {...appData.balances};
-        nb.current = nb.current + split.spending - spent;
-        nb.florasii = nb.florasii + split.florasii;
-        if(split.creditCard) nb.creditCard = Math.max(0, nb.creditCard - split.creditCard);
+        const hasCC = prev.creditCard > 0 || newBalances.creditCard > 0;
+        const split = {
+          florasii: florasiiChange,
+          spending: income * 0.25,
+          creditCard: ccPaid,
+        };
         const newPay = {
-          id:uid(),
-          date:new Date().toISOString(),
-          income,spent,split,
-          snapshot:{
-            florasii: nb.florasii,
-            current: nb.current,
-            creditCard: nb.creditCard,
-            personalSavings: nb.personalSavings
+          id: uid(),
+          date: new Date().toISOString(),
+          income, spent, split,
+          snapshot: {
+            florasii: newBalances.florasii,
+            current: newBalances.current,
+            creditCard: newBalances.creditCard,
+            personalSavings: newBalances.personalSavings,
           }
         };
-        await save({...appData, balances:nb, paychecks:[newPay,...(appData.paychecks||[])]});
+        await save({...appData, balances:newBalances, paychecks:[newPay,...(appData.paychecks||[])]});
         step=3; show();
       });
+
       content.append(
         el('div',{class:'step-num'},'Step 3 of 3'),
-        el('div',{class:'step-title'},'What did you spend?'),
-        el('div',{class:'step-sub'},'Since your last payday — not including subscriptions.'),
-        el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
-        el('div',{class:'row'}, backBtn, confirmBtn)
+        el('div',{class:'step-title'},'Here\'s what happened'),
+        el('div',{class:'step-sub'},'Calculated from your Barclays balances.'),
+        el('div',{class:'card',style:{padding:'4px 16px'}},
+          changeRow('Florasii', florasiiChange, false),
+          changeRow('Current account', currentChange, false),
+          changeRow('Credit card', ccChange, true),
+          changeRow('Personal savings', savingsChange, false),
+          el('div',{style:{display:'flex',justifyContent:'space-between',padding:'10px 0'}},
+            el('div',{style:{fontSize:'14px',color:'var(--text2)'}},'Estimated spending'),
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--amber)'}},fmt(spent))
+          )
+        ),
+        el('div',{class:'info-box',style:{background:'var(--surface2)',color:'var(--text2)',margin:'12px 0',fontSize:'12px',lineHeight:'1.6'}},
+          'Income: '+fmt(income)
+          +(florasiiChange>0?' · Florasii +'+fmt(florasiiChange):'')
+          +(florasiiChange<0?' · Florasii withdrawn: '+fmt(Math.abs(florasiiChange)):'')
+          +(ccPaid>0?' · CC paid: '+fmt(ccPaid):'')
+          +(ccChange>0?' · CC grew: '+fmt(ccChange):'')
+        ),
+        confirmBtn,
+        backBtn
       );
     }
 
+    // ── Step 3: done ──
     if(step===3){
       content.style.textAlign='center';
       const doneBtn = el('button',{class:'btn-primary'},'Back to overview');
@@ -301,8 +352,8 @@ function paydayFlow(){
           )
         ),
         el('div',{style:{fontSize:'26px',fontWeight:'700',marginBottom:'8px'}},'All sorted 🎉'),
-        el('div',{style:{fontSize:'14px',color:'var(--text2)',marginBottom:'40px',lineHeight:'1.6'}},
-          fmt(split.florasii)+' moved to Florasii. Your balances are updated.'),
+        el('div',{style:{fontSize:'14px',color:'var(--text2)',marginBottom:'12px',lineHeight:'1.6'}},
+          'Balances updated from your Barclays figures.'),
         doneBtn
       );
     }
