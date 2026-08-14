@@ -1279,6 +1279,238 @@ function hoursScreen(){
   return content;
 }
 
+function calendarScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const now = new Date();
+  const events = appData.cashFlow || [];
+  let horizonMonths = 6;
+
+  // ── helpers ──
+  function saveEvents(ev){ save({...appData, cashFlow:ev}); }
+
+  function runningBalance(evList){
+    const sorted = [...evList].sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const startBal = appData.balances?.current || 0;
+    let bal = startBal;
+    return sorted.map(e=>{
+      bal += e.type==='in' ? e.amount : -e.amount;
+      return {...e, runningBal:bal};
+    });
+  }
+
+  // ── Add event form ──
+  const formCard = el('div',{class:'card'});
+  formCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Add money event</div>`;
+
+  const nameInp = el('input',{placeholder:'Label (e.g. Payday, Rent, Spotify)',style:{marginBottom:'10px'}});
+  const amtInp  = el('input',{inputmode:'decimal',placeholder:'Amount (£)',style:{marginBottom:'10px'}});
+  const dateInp = el('input',{type:'date',style:{marginBottom:'10px'}});
+  const recurSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'10px'}});
+  for(const opt of ['Once','Weekly','Every 2 weeks','Monthly']){
+    recurSel.append(el('option',{value:opt},opt));
+  }
+
+  // Set default date to today
+  dateInp.value = now.toISOString().slice(0,10);
+
+  const typeRow = el('div',{style:{display:'flex',gap:'8px',marginBottom:'14px'}});
+  let selectedType = 'in';
+  const inBtn  = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--green)',color:'#000',border:'none'}},'💰 Money in');
+  const outBtn = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)'}},'💸 Money out');
+
+  inBtn.addEventListener('click',()=>{
+    selectedType='in';
+    inBtn.style.background='var(--green)'; inBtn.style.color='#000'; inBtn.style.border='none';
+    outBtn.style.background='var(--surface2)'; outBtn.style.color='var(--text2)'; outBtn.style.border='1px solid var(--border)';
+  });
+  outBtn.addEventListener('click',()=>{
+    selectedType='out';
+    outBtn.style.background='var(--red)'; outBtn.style.color='#fff'; outBtn.style.border='none';
+    inBtn.style.background='var(--surface2)'; inBtn.style.color='var(--text2)'; inBtn.style.border='1px solid var(--border)';
+  });
+  typeRow.append(inBtn, outBtn);
+
+  const addBtn = el('button',{class:'btn-primary'},'Add to plan');
+  addBtn.addEventListener('click',()=>{
+    if(!nameInp.value||!amtInp.value||!dateInp.value) return;
+    const newEvent = {
+      id: uid(),
+      label: nameInp.value.trim(),
+      amount: parseFloat(amtInp.value)||0,
+      date: dateInp.value,
+      type: selectedType,
+      recur: recurSel.value,
+    };
+    const updated = [...events, newEvent];
+    saveEvents(updated);
+    nameInp.value=''; amtInp.value='';
+    dateInp.value=now.toISOString().slice(0,10);
+    renderTimeline();
+  });
+
+  formCard.append(nameInp, amtInp, dateInp, recurSel, typeRow, addBtn);
+
+  // ── Timeline ──
+  const timelineWrap = el('div',{});
+
+  function expandRecurring(evList){
+    const expanded = [];
+    const horizon = new Date(now);
+    horizon.setMonth(horizon.getMonth()+horizonMonths);
+
+    for(const e of evList){
+      const base = new Date(e.date);
+      if(e.recur==='Once'){
+        expanded.push(e);
+      } else {
+        let cur = new Date(base);
+        while(cur <= horizon){
+          expanded.push({...e, id:e.id+'_'+cur.getTime(), date:cur.toISOString().slice(0,10), _original:e.id});
+          if(e.recur==='Weekly') cur.setDate(cur.getDate()+7);
+          else if(e.recur==='Every 2 weeks') cur.setDate(cur.getDate()+14);
+          else if(e.recur==='Monthly') cur.setMonth(cur.getMonth()+1);
+          else break;
+        }
+      }
+    }
+    return expanded.filter(e=>new Date(e.date)>=new Date(now.toISOString().slice(0,10)));
+  }
+
+  function renderTimeline(){
+    timelineWrap.innerHTML='';
+    if(events.length===0){
+      timelineWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px'}},
+        el('div',{style:{fontSize:'13px',color:'var(--text2)'}},'No events yet. Add paychecks and bills above to see your cash flow.')
+      ));
+      return;
+    }
+
+    const expanded = expandRecurring(events);
+    const withBal = runningBalance(expanded);
+    const startBal = appData.balances?.current||0;
+
+    // Balance bar at top
+    const minBal = Math.min(startBal, ...withBal.map(e=>e.runningBal));
+    const maxBal = Math.max(startBal, ...withBal.map(e=>e.runningBal));
+    const isEverNegative = minBal < 0;
+
+    // Summary card
+    const summaryCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    summaryCard.innerHTML = `
+      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">3-month outlook</div>
+      <div class="balance-row">
+        <span class="balance-label">Current balance</span>
+        <span class="balance-value" style="color:${startBal>=0?'var(--green)':'var(--red)'}">${fmt(startBal)}</span>
+      </div>
+      <div class="balance-row">
+        <span class="balance-label">Lowest point</span>
+        <span class="balance-value" style="color:${minBal>=0?'var(--text)':'var(--red)'}">${fmt(minBal)}</span>
+      </div>
+      <div class="balance-row" style="border:none">
+        <span class="balance-label">Highest point</span>
+        <span class="balance-value" style="color:var(--green)">${fmt(maxBal)}</span>
+      </div>
+      ${isEverNegative?'<div style="margin-top:10px;padding:10px 12px;background:var(--red-dim);border-radius:10px;font-size:12px;color:var(--red)">⚠️ Your balance goes negative at some point in this plan.</div>':''}
+    `;
+    timelineWrap.append(summaryCard);
+
+    // Group by month
+    const byMonth = {};
+    for(const e of withBal){
+      const d = new Date(e.date);
+      const key = d.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+      if(!byMonth[key]) byMonth[key]=[];
+      byMonth[key].push(e);
+    }
+
+    for(const [month, monthEvents] of Object.entries(byMonth)){
+      const monthCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+      monthCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px',color:'var(--text2)'}},month));
+
+      for(const e of monthEvents){
+        const isIn = e.type==='in';
+        const d = new Date(e.date);
+        const dayStr = d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric'});
+        const isPast = d < now;
+        const isOriginal = !e._original;
+
+        const row = el('div',{style:{display:'flex',alignItems:'center',gap:'12px',padding:'10px 0',borderBottom:'1px solid var(--border)',opacity:isPast?'0.5':'1'}});
+
+        // date pill
+        row.append(el('div',{style:{minWidth:'44px',fontSize:'11px',color:'var(--text3)',textAlign:'center',lineHeight:'1.3'}},dayStr));
+
+        // dot
+        row.append(el('div',{style:{width:'8px',height:'8px',borderRadius:'50%',background:isIn?'var(--green)':'var(--red)',flexShrink:'0'}}));
+
+        // label + recur
+        const labelDiv = el('div',{style:{flex:'1',minWidth:'0'}});
+        labelDiv.append(el('div',{style:{fontSize:'14px',fontWeight:'500',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},e.label));
+        if(e.recur!=='Once') labelDiv.append(el('div',{style:{fontSize:'11px',color:'var(--text3)'}},e.recur));
+        row.append(labelDiv);
+
+        // amount + running bal
+        const amtDiv = el('div',{style:{textAlign:'right',flexShrink:'0'}});
+        amtDiv.append(
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:isIn?'var(--green)':'var(--red)',fontSize:'14px'}},(isIn?'+':'-')+fmt(e.amount)),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},fmt(e.runningBal))
+        );
+        row.append(amtDiv);
+
+        // delete (only for originals)
+        if(isOriginal){
+          const del = el('button',{style:{background:'none',color:'var(--text3)',padding:'0',fontSize:'16px',flexShrink:'0'}},'×');
+          del.addEventListener('click',()=>{
+            const updated = events.filter(ev=>ev.id!==e.id);
+            saveEvents(updated);
+            renderTimeline();
+          });
+          row.append(del);
+        }
+
+        monthCard.append(row);
+      }
+      timelineWrap.append(monthCard);
+    }
+  }
+
+  renderTimeline();
+
+  // Pre-fill subscriptions button
+  const subFillBtn = el('button',{class:'btn-ghost',style:{marginBottom:'12px',width:'100%'}},'Import subscriptions as recurring events');
+  subFillBtn.addEventListener('click',()=>{
+    const subs = appData.subscriptions||[];
+    const existing = events.map(e=>e.label);
+    const toAdd = subs
+      .filter(s=>!existing.includes(s.name))
+      .map(s=>({id:uid(),label:s.name,amount:s.amount,date:new Date(now.getFullYear(),now.getMonth(),15).toISOString().slice(0,10),type:'out',recur:'Monthly'}));
+    if(toAdd.length===0){ return; }
+    const updated = [...events,...toAdd];
+    saveEvents(updated);
+    renderTimeline();
+    subFillBtn.textContent='✓ Subscriptions added';
+    setTimeout(()=>subFillBtn.textContent='Import subscriptions as recurring events',2000);
+  });
+
+  // Horizon selector
+  const horizonSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'12px'}});
+  for(const [label,val] of [['3 months','3'],['6 months','6'],['12 months','12'],['24 months','24']]){
+    const opt = el('option',{value:val},label);
+    if(val==='6') opt.selected=true;
+    horizonSel.append(opt);
+  }
+  horizonSel.addEventListener('change',()=>{ horizonMonths=parseInt(horizonSel.value); renderTimeline(); });
+
+  content.append(
+    el('div',{class:'section-hdr'},'Cash flow plan'),
+    subFillBtn,
+    formCard,
+    el('div',{class:'section-hdr'},'Your timeline'),
+    horizonSel,
+    timelineWrap
+  );
+  return content;
+}
+
 function mainScreen(startTab='home'){
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
@@ -1290,10 +1522,13 @@ function mainScreen(startTab='home'){
   const svgGear = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>';
   const svgPlus = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
+  const svgCal = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>';
   const homeBtn = el('button',{class:'nav-btn active'});
   homeBtn.innerHTML = svgHome + '<span>Overview</span>';
   const trendsBtn = el('button',{class:'nav-btn'});
   trendsBtn.innerHTML = svgChart + '<span>Trends</span>';
+  const calBtn = el('button',{class:'nav-btn'});
+  calBtn.innerHTML = svgCal + '<span>Calendar</span>';
   const hoursBtn = el('button',{class:'nav-btn'});
   hoursBtn.innerHTML = svgClock + '<span>Hours</span>';
   const settBtn = el('button',{class:'nav-btn'});
@@ -1307,6 +1542,7 @@ function mainScreen(startTab='home'){
     tab=t;
     homeBtn.className='nav-btn'+(t==='home'?' active':'');
     trendsBtn.className='nav-btn'+(t==='trends'?' active':'');
+    calBtn.className='nav-btn'+(t==='calendar'?' active':'');
     hoursBtn.className='nav-btn'+(t==='hours'?' active':'');
     settBtn.className='nav-btn'+(t==='settings'?' active':'');
     body.innerHTML='';
@@ -1327,6 +1563,12 @@ function mainScreen(startTab='home'){
         el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Trends')
       ));
       body.append(header, trendsScreen());
+    } else if(t==='calendar'){
+      header.append(el('div',{},
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Planning'),
+        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Calendar')
+      ));
+      body.append(header, calendarScreen());
     } else if(t==='hours'){
       header.append(el('div',{},
         el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Work'),
@@ -1344,11 +1586,12 @@ function mainScreen(startTab='home'){
 
   homeBtn.addEventListener('click',()=>setTab('home'));
   trendsBtn.addEventListener('click',()=>setTab('trends'));
+  calBtn.addEventListener('click',()=>setTab('calendar'));
   hoursBtn.addEventListener('click',()=>setTab('hours'));
   settBtn.addEventListener('click',()=>setTab('settings'));
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, hoursBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, calBtn, hoursBtn, settBtn);
   wrap.append(body, nav);
   setTab(startTab);
   render(wrap);
