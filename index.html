@@ -719,7 +719,17 @@ function overviewScreen(){
       return e.type==='out' && d>=now && d<=in30;
     }).reduce((s,e)=>s+e.amount,0);
     const upcomingSubCost = subTotal; // monthly subs
-    const totalCommitted = upcomingOut + upcomingSubCost;
+
+    // The card payment is the single largest thing leaving the account, so it
+    // has to be committed money — safe-to-spend was previously ignoring it.
+    const cardDueSoon = (dueAmount>0 && dueDateStr)
+      ? (()=>{ const d=new Date(dueDateStr);
+               if(isNaN(d)) return dueAmount;
+               const days=(d-now)/86400000;
+               return (days>=-3 && days<=35) ? dueAmount : 0; })()
+      : 0;
+
+    const totalCommitted = upcomingOut + upcomingSubCost + cardDueSoon;
 
     // ── HIDDEN SUBSCRIPTION DETECTION ──
     // Find recurring patterns not in subscriptions list AND not already reviewed
@@ -1020,6 +1030,7 @@ function overviewScreen(){
         'Spending pot £'+Math.round(pots.spending.balance)+
         (predictedPay>0?' + next pay £'+Math.round(predictedPay):'') +
         ' − subs £'+Math.round(subTotal)+
+        (cardDueSoon>0?' − card £'+Math.round(cardDueSoon):'')+
         (upcomingOut>0?' − committed £'+Math.round(upcomingOut):'')+
         ' − goal savings £'+Math.round(totalRequiredPerPaycheck)
       )
@@ -1058,16 +1069,20 @@ function overviewScreen(){
         el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(upcomingOut))
       )
     );
-    if(cardOwed>0) commitCard.append(
+    if(cardDueSoon>0) commitCard.append(
       el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Credit card owed'),
-        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(cardOwed))
+        el('div',{},
+          el('div',{class:'balance-label'},'Credit card payment'),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
+            'due '+dueDateStr+(cardOwed>dueAmount?' · '+fmt(cardOwed-dueAmount)+' more rolls over':''))
+        ),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(cardDueSoon))
       )
     );
     commitCard.append(
       el('div',{class:'balance-row',style:{borderTop:'1px solid var(--border)',paddingTop:'10px',marginTop:'4px',border:'none'}},
         el('div',{class:'balance-label',style:{fontWeight:'700'}},'Total committed'),
-        el('div',{class:'balance-value',style:{color:'var(--red)',fontWeight:'700'}},fmt(totalCommitted+cardOwed))
+        el('div',{class:'balance-value',style:{color:'var(--red)',fontWeight:'700'}},fmt(totalCommitted))
       )
     );
     intelligenceWrap.append(commitCard);
@@ -3892,6 +3907,14 @@ const AUTO_RULES = [
   [/BOWL CENTRAL|BOWLING|LASER ?QUEST|TRAMPOLINE|ARCADE/i,      'Entertainment',       'EXPENSE'],
   [/SLAVICA MINI|MINI ?MART|MINI ?MARKET|\bMART\b|FOOD ?& ?WINE|OFF ?LICENCE|NEWSAGENT/i,'Groceries','EXPENSE'],
 
+  // Well-known chains and brands from the long tail
+  [/TRANSPT ?WALES|TRANSPORT FOR WALES|GWR|LNER|NORTHERN ?RAIL/i,'Transport',          'EXPENSE'],
+  [/TURTLE BAY|MOWGLI|WAGAMAMA FP|EAT TOKYO|JINLI|CHEEMC|HONGDAE|BREWSTONE/i,'Eating out','EXPENSE'],
+  [/PEPPERMINT VAN|NORMAN SAYERS|FOOD ?VAN|STREET ?FOOD/i,      'Eating out',          'EXPENSE'],
+  [/UNIQLO|WEEKDAY|CALVIN KLEIN|BOOHOO|RIVER ISLAND|CERNUCCI|SHEIN|VINTED|DEPOP/i,'Shopping','EXPENSE'],
+  [/NEW LOOK|TOPSHOP|URBAN OUTFITTER|JD ?SPORTS|FOOT ?LOCKER|SCHUH|OFFICE ?SHOES/i,'Shopping','EXPENSE'],
+  [/THE PERFUME|PERFUME ?SHOP|LUSH |THE ?BODY ?SHOP|BARBER|HAIRDRESS|SALON/i,'Personal care','EXPENSE'],
+
   // Remaining merchants seen in your own statements
   [/WAGAMAMA/i,                                                 'Income',              'INCOME'],
   [/MARY MALLETE|MALLETE NACIO|RAYMARK DOMINGO|AKSHAY BOBY|ANDRE MIGUEL/i,'Transfer',   null],
@@ -4955,6 +4978,12 @@ function calendarScreen(){
     const recVal = recSnap.val() || {};
     const confirmed = Object.values(recVal).filter(p=>p.status==='confirmed');
 
+    // 3b. Credit card payments due — the biggest committed outgoing there is
+    const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+    const cardStmts = Object.values(stmtSnap.val()||{})
+      .filter(s=>s.statementKind==='credit_card' && s.paymentDue)
+      .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+
     // 4. Hours-based predicted paychecks
     const hoursLog = appData.hoursLog || [];
     const actualPay = appData.actualPay || {};
@@ -4988,11 +5017,11 @@ function calendarScreen(){
       hoursPairs.push({w1, w2, totalH, predicted, actual, paydayStr, alreadyLogged});
     }
 
-    return {cashFlow, paychecks, subs, txns, confirmed, hoursPairs};
+    return {cashFlow, paychecks, subs, txns, confirmed, hoursPairs, cardStmts};
   }
 
   function buildDayEvents(data, year, month){
-    const {cashFlow, paychecks, subs, txns, confirmed, hoursPairs} = data;
+    const {cashFlow, paychecks, subs, txns, confirmed, hoursPairs, cardStmts} = data;
     const days = {};
 
     const addEvent = (dateStr, event) => {
@@ -5007,7 +5036,9 @@ function calendarScreen(){
       const [y,m] = d.split('-').map(Number);
       if(y !== year || m-1 !== month) continue;
       if(t.financialType.includes('TRANSFER') || t.financialType === 'SAVINGS_TRANSFER') continue;
+      const onCard = t.sourceType === 'credit_card';
       addEvent(d, {
+        onCard,
         type: 'actual',
         label: t.normalisedMerchant || t.rawDescription,
         amount: t.amount,
@@ -5106,6 +5137,36 @@ function calendarScreen(){
       }
     }
 
+    // ── CREDIT CARD PAYMENT DUE ──
+    // Shown as ACTUAL once a matching debit has left the current account,
+    // otherwise as EXPECTED so you can see it coming.
+    for(const s of (cardStmts||[])){
+      const due = new Date(s.paymentDue);
+      if(isNaN(due)) continue;
+      if(due.getFullYear()!==year || due.getMonth()!==month) continue;
+      const dueStr = due.toISOString().slice(0,10);
+      const amount = s.statementBalance!=null ? s.statementBalance : 0;
+      if(!amount) continue;
+
+      // Did a payment of roughly this size already leave the account?
+      const settled = txns.some(t=>
+        t.direction==='debit' && t.sourceType!=='credit_card' &&
+        Math.abs(t.amount-amount) < 1 &&
+        Math.abs(new Date(t.postingDate)-due)/86400000 <= 5
+      );
+
+      addEvent(dueStr, {
+        type: settled ? 'actual' : 'expected',
+        label: 'Credit card payment',
+        amount,
+        direction: 'debit',
+        financialType: settled ? 'TRANSFER_OUT' : 'EXPENSE',
+        source: 'credit card',
+        detail: settled ? 'Paid in full' : 'Full balance — pay this to avoid interest',
+        statementId: s.statementId,
+      });
+    }
+
     // ── EXPECTED: confirmed recurring patterns ──
     for(const p of confirmed){
       const next = p.nextExpected;
@@ -5150,7 +5211,8 @@ function calendarScreen(){
   legendWrap.innerHTML = `
     <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block"></span>Income actual</span>
     <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block"></span>Expense actual</span>
-    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--amber);border:1.5px dashed var(--amber);display:inline-block"></span>Expected</span>`;
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--amber);border:1.5px dashed var(--amber);display:inline-block"></span>Expected</span>
+    <span style="display:flex;align-items:center;gap:4px">💳 Card payment due</span>`;
 
   let cachedData = null;
 
@@ -5195,14 +5257,15 @@ function calendarScreen(){
       const hasIncome = events.some(e=>e.direction==='credit');
       const hasExpense = events.some(e=>e.direction==='debit' && e.type==='actual');
       const hasExpected = events.some(e=>e.type==='expected');
+      const hasCardDue = events.some(e=>e.source==='credit card' && e.type==='expected');
 
       const cell = el('div',{style:{
         borderRadius:'8px',
         padding:'4px 2px',
         minHeight:'52px',
         cursor: events.length ? 'pointer':'default',
-        background: isSelected ? 'var(--surface)' : isToday ? 'var(--surface2)' : 'transparent',
-        border: isToday ? '1px solid var(--green)' : isSelected ? '1px solid var(--text2)' : '1px solid transparent',
+        background: isSelected ? 'var(--surface)' : isToday ? 'var(--surface2)' : hasCardDue ? 'var(--red-dim)' : 'transparent',
+        border: isToday ? '1px solid var(--green)' : isSelected ? '1px solid var(--text2)' : hasCardDue ? '1px solid var(--red)' : '1px solid transparent',
         opacity: isPast && !events.length ? '0.35' : '1',
       }});
 
@@ -5219,6 +5282,7 @@ function calendarScreen(){
       if(hasIncome) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',background:'var(--green)',flexShrink:'0'}}));
       if(hasExpense) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',background:'var(--red)',flexShrink:'0'}}));
       if(hasExpected && !hasExpense) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',border:'1.5px dashed var(--amber)',flexShrink:'0'}}));
+      if(hasCardDue) dots.append(el('div',{style:{fontSize:'8px',lineHeight:'6px',flexShrink:'0'}},'💳'));
 
       // Amount preview for days with events
       if(events.length === 1){
@@ -5242,7 +5306,11 @@ function calendarScreen(){
     // Monthly summary bar
     const allEvents = Object.values(dayEvents).flat();
     const monthIn = allEvents.filter(e=>e.direction==='credit'&&e.type==='actual').reduce((s,e)=>s+e.amount,0);
-    const monthOut = allEvents.filter(e=>e.direction==='debit'&&e.type==='actual').reduce((s,e)=>s+e.amount,0);
+    // Cash out = what actually left the bank. Card purchases are excluded here
+    // because the card payment already represents them — counting both would
+    // show the same spending twice.
+    const monthOut = allEvents.filter(e=>e.direction==='debit'&&e.type==='actual'&&!e.onCard).reduce((s,e)=>s+e.amount,0);
+    const monthOnCard = allEvents.filter(e=>e.direction==='debit'&&e.onCard).reduce((s,e)=>s+e.amount,0);
     const monthExpected = allEvents.filter(e=>e.type==='expected'&&e.direction==='debit').reduce((s,e)=>s+e.amount,0);
 
     const summaryBar = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'6px',marginTop:'12px'}});
@@ -5256,9 +5324,15 @@ function calendarScreen(){
     };
     summaryBar.append(
       mstat('In (actual)', '+£'+Math.round(monthIn), 'var(--green)'),
-      mstat('Out (actual)', '-£'+Math.round(monthOut), 'var(--red)'),
-      mstat('Expected out', '~£'+Math.round(monthExpected), 'var(--amber)')
+      mstat('Out of bank', '-£'+Math.round(monthOut), 'var(--red)'),
+      monthOnCard>0
+        ? mstat('On card', '£'+Math.round(monthOnCard), 'var(--amber)')
+        : mstat('Expected out', '~£'+Math.round(monthExpected), 'var(--amber)')
     );
+    if(monthOnCard>0){
+      calWrap.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'8px',lineHeight:'1.5',textAlign:'center'}},
+        'Card spending is shown separately — it leaves your bank later as the card payment, so it is not added to "Out of bank".'));
+    }
     calWrap.append(summaryBar);
   }
 
@@ -5281,7 +5355,7 @@ function calendarScreen(){
       const info = el('div',{style:{flex:'1'}},
         el('div',{style:{fontSize:'13px',fontWeight:'500'}},e.label),
         el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},
-          (e.type==='actual'?'✓ Actual':'Expected')+(e.detail?' · '+e.detail:e.source?' · '+e.source:''))
+          (e.type==='actual'?'✓ Actual':'Expected')+(e.onCard?' · on card':'')+(e.detail?' · '+e.detail:e.source?' · '+e.source:''))
       );
       const amt = el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',
         color:e.direction==='credit'?'var(--green)':e.type==='expected'?'var(--amber)':'var(--red)'}},
