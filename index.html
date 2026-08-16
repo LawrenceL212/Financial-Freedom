@@ -3603,6 +3603,7 @@ function mainScreen(startTab='home'){
   analyticsBtn.innerHTML = svgAnalytics + '<span>Analytics</span>';
   const recurBtn = el('button',{class:'nav-btn'});
   recurBtn.innerHTML = svgRecur + '<span>Recurring</span>';
+  const payBtn = el('button',{class:'nav-btn',style:{color:'var(--green)'}});
   const payCircle = el('div',{style:{width:'44px',height:'44px',background:'var(--green)',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginTop:'-20px',boxShadow:'0 0 20px #00E67640'}});
   payCircle.innerHTML = svgPlus;
   payBtn.append(payCircle, el('span',{style:{marginTop:'4px'}},'Payday'));
