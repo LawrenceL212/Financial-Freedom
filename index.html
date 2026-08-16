@@ -426,14 +426,43 @@ function overviewScreen(){
                      sortedH.length===1?{w1:sortedH[0],w2:null}:null;
     const predictedPay = lastPair ? (lastPair.w1.total+(lastPair.w2?lastPair.w2.total:0))*RATE : 0;
 
-    // Safe to spend = current balance + predicted pay - committed - florasii target
+    // Avg florasii per pay (for reference)
     const avgFlorasiiPerPay = (()=>{
       const snaps = (paychecks||[]).filter(p=>p.snapshot).sort((a,b)=>new Date(a.date)-new Date(b.date));
       if(snaps.length<2) return predictedPay*0.75;
       const growth = snaps[snaps.length-1].snapshot.florasii - snaps[0].snapshot.florasii;
       return growth/Math.max(snaps.length-1,1);
     })();
-    const safeToSpend = Math.max(0, (balances.current||0) + predictedPay - totalCommitted - avgFlorasiiPerPay);
+
+    // Goal deadlines
+    const GOALS = [
+      {name:'See Mireyah (holiday)', target:7500, deadline:'2025-11-25', color:'#64B5F6'},
+      {name:'Bring her to UK (visa + setup)', target:15000, deadline:'2026-06-01', color:'var(--green)'},
+    ];
+    const florasiiNow = balances.florasii||0;
+    const now2 = new Date();
+
+    // Calculate required savings per paycheck for each goal
+    let totalRequiredPerPaycheck = 0;
+    const goalDetails = GOALS.map(g=>{
+      const deadline = new Date(g.deadline);
+      const daysLeft = Math.max(1, Math.ceil((deadline-now2)/86400000));
+      const payPeriodsLeft = Math.max(1, Math.floor(daysLeft/14));
+      // Florasii is shared — allocate proportionally by target
+      const share = g.target / GOALS.reduce((s,x)=>s+x.target,0);
+      const myShare = florasiiNow * share;
+      const remaining = Math.max(0, g.target - myShare);
+      const requiredPerPeriod = remaining / payPeriodsLeft;
+      totalRequiredPerPaycheck += requiredPerPeriod;
+      const pctDone = Math.min(100, Math.round(myShare/g.target*100));
+      const onTrack = avgFlorasiiPerPay * share >= requiredPerPeriod * 0.9;
+      return {...g, remaining, requiredPerPeriod, payPeriodsLeft, pctDone, myShare, onTrack, daysLeft};
+    });
+
+    // Safe to spend using goal-required savings (not just historical avg)
+    const safeToSpend = Math.max(0,
+      (balances.current||0) + predictedPay - totalCommitted - totalRequiredPerPaycheck
+    );
 
     // Money leaks — top spending categories this month
     const byCat = {};
@@ -512,7 +541,7 @@ function overviewScreen(){
         (predictedPay>0?' + next pay £'+Math.round(predictedPay):'') +
         ' − subs £'+Math.round(subTotal)+
         (upcomingOut>0?' − committed £'+Math.round(upcomingOut):'')+
-        ' − Florasii target £'+Math.round(avgFlorasiiPerPay)
+        ' − goal savings £'+Math.round(totalRequiredPerPaycheck)
       )
     );
     intelligenceWrap.append(safeCard);
@@ -546,25 +575,57 @@ function overviewScreen(){
     );
     intelligenceWrap.append(commitCard);
 
-    // ── FLORASII GOAL ──
+    // ── FLORASII SUB-GOALS ──
     const florasiiCard = el('div',{class:'card',style:{marginBottom:'12px'}});
-    const r=38, c=2*Math.PI*r;
-    const dialDiv = el('div',{style:{position:'relative',width:'80px',height:'80px',flexShrink:'0'}});
-    dialDiv.innerHTML=`<svg width="80" height="80" viewBox="0 0 80 80" style="transform:rotate(-90deg)">
-      <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--surface2)" stroke-width="7"/>
-      <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--green)" stroke-width="7"
-        stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c*(1-pct/100)).toFixed(1)}" stroke-linecap="round"/>
-    </svg><div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-      <span style="font-family:'Space Mono',monospace;font-size:16px;font-weight:700;color:var(--green)">${pct}%</span>
-    </div>`;
-    const goalInfo = el('div',{style:{flex:'1'}},
-      el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'4px'}},'Florasii Fund'),
-      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'20px',fontWeight:'700',color:'var(--green)'}},fmt(balances.florasii||0)),
-      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},fmt(15000-(balances.florasii||0))+' to go · £15,000 target'),
-      avgFlorasiiPerPay>0?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'4px'}},
-        '~'+Math.ceil((15000-(balances.florasii||0))/avgFlorasiiPerPay)+' paychecks remaining'):el('span')
+    florasiiCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'14px'}},
+        el('div',{style:{fontWeight:'700',fontSize:'15px'}},'🌸 Florasii Fund'),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:'var(--green)'}},fmt(florasiiNow))
+      )
     );
-    florasiiCard.append(el('div',{style:{display:'flex',gap:'16px',alignItems:'center'}},dialDiv,goalInfo));
+
+    for(const g of goalDetails){
+      const STATUS = g.onTrack ? '✓ On track' : '⚠ Behind';
+      const statusColor = g.onTrack ? 'var(--green)' : 'var(--amber)';
+      const deadlineStr = new Date(g.deadline).toLocaleDateString('en-GB',{month:'short',year:'numeric'});
+
+      const goalBlock = el('div',{style:{marginBottom:'14px',paddingBottom:'14px',borderBottom:'1px solid var(--border)'}});
+      goalBlock.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}},
+          el('div',{},
+            el('div',{style:{fontSize:'13px',fontWeight:'600'}},g.name),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},'Target: '+fmt(g.target)+' by '+deadlineStr)
+          ),
+          el('div',{style:{textAlign:'right'}},
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'14px',color:g.color}},fmt(g.myShare)),
+            el('div',{style:{fontSize:'10px',color:statusColor,marginTop:'2px'}},STATUS)
+          )
+        ),
+        // Progress bar
+        el('div',{style:{background:'var(--surface2)',borderRadius:'100px',height:'6px',overflow:'hidden',marginBottom:'6px'}},
+          el('div',{style:{height:'100%',width:g.pctDone+'%',background:g.color,borderRadius:'100px'}})
+        ),
+        el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',color:'var(--text3)'}},
+          el('span',{},g.pctDone+'% · '+fmt(g.remaining)+' to go'),
+          el('span',{},g.daysLeft+'d · need '+fmt(g.requiredPerPeriod)+'/paycheck')
+        )
+      );
+      florasiiCard.append(goalBlock);
+    }
+
+    // Total required per paycheck
+    florasiiCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'13px',paddingTop:'2px'}},
+        el('span',{style:{color:'var(--text2)'}},'Required per paycheck (combined)'),
+        el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:totalRequiredPerPaycheck>avgFlorasiiPerPay?'var(--red)':'var(--green)'}},
+          fmt(totalRequiredPerPaycheck))
+      ),
+      totalRequiredPerPaycheck>avgFlorasiiPerPay?
+        el('div',{style:{fontSize:'11px',color:'var(--red)',marginTop:'6px'}},
+          '⚠ Your current saving rate ('+fmt(avgFlorasiiPerPay)+'/paycheck) is below what\'s needed to hit both goals on time.'):
+        el('div',{style:{fontSize:'11px',color:'var(--green)',marginTop:'6px'}},
+          'Your current saving rate covers both goals.')
+    );
     intelligenceWrap.append(florasiiCard);
 
     // ── MONEY LEAKS ──
@@ -609,7 +670,9 @@ function overviewScreen(){
     if(balances.current<0) actions.push({icon:'🚨',text:'Your account is overdrawn — avoid spending until next payday',urgent:true});
     if(balances.creditCard>0&&balances.personalSavings>balances.creditCard) actions.push({icon:'💳',text:'You have enough in savings to clear your £'+Math.round(balances.creditCard)+' credit card balance',urgent:false});
     if(subTotal>150) actions.push({icon:'✂️',text:'Review your subscriptions — £'+Math.round(subTotal)+'/mo is significant',urgent:false});
-    if(pct<20) actions.push({icon:'💰',text:'Florasii is at '+pct+'% — try to increase savings this paycheck',urgent:false});
+    if(totalRequiredPerPaycheck>avgFlorasiiPerPay) actions.push({icon:'💰',text:'You need £'+Math.round(totalRequiredPerPaycheck)+'/paycheck to hit your Florasii goals — currently saving £'+Math.round(avgFlorasiiPerPay),urgent:false});
+    const behindGoals = goalDetails.filter(g=>!g.onTrack);
+    if(behindGoals.length) actions.push({icon:'⏰',text:behindGoals.map(g=>g.name).join(' and ')+' '+( behindGoals.length>1?'are':'is')+' behind target',urgent:false});
     if(txns.length===0) actions.push({icon:'📥',text:'Import your bank statement to unlock spending insights',urgent:false});
 
     if(actions.length){
