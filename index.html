@@ -2360,12 +2360,7 @@ async function reclassifyCardSettlement(paymentAmount, paymentDate){
 function statementsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
-  let importState = 'idle'; // idle | parsing | preview | importing | complete | error
-  let parsedTxns = [];
-  let analysisResult = null;
-  let statementMeta = null;
-  let fileContent = null;
-  let cardParsed = null;
+  let importState = 'idle'; // idle | parsing | preview | nothing | importing | complete | error
 
   const stmtWrap = el('div',{}); // statement history
   const importWrap = el('div',{}); // import UI
@@ -2411,443 +2406,413 @@ function statementsScreen(){
     }
   }
 
-  // ── Import UI ──
+  // ── Batch Import UI ──
+  // queue entries: {file,name,status,kind,fingerprint,txns,analysis,error}
+  let queue = [];
+  let importProgress = {done:0,total:0,label:''};
+  let importSummary = null;
+
+  function fileSig(t){
+    return [t.accountId,t.postingDate,t.amount.toFixed(2),t.direction,
+            (t.rawDescription||'').slice(0,40)].join('|');
+  }
+
+  async function parseOneFile(file, existingSigs, batchSigs){
+    const isPDF = /\.pdf$/i.test(file.name) || file.type==='application/pdf';
+
+    let fingerprint, text=null;
+    if(isPDF){
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const digest = await crypto.subtle.digest('SHA-256', bytes);
+      fingerprint = Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    } else {
+      text = await file.text();
+      fingerprint = await hashFile(text);
+    }
+
+    if(isPDF){
+      const parsed = await parseBarclaycardPDF(file);
+      const m = parsed.meta;
+      const accountId = 'barclaycard'+(m.cardLast4?'_'+m.cardLast4:'');
+      const txns = normaliseCardTransactions(parsed, null, accountId);
+      let dupes=0;
+      for(const t of txns){
+        const s=fileSig(t);
+        if(existingSigs.has(s)||batchSigs.has(s)) dupes++; else batchSigs.add(s);
+      }
+      return {
+        kind:'credit_card', fingerprint, txns,
+        settlement:{amount:m.paymentMade, date:(parsed.txns.find(x=>x.isPayment)||{}).date||null},
+        analysis:{
+          account:'Barclaycard'+(m.cardLast4?' ••••'+m.cardLast4:''),
+          periodStart:m.periodStart, periodEnd:m.periodEnd,
+          total:txns.length, income:0, expenses:txns.length, transfers:0,
+          possibleDuplicates:dupes,
+          needsReview:txns.filter(t=>t.category==='Uncategorised').length,
+          cardMeta:m,
+        },
+      };
+    }
+
+    const {txns, account, minDate, maxDate} = parseBarclaysCSV(text);
+    let dupes=0;
+    for(const t of txns){
+      const s=fileSig(t);
+      if(existingSigs.has(s)||batchSigs.has(s)) dupes++; else batchSigs.add(s);
+    }
+    const paychecks=(appData.paychecks||[]).filter(p=>p.income>0);
+    return {
+      kind:'current_account', fingerprint, txns,
+      paycheckMatches: findPaycheckMatches(txns, paychecks),
+      subMatches: findSubscriptionMatches(txns, appData.subscriptions||[]),
+      analysis:{
+        account, periodStart:minDate, periodEnd:maxDate,
+        total:txns.length,
+        income:txns.filter(t=>t.financialType==='INCOME').length,
+        expenses:txns.filter(t=>t.financialType==='EXPENSE').length,
+        transfers:txns.filter(t=>t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER').length,
+        possibleDuplicates:dupes,
+        needsReview:txns.filter(t=>t.confidence<0.6||t.financialType.startsWith('UNKNOWN')).length,
+      },
+    };
+  }
+
+  async function parseQueue(files){
+    importState='parsing';
+    queue = files.map(f=>({file:f, name:f.name, status:'pending'}));
+    importProgress={done:0,total:files.length,label:''};
+    renderImportUI();
+
+    const knownFps = new Set(await txnDB.getFingerprints());
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const existingSigs = new Set(Object.values(snap.val()||{}).map(fileSig));
+    const batchSigs = new Set();
+    const seenFps = new Set();
+
+    for(const entry of queue){
+      entry.status='parsing';
+      importProgress.label=entry.name;
+      renderImportUI();
+      try{
+        const r = await parseOneFile(entry.file, existingSigs, batchSigs);
+        if(knownFps.has(r.fingerprint) || seenFps.has(r.fingerprint)){
+          entry.status='duplicate';
+          entry.kind=r.kind;
+        } else {
+          seenFps.add(r.fingerprint);
+          Object.assign(entry, r, {status:'ready'});
+        }
+      }catch(err){
+        entry.status='error';
+        entry.error=err.message||'Could not read this file';
+      }
+      importProgress.done++;
+      renderImportUI();
+    }
+
+    // Oldest first, so the newest statement has the final say on balances
+    queue.sort((a,b)=>((a.analysis&&a.analysis.periodEnd)||'').localeCompare((b.analysis&&b.analysis.periodEnd)||''));
+    importState = queue.some(e=>e.status==='ready') ? 'preview' : 'nothing';
+    renderImportUI();
+  }
+
+  async function runImport(){
+    importState='importing';
+    const ready = queue.filter(e=>e.status==='ready');
+    importProgress={done:0,total:ready.length,label:''};
+    renderImportUI();
+
+    let txnCount=0, stmtCount=0, settlementsFixed=0;
+    let latestCard=null, latestCardEnd='';
+
+    for(const entry of ready){
+      importProgress.label=entry.name;
+      renderImportUI();
+      const statementId='stmt_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);
+      const a=entry.analysis;
+
+      let finalTxns;
+      if(entry.kind==='credit_card'){
+        finalTxns = entry.txns.map(t=>({...t, statementId}));
+      } else {
+        const pIds=new Set((entry.paycheckMatches||[]).map(m=>m.txn.transactionId));
+        const sIds=new Map((entry.subMatches||[]).map(m=>[m.txn.transactionId,m.subscription.id]));
+        finalTxns = entry.txns.map(t=>{
+          const isP=pIds.has(t.transactionId), isS=sIds.has(t.transactionId);
+          const match=(entry.paycheckMatches||[]).find(m=>m.txn.transactionId===t.transactionId);
+          return {...t, statementId,
+            reconciliationStatus:(isP||isS)?'matched':t.reconciliationStatus,
+            paycheckId:isP?((match&&match.paycheck&&match.paycheck.id)||null):null,
+            subscriptionId:isS?sIds.get(t.transactionId):null};
+        });
+      }
+
+      for(let i=0;i<finalTxns.length;i+=100){
+        await txnDB.writeBatch(finalTxns.slice(i,i+100));
+      }
+
+      const cm=a.cardMeta||{};
+      await txnDB.writeStatement({
+        statementId,
+        accountId:a.account,
+        filename:entry.name,
+        sourceFormat: entry.kind==='credit_card'?'barclaycard_pdf_v1':'barclays_csv_v1',
+        sourceBank: entry.kind==='credit_card'?'Barclaycard':'Barclays',
+        statementKind: entry.kind,
+        periodStart:a.periodStart, periodEnd:a.periodEnd,
+        uploadedAt:new Date().toISOString(),
+        transactionCount:finalTxns.length,
+        importStatus:'complete',
+        newCount:finalTxns.length-a.possibleDuplicates,
+        duplicateCount:a.possibleDuplicates,
+        matchedPaycheckCount:(entry.paycheckMatches||[]).length,
+        matchedSubscriptionCount:(entry.subMatches||[]).length,
+        reviewCount:a.needsReview,
+        fileFingerprint:entry.fingerprint,
+        statementBalance: cm.newBalance!=null?cm.newBalance:null,
+        creditLimit: cm.creditLimit!=null?cm.creditLimit:null,
+        paymentDue: cm.dueDate||null,
+        minimumPayment: cm.minPayment!=null?cm.minPayment:null,
+      });
+
+      if(entry.kind==='credit_card'){
+        if(entry.settlement && entry.settlement.amount){
+          settlementsFixed += await reclassifyCardSettlement(entry.settlement.amount, entry.settlement.date);
+        }
+        if(cm.newBalance!=null && (a.periodEnd||'')>=latestCardEnd){
+          latestCardEnd=a.periodEnd||''; latestCard=cm;
+        }
+      }
+
+      txnCount+=finalTxns.length; stmtCount++;
+      importProgress.done++;
+      renderImportUI();
+    }
+
+    // Only the most recent card statement sets the balance
+    if(latestCard && latestCard.newBalance!=null){
+      const accts=appData.accounts||[];
+      if(accts.length){
+        const upd=accts.map(x=>x.type==='credit_card'
+          ? {...x, balance:latestCard.newBalance,
+             creditLimit:latestCard.creditLimit!=null?latestCard.creditLimit:x.creditLimit,
+             updatedAt:new Date().toISOString()} : x);
+        await save({...appData, accounts:upd, balances:{...appData.balances, creditCard:latestCard.newBalance}});
+      } else {
+        await save({...appData, balances:{...appData.balances, creditCard:latestCard.newBalance}});
+      }
+    }
+
+    const allNow=await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    if(allNow.val()) await updateSubscriptionBillingDates(Object.values(allNow.val()));
+
+    importSummary={files:stmtCount, txns:txnCount, settlementsFixed,
+                   skipped:queue.filter(e=>e.status!=='ready').length};
+    queue=[];
+    importState='complete';
+    renderImportUI();
+    renderHistory();
+  }
+
   function renderImportUI(){
     importWrap.innerHTML = '';
 
     if(importState === 'idle'){
       const uploadCard = el('div',{class:'card'});
-      uploadCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Import Statement</div>`;
+      uploadCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Import Statements</div>`;
 
-      const fileInp = el('input',{type:'file',accept:'.csv,.pdf',style:{display:'none'}});
-      const uploadBtn = el('button',{class:'btn-primary'},'📂 Choose statement file');
+      const fileInp = el('input',{type:'file',accept:'.csv,.pdf',multiple:true,style:{display:'none'}});
+      const uploadBtn = el('button',{class:'btn-primary'},'📂 Choose statement files');
       uploadBtn.addEventListener('click',()=>fileInp.click());
 
       const infoDiv = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'10px',lineHeight:'1.6'}},
-        'Supports Barclays current account CSV and Barclaycard PDF statements. The type is detected automatically. Raw statement data is preserved — your interpretations are stored separately.');
+        'Select as many files as you like — Barclays current account CSVs and Barclaycard PDFs can be mixed. Each type is detected automatically, files you have already imported are skipped, and raw statement data is always preserved.');
 
       fileInp.addEventListener('change',async(e)=>{
-        const file = e.target.files[0];
-        if(!file) return;
-        importState = 'parsing';
-        uploadBtn.textContent = 'Parsing…';
-        uploadBtn.disabled = true;
-
-        try {
-          const isPDF = /\.pdf$/i.test(file.name) || file.type==='application/pdf';
-
-          // Fingerprint: PDFs are binary, so hash the bytes rather than text
-          let fingerprint;
-          if(isPDF){
-            const bytes = new Uint8Array(await file.arrayBuffer());
-            const digest = await crypto.subtle.digest('SHA-256', bytes);
-            fingerprint = Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
-            fileContent = null;
-          } else {
-            fileContent = await file.text();
-            fingerprint = await hashFile(fileContent);
-          }
-
-          // Check for duplicate file
-          const existing = await txnDB.getFingerprints();
-          if(existing.includes(fingerprint)){
-            importWrap.innerHTML='';
-            const dupCard = el('div',{class:'card',style:{borderLeft:'3px solid var(--amber)'}});
-            dupCard.innerHTML=`<div style="font-weight:700;margin-bottom:8px;color:var(--amber)">⚠️ This statement has already been imported</div>
-<div style="font-size:13px;color:var(--text2)">The exact same file was previously imported. Importing it again would create duplicate transactions.</div>`;
-            const resetBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Choose a different file');
-            resetBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
-            dupCard.append(resetBtn);
-            importWrap.append(dupCard);
-            return;
-          }
-
-          // ── CREDIT CARD (PDF) BRANCH ──
-          if(isPDF){
-            const parsed = await parseBarclaycardPDF(file);
-            const m = parsed.meta;
-            const accountId = 'barclaycard'+(m.cardLast4?'_'+m.cardLast4:'');
-            const cardTxns = normaliseCardTransactions(parsed, null, accountId);
-            parsedTxns = cardTxns;
-            cardParsed = parsed;
-
-            const dupResult = await detectDuplicates(cardTxns, [], null);
-            const subMatches = findSubscriptionMatches(cardTxns, appData.subscriptions||[]);
-
-            analysisResult = {
-              statementKind:'credit_card',
-              fingerprint,
-              account: 'Barclaycard'+(m.cardLast4?' ••••'+m.cardLast4:''),
-              periodStart: m.periodStart,
-              periodEnd: m.periodEnd,
-              total: cardTxns.length,
-              income:0,
-              expenses: cardTxns.length,
-              transfers:0,
-              refunds:0,
-              possibleDuplicates: dupResult.possible.length,
-              paycheckMatches: [],
-              subMatches,
-              needsReview: cardTxns.filter(t=>t.category==='Uncategorised').length,
-              filename: file.name,
-              cardMeta: m,
-            };
-            importState = 'preview';
-            renderImportUI();
-            return;
-          }
-
-          // ── CURRENT ACCOUNT (CSV) BRANCH ──
-          cardParsed = null;
-          const {txns, account, minDate, maxDate} = parseBarclaysCSV(fileContent);
-          parsedTxns = txns;
-
-          // Analyse
-          const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
-          const subs = appData.subscriptions||[];
-          const dupResult = await detectDuplicates(txns, [], null);
-          const paycheckMatches = findPaycheckMatches(txns, paychecks);
-          const subMatches = findSubscriptionMatches(txns, subs);
-
-          // Financial type breakdown
-          const byType = {};
-          for(const t of txns){
-            byType[t.financialType] = (byType[t.financialType]||0)+1;
-          }
-
-          const transferKeywords = ['FLORASII','FLOLOSII','FLORAIII','SAVINGS','CREDIT CARD'];
-          const likelySavings = txns.filter(t=>t.financialType==='SAVINGS_TRANSFER').length;
-          const needsReview = txns.filter(t=>t.confidence<0.6||t.financialType.startsWith('UNKNOWN')).length;
-
-          analysisResult = {
-            statementKind:'current_account',
-            fingerprint,
-            account,
-            periodStart: minDate,
-            periodEnd: maxDate,
-            total: txns.length,
-            byType,
-            income: txns.filter(t=>t.financialType==='INCOME').length,
-            expenses: txns.filter(t=>t.financialType==='EXPENSE').length,
-            transfers: txns.filter(t=>t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER').length,
-            refunds: txns.filter(t=>t.financialType==='REFUND').length,
-            possibleDuplicates: dupResult.possible.length,
-            paycheckMatches,
-            subMatches,
-            needsReview,
-            filename: file.name,
-          };
-          statementMeta = {fingerprint, account, periodStart:minDate, periodEnd:maxDate, filename:file.name};
-
-          importState = 'preview';
+        const files=Array.from(e.target.files||[]);
+        if(!files.length) return;
+        uploadBtn.disabled=true;
+        try{ await parseQueue(files); }
+        catch(err){
+          importState='error';
+          importSummary={error:err.message};
           renderImportUI();
-        } catch(err){
-          importState = 'error';
-          importWrap.innerHTML = '';
-          importWrap.append(el('div',{class:'card',style:{color:'var(--red)'}},
-            el('div',{style:{fontWeight:'700',marginBottom:'8px'}},'Parse error'),
-            el('div',{style:{fontSize:'13px'}},err.message)
-          ));
         }
       });
       uploadCard.append(fileInp, uploadBtn, infoDiv);
       importWrap.append(uploadCard);
     }
 
-    if(importState === 'preview'){
-      const a = analysisResult;
-      const previewCard = el('div',{class:'card'});
+    if(importState === 'parsing'){
+      const card = el('div',{class:'card'});
+      const pct = importProgress.total ? Math.round(importProgress.done/importProgress.total*100) : 0;
+      card.append(
+        el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'6px'}},'Reading your statements…'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'12px'}},
+          importProgress.done+' of '+importProgress.total+(importProgress.label?' · '+importProgress.label:'')),
+        el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:pct+'%'}}))
+      );
+      importWrap.append(card);
+      importWrap.append(queueListCard());
+    }
 
-      // Header
+    if(importState === 'nothing'){
+      const card = el('div',{class:'card',style:{borderLeft:'3px solid var(--amber)'}});
+      card.append(
+        el('div',{style:{fontWeight:'700',marginBottom:'8px',color:'var(--amber)'}},'Nothing new to import'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)'}},
+          'Every file you selected was either already imported or could not be read.')
+      );
+      const again=el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Choose different files');
+      again.addEventListener('click',()=>{ queue=[]; importState='idle'; renderImportUI(); });
+      card.append(again);
+      importWrap.append(card);
+      importWrap.append(queueListCard());
+    }
+
+    if(importState === 'preview'){
+      const ready = queue.filter(e=>e.status==='ready');
+      const totalTxns = ready.reduce((s,e)=>s+e.analysis.total,0);
+      const totalDupes = ready.reduce((s,e)=>s+e.analysis.possibleDuplicates,0);
+      const totalReview = ready.reduce((s,e)=>s+e.analysis.needsReview,0);
+      const cards = ready.filter(e=>e.kind==='credit_card').length;
+      const currents = ready.length-cards;
+      const allDates = ready.flatMap(e=>[e.analysis.periodStart,e.analysis.periodEnd]).filter(Boolean).sort();
+
+      const previewCard = el('div',{class:'card'});
       previewCard.append(
-        el('div',{style:{fontWeight:'700',fontSize:'16px',marginBottom:'4px'}}, a.filename),
+        el('div',{style:{fontWeight:'700',fontSize:'16px',marginBottom:'4px'}},
+          ready.length+' statement'+(ready.length>1?'s':'')+' ready to import'),
         el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'16px'}},
-          'Account '+a.account+' · '+(a.periodStart?a.periodStart.slice(0,7):' ')+' → '+(a.periodEnd?a.periodEnd.slice(0,7):' '))
+          (allDates.length?allDates[0].slice(0,7)+' → '+allDates[allDates.length-1].slice(0,7):'')+
+          (currents?' · '+currents+' current account':'')+(cards?' · '+cards+' credit card':''))
       );
 
-      // Analysis grid
-      const grid = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',marginBottom:'16px'}});
-      const stat = (label,val,color)=>{
-        const box = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
-        box.append(
-          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'2px'}},label),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:color||'var(--text)'}},String(val))
-        );
-        return box;
+      const grid=el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',marginBottom:'16px'}});
+      const stat=(label,val,color)=>{
+        const b=el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
+        b.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'2px'}},label),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:color||'var(--text)'}},String(val)));
+        return b;
       };
-      if(a.statementKind==='credit_card'){
-        const cm = a.cardMeta||{};
-        grid.append(
-          stat('Card purchases', a.total),
-          stat('Total spent', fmt(cm.parsedSpend||0), 'var(--red)'),
-          stat('Statement balance', fmt(cm.newBalance||0), 'var(--red)'),
-          stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
-        );
-        previewCard.append(grid);
+      grid.append(
+        stat('Statements', ready.length),
+        stat('Transactions', totalTxns),
+        stat('Needs review', totalReview, totalReview>0?'var(--amber)':'var(--text)'),
+        stat('Possible duplicates', totalDupes, totalDupes>0?'var(--amber)':'var(--text)'),
+      );
+      previewCard.append(grid);
 
-        // Reconciliation against the figure printed on the statement
-        if(cm.statedSpend!=null){
-          const ok = cm.reconciles;
-          previewCard.append(el('div',{style:{background:ok?'var(--green-dim)':'var(--amber-dim)',
-            borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'13px',
-            color:ok?'var(--green)':'var(--amber)'}},
-            ok ? '✓ Reconciled — parsed total matches the '+fmt(cm.statedSpend)+' printed on your statement'
-               : '⚠️ Parsed '+fmt(cm.parsedSpend)+' but statement says '+fmt(cm.statedSpend)+'. Review before importing.'));
-        }
-
-        // Credit utilisation
-        if(cm.creditLimit){
-          const util = Math.round((cm.newBalance||0)/cm.creditLimit*100);
-          const uCol = util>70?'var(--red)':util>30?'var(--amber)':'var(--green)';
-          const uDiv = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
-          uDiv.append(
-            el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'12px',marginBottom:'6px'}},
-              el('span',{style:{color:'var(--text2)'}},'Credit used'),
-              el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:uCol}},util+'% of '+fmt(cm.creditLimit))),
-            el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:Math.min(100,util)+'%',background:uCol}}))
-          );
-          previewCard.append(uDiv);
-        }
-
-        // Settlement explanation
-        if(cm.paymentMade){
-          previewCard.append(el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
-            'The '+fmt(cm.paymentMade)+' direct debit that cleared this card will be marked as a transfer on your current account, so this spending is not counted twice.'));
-        }
-
-        if(cm.dueDate){
-          previewCard.append(el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}},
-            'Next payment '+fmt(cm.newBalance||0)+' due '+cm.dueDate+(cm.minPayment?' · minimum '+fmt(cm.minPayment):'')));
-        }
-      } else {
-        grid.append(
-          stat('Total transactions', a.total),
-          stat('Income credits', a.income, 'var(--green)'),
-          stat('Expenses', a.expenses, 'var(--red)'),
-          stat('Transfers', a.transfers, 'var(--text2)'),
-          stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
-          stat('Possible duplicates', a.possibleDuplicates, a.possibleDuplicates>0?'var(--amber)':'var(--text)'),
-        );
-        previewCard.append(grid);
-      }
-
-      // Paycheck matches
-      if(a.paycheckMatches.length>0){
-        const pmDiv = el('div',{style:{background:'var(--green-dim)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
-        pmDiv.append(el('div',{style:{fontWeight:'600',color:'var(--green)',marginBottom:'8px',fontSize:'13px'}},
-          `✓ ${a.paycheckMatches.length} paycheck match${a.paycheckMatches.length>1?'es':''} found`));
-        for(const m of a.paycheckMatches.slice(0,3)){
-          const row = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'4px',display:'flex',justifyContent:'space-between'}});
-          row.append(
-            el('span',{},m.txn.postingDate+' '+m.txn.normalisedMerchant),
-            el('span',{},m.exact?'✓ Exact match':'~£'+m.amountDiff.toFixed(2)+' diff')
-          );
-          pmDiv.append(row);
-        }
-        if(a.paycheckMatches.length>3) pmDiv.append(el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'+ '+(a.paycheckMatches.length-3)+' more'));
-        previewCard.append(pmDiv);
-      }
-
-      // Subscription matches
-      if(a.subMatches.length>0){
-        const smDiv = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
-        smDiv.append(el('div',{style:{fontWeight:'600',marginBottom:'8px',fontSize:'13px'}},
-          `${a.subMatches.length} subscription payment${a.subMatches.length>1?'s':''} found`));
-        for(const m of a.subMatches.slice(0,3)){
-          const row = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'4px',display:'flex',justifyContent:'space-between'}});
-          row.append(
-            el('span',{},m.txn.normalisedMerchant),
-            el('span',{style:{color:m.priceChanged?'var(--amber)':'var(--text2)'}},
-              m.priceChanged?'Price changed: was £'+m.subscription.amount.toFixed(2)+', paid £'+m.txn.amount.toFixed(2):'£'+m.txn.amount.toFixed(2))
-          );
-          smDiv.append(row);
-        }
-        previewCard.append(smDiv);
-      }
-
-      if(a.possibleDuplicates>0){
+      const badCard = ready.find(e=>e.kind==='credit_card'&&e.analysis.cardMeta&&e.analysis.cardMeta.reconciles===false);
+      if(badCard){
         previewCard.append(el('div',{style:{background:'var(--amber-dim)',borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'13px',color:'var(--amber)'}},
-          `⚠️ ${a.possibleDuplicates} possible duplicate${a.possibleDuplicates>1?'s':''} detected. These will be imported but flagged for review.`));
+          '⚠️ '+badCard.name+' did not reconcile against its own printed total. Check it after importing.'));
+      }
+      if(cards){
+        previewCard.append(el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+          'Direct debits that settled these cards will be marked as transfers on your current account, so card spending is never counted twice. Your card balance will be set from the most recent statement.'));
       }
 
-      // Import button
-      const importingNote = el('div',{style:{fontSize:'12px',color:'var(--text2)',margin:'10px 0'}},
-        `Ready to import ${a.total} transactions into your private financial history.`);
-      const confirmBtn = el('button',{class:'btn-primary'},'Import '+a.total+' transactions');
-      const cancelBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Cancel');
-      cancelBtn.addEventListener('click',()=>{ importState='idle'; parsedTxns=[]; analysisResult=null; renderImportUI(); });
-
-      confirmBtn.addEventListener('click',async()=>{
-        importState = 'importing';
-        confirmBtn.disabled = true;
-        confirmBtn.textContent = 'Importing…';
-
-        try {
-          // Create statement record
-          const statementId = 'stmt_'+Date.now();
-          const a = analysisResult;
-
-          // ── CREDIT CARD IMPORT ──
-          if(a.statementKind==='credit_card'){
-            const cm = a.cardMeta||{};
-            const cardTxns = parsedTxns.map(t=>({...t, statementId}));
-            const BATCH2 = 100;
-            for(let i=0;i<cardTxns.length;i+=BATCH2){
-              await txnDB.writeBatch(cardTxns.slice(i,i+BATCH2));
-            }
-
-            await txnDB.writeStatement({
-              statementId,
-              accountId: a.account,
-              filename: a.filename,
-              sourceFormat: 'barclaycard_pdf_v1',
-              sourceBank: 'Barclaycard',
-              statementKind: 'credit_card',
-              periodStart: a.periodStart,
-              periodEnd: a.periodEnd,
-              uploadedAt: new Date().toISOString(),
-              transactionCount: cardTxns.length,
-              importStatus: 'complete',
-              newCount: cardTxns.length - a.possibleDuplicates,
-              duplicateCount: a.possibleDuplicates,
-              matchedPaycheckCount: 0,
-              matchedSubscriptionCount: a.subMatches.length,
-              reviewCount: a.needsReview,
-              fileFingerprint: a.fingerprint,
-              statementBalance: cm.newBalance ?? null,
-              creditLimit: cm.creditLimit ?? null,
-              paymentDue: cm.dueDate || null,
-              minimumPayment: cm.minPayment ?? null,
-            });
-
-            // Stop the settling DDR being counted as spending as well
-            const settlementDate = (parsedTxns.find(t=>t.isPayment)||{}).date || null;
-            await reclassifyCardSettlement(cm.paymentMade, settlementDate);
-
-            // Keep the credit card balance in step with the statement
-            if(cm.newBalance!=null){
-              const accts = appData.accounts||[];
-              if(accts.length){
-                const upd = accts.map(x=>x.type==='credit_card'
-                  ? {...x, balance:cm.newBalance, creditLimit:cm.creditLimit??x.creditLimit,
-                     updatedAt:new Date().toISOString()} : x);
-                await save({...appData, accounts:upd,
-                  balances:{...appData.balances, creditCard:cm.newBalance}});
-              } else {
-                await save({...appData, balances:{...appData.balances, creditCard:cm.newBalance}});
-              }
-            }
-
-            const allNow = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
-            if(allNow.val()) await updateSubscriptionBillingDates(Object.values(allNow.val()));
-
-            importState = 'complete';
-            parsedTxns = []; analysisResult = null; cardParsed = null;
-            renderImportUI();
-            renderHistory();
-            return;
-          }
-
-          // Mark paycheck matches
-          const paycheckMatchIds = new Set(a.paycheckMatches.map(m=>m.txn.transactionId));
-          const subMatchIds = new Map(a.subMatches.map(m=>[m.txn.transactionId, m.subscription.id]));
-
-          // Assign statementId to all transactions and mark reconciliation
-          const finalTxns = parsedTxns.map(t => {
-            let rec = t.reconciliationStatus;
-            let paycheckId = null, subscriptionId = null;
-            if(paycheckMatchIds.has(t.transactionId)){
-              rec = 'matched';
-              const match = a.paycheckMatches.find(m=>m.txn.transactionId===t.transactionId);
-              paycheckId = match?.paycheck?.id || null;
-            }
-            if(subMatchIds.has(t.transactionId)){
-              rec = 'matched';
-              subscriptionId = subMatchIds.get(t.transactionId);
-            }
-            return {...t, statementId, reconciliationStatus:rec, paycheckId, subscriptionId};
-          });
-
-          // Import in batches of 100 to avoid Firebase limits
-          const BATCH = 100;
-          for(let i=0;i<finalTxns.length;i+=BATCH){
-            await txnDB.writeBatch(finalTxns.slice(i,i+BATCH));
-          }
-
-          // Save statement record
-          const stmt = {
-            statementId,
-            accountId: a.account,
-            filename: a.filename,
-            sourceFormat: 'barclays_csv_v1',
-            sourceBank: 'Barclays',
-            periodStart: a.periodStart,
-            periodEnd: a.periodEnd,
-            uploadedAt: new Date().toISOString(),
-            transactionCount: a.total,
-            importStatus: 'complete',
-            newCount: a.total - a.possibleDuplicates,
-            duplicateCount: a.possibleDuplicates,
-            matchedPaycheckCount: a.paycheckMatches.length,
-            matchedSubscriptionCount: a.subMatches.length,
-            reviewCount: a.needsReview,
-            fileFingerprint: a.fingerprint,
-          };
-          await txnDB.writeStatement(stmt);
-
-          // ── Auto-update subscription billing dates from ALL transactions ──
-          const allTxnsSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
-          const allTxnsVal = allTxnsSnap.val() || {};
-          const allTxns = Object.values(allTxnsVal);
-
-          await updateSubscriptionBillingDates(allTxns);
-
-          importState = 'complete';
-          parsedTxns = []; analysisResult = null;
-          renderImportUI();
-          renderHistory();
-        } catch(err){
-          importState = 'error';
-          renderImportUI();
-          console.error('Import error:', err);
-        }
-      });
-
-      previewCard.append(importingNote, confirmBtn, cancelBtn);
+      const btn=el('button',{class:'btn-primary'},'Import '+totalTxns+' transactions');
+      btn.addEventListener('click',()=>{ runImport().catch(err=>{ importState='error'; importSummary={error:err.message}; renderImportUI(); }); });
+      const cancel=el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Cancel');
+      cancel.addEventListener('click',()=>{ queue=[]; importState='idle'; renderImportUI(); });
+      previewCard.append(btn, cancel);
       importWrap.append(previewCard);
+      importWrap.append(queueListCard());
     }
 
     if(importState === 'importing'){
-      importWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px'}},
-        el('div',{style:{fontSize:'16px',fontWeight:'600',marginBottom:'8px'}},'Importing transactions…'),
-        el('div',{style:{fontSize:'13px',color:'var(--text2)'}},'Please wait, do not close the app.')
-      ));
+      const pct = importProgress.total ? Math.round(importProgress.done/importProgress.total*100) : 0;
+      const card=el('div',{class:'card'});
+      card.append(
+        el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'6px'}},'Importing…'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'12px'}},
+          importProgress.done+' of '+importProgress.total+' statements'+(importProgress.label?' · '+importProgress.label:'')),
+        el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:pct+'%'}})),
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'10px'}},'Please keep the app open.')
+      );
+      importWrap.append(card);
     }
 
     if(importState === 'complete'){
-      const doneCard = el('div',{class:'card',style:{textAlign:'center',padding:'30px'}});
+      const s=importSummary||{};
+      const doneCard=el('div',{class:'card',style:{textAlign:'center',padding:'30px'}});
       doneCard.append(
         el('div',{style:{fontSize:'32px',marginBottom:'12px'}},'✅'),
         el('div',{style:{fontSize:'18px',fontWeight:'700',marginBottom:'8px'}},'Import complete'),
-        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'16px'}},'Your transactions are now in your financial history.')
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'16px',lineHeight:'1.6'}},
+          (s.txns||0)+' transactions from '+(s.files||0)+' statement'+((s.files||0)===1?'':'s')+'.'+
+          (s.settlementsFixed?' '+s.settlementsFixed+' card settlement'+(s.settlementsFixed===1?'':'s')+' marked as transfers.':'')+
+          (s.skipped?' '+s.skipped+' file'+(s.skipped===1?'':'s')+' skipped.':''))
       );
-      const newImportBtn = el('button',{class:'btn-primary'},'Import another statement');
-      newImportBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
-      const viewTxnsBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'View transactions');
-      viewTxnsBtn.addEventListener('click',()=>{ /* switch to transactions tab - set via global */ if(window._setTab) window._setTab('_transactions'); });
-      doneCard.append(newImportBtn, viewTxnsBtn);
+      const again=el('button',{class:'btn-primary'},'Import more statements');
+      again.addEventListener('click',()=>{ importState='idle'; importSummary=null; renderImportUI(); });
+      const viewBtn=el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'View transactions');
+      viewBtn.addEventListener('click',()=>{ if(window._setTab) window._setTab('_transactions'); });
+      doneCard.append(again, viewBtn);
       importWrap.append(doneCard);
     }
 
     if(importState === 'error'){
+      const s=importSummary||{};
       importWrap.append(el('div',{class:'card',style:{color:'var(--red)',padding:'20px'}},
         el('div',{style:{fontWeight:'700',marginBottom:'8px'}},'Import failed'),
-        el('div',{style:{fontSize:'13px'}},'Something went wrong. Please try again.')
+        el('div',{style:{fontSize:'13px'}},s.error||'Something went wrong. Please try again.')
       ));
-      const retryBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Try again');
-      retryBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
-      importWrap.append(retryBtn);
+      const retry=el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Try again');
+      retry.addEventListener('click',()=>{ queue=[]; importSummary=null; importState='idle'; renderImportUI(); });
+      importWrap.append(retry);
     }
+  }
+
+  // Per-file breakdown shown under the summary
+  function queueListCard(){
+    const wrap=el('div',{});
+    if(!queue.length) return wrap;
+    wrap.append(el('div',{class:'section-hdr'},'Files'));
+    for(const e of queue){
+      const a=e.analysis;
+      const meta={
+        pending:  ['Waiting','var(--text3)'],
+        parsing:  ['Reading…','var(--text2)'],
+        ready:    [e.kind==='credit_card'?'Credit card':'Current account','var(--green)'],
+        duplicate:['Already imported','var(--amber)'],
+        error:    ['Could not read','var(--red)'],
+      }[e.status]||['','var(--text3)'];
+
+      const row=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',
+        gap:'10px',padding:'12px 14px',background:'var(--surface)',border:'1px solid var(--border)',
+        borderRadius:'12px',marginBottom:'6px',
+        borderLeft:'3px solid '+(e.status==='ready'?'var(--green)':e.status==='error'?'var(--red)':e.status==='duplicate'?'var(--amber)':'var(--border)')}});
+
+      const left=el('div',{style:{flex:'1',minWidth:'0'}});
+      left.append(
+        el('div',{style:{fontSize:'13px',fontWeight:'600',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},e.name),
+        el('div',{style:{fontSize:'11px',color:meta[1],marginTop:'2px'}},
+          meta[0]+(a&&a.periodStart?' · '+a.periodStart.slice(0,7)+' → '+a.periodEnd.slice(0,7):'')+(e.error?' · '+e.error:''))
+      );
+      const right=el('div',{style:{textAlign:'right',flexShrink:'0'}});
+      if(e.status==='ready'){
+        right.append(
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px'}},a.total+' txns'),
+          a.possibleDuplicates?el('div',{style:{fontSize:'10px',color:'var(--amber)',marginTop:'2px'}},a.possibleDuplicates+' dup'):el('span')
+        );
+      }
+      row.append(left,right);
+
+      if(e.status==='ready'){
+        const skip=el('button',{style:{background:'none',color:'var(--text3)',fontSize:'11px',padding:'0 0 0 8px',flexShrink:'0'}},'Skip');
+        skip.addEventListener('click',()=>{
+          e.status='skipped';
+          if(!queue.some(x=>x.status==='ready')) importState='nothing';
+          renderImportUI();
+        });
+        row.append(skip);
+      }
+      wrap.append(row);
+    }
+    return wrap;
   }
 
   renderImportUI();
