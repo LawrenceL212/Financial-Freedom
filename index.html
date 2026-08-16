@@ -1764,6 +1764,48 @@ function findSubscriptionMatches(txns, subscriptions){
   return matches;
 }
 
+// ── Update subscription billing dates from all transactions ──
+async function updateSubscriptionBillingDates(allTxns){
+  if(!allTxns || !allTxns.length) return;
+  const debitTxns = allTxns.filter(t=>t.direction==='debit');
+
+  const updatedSubs = appData.subscriptions.map(sub=>{
+    const firstWord = sub.name.toLowerCase().split(' ')[0];
+    const matchingTxns = debitTxns
+      .filter(t=>
+        t.normalisedMerchant.toLowerCase().includes(firstWord) ||
+        firstWord.includes(t.normalisedMerchant.toLowerCase().split(' ')[0]) ||
+        (t.rawDescription||'').toLowerCase().includes(firstWord) ||
+        (t.rawMemo||'').toLowerCase().includes(firstWord)
+      )
+      .sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+
+    if(!matchingTxns.length) return sub;
+
+    // Most common billing day across all history
+    const dayCount = {};
+    for(const t of matchingTxns){
+      const d = parseInt(t.postingDate.split('-')[2]);
+      dayCount[d] = (dayCount[d]||0)+1;
+    }
+    const billingDay = parseInt(Object.entries(dayCount).sort((a,b)=>b[1]-a[1])[0][0]);
+    const lastPaid = matchingTxns[0];
+    const amountChanged = Math.abs(lastPaid.amount - sub.amount) > 0.5;
+
+    return {
+      ...sub,
+      billingDay,
+      lastPaidDate: lastPaid.postingDate,
+      lastPaidAmount: lastPaid.amount,
+      amountChangedFromStatement: amountChanged,
+    };
+  });
+
+  await save({...appData, subscriptions: updatedSubs});
+  // Update in-memory too
+  appData.subscriptions = updatedSubs;
+}
+
 // ══════════════════════════════════════
 // STATEMENT IMPORT SCREEN
 // ══════════════════════════════════════
@@ -2049,46 +2091,12 @@ function statementsScreen(){
           };
           await txnDB.writeStatement(stmt);
 
-          // ── Auto-update subscription billing dates from matched transactions ──
-          // Use the most flexible merchant matching to find real payment dates
-          const allTxns = finalTxns;
-          const updatedSubs = appData.subscriptions.map(sub => {
-            // Find all transactions that match this subscription
-            const subName = sub.name.toLowerCase();
-            const firstWord = subName.split(' ')[0];
-            const matchingTxns = allTxns
-              .filter(t =>
-                t.direction === 'debit' &&
-                (t.normalisedMerchant.toLowerCase().includes(firstWord) ||
-                 firstWord.includes(t.normalisedMerchant.toLowerCase().split(' ')[0]) ||
-                 t.rawDescription.toLowerCase().includes(firstWord) ||
-                 t.rawMemo?.toLowerCase().includes(firstWord))
-              )
-              .sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+          // ── Auto-update subscription billing dates from ALL transactions ──
+          const allTxnsSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+          const allTxnsVal = allTxnsSnap.val() || {};
+          const allTxns = Object.values(allTxnsVal);
 
-            if(!matchingTxns.length) return sub;
-
-            // Get the most common billing day from payment history
-            const billingDays = matchingTxns.map(t=>parseInt(t.postingDate.split('-')[2]));
-            const dayCount = {};
-            for(const d of billingDays){ dayCount[d]=(dayCount[d]||0)+1; }
-            const billingDay = parseInt(Object.entries(dayCount).sort((a,b)=>b[1]-a[1])[0][0]);
-
-            // Get the last actual amount paid
-            const lastAmount = matchingTxns[0].amount;
-            const amountChanged = Math.abs(lastAmount - sub.amount) > 0.5;
-
-            return {
-              ...sub,
-              billingDay,
-              lastPaidDate: matchingTxns[0].postingDate,
-              lastPaidAmount: lastAmount,
-              amountChangedFromStatement: amountChanged,
-            };
-          });
-
-          // Save updated subscriptions with billing dates
-          await save({...appData, subscriptions: updatedSubs});
+          await updateSubscriptionBillingDates(allTxns);
 
           importState = 'complete';
           parsedTxns = []; analysisResult = null;
@@ -4244,6 +4252,11 @@ auth.onAuthStateChanged(async user => {
     appData.profile = {displayName, email:user.email};
   }
   mainScreen();
+  // Silently update subscription billing dates from all existing transactions
+  db.ref('users/'+user.uid+'/transactions').limitToLast(500).once('value').then(snap=>{
+    const val = snap.val();
+    if(val) updateSubscriptionBillingDates(Object.values(val));
+  });
 });
 </script>
 </body>
