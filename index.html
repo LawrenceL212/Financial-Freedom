@@ -1138,6 +1138,10 @@ function settingsScreen(){
     await save({...appData, subscriptions:subs}); // BUG FIX 4: save subs without clobbering balances
     saveSubBtn.textContent='Saved ✓';
     setTimeout(()=>saveSubBtn.textContent='Save subscriptions',2000);
+    // Re-render home if it's visible so changes show immediately
+    if(window._setTab && document.querySelector('.nav-btn.active')?.textContent?.includes('Home')){
+      window._setTab('home');
+    }
   });
 
   const signOutBtn = el('button',{class:'btn-ghost',style:{marginTop:'32px'}},'Sign out');
@@ -4998,7 +5002,7 @@ function mainScreen(startTab='home'){
       const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'9px 16px',borderRadius:'10px',fontWeight:'700',fontSize:'13px'}},'I got paid');
       payBtn2.addEventListener('click',()=>render(paydayFlow()));
       makeHeader('Financial Freedom', payBtn2);
-      body.append(header, overviewScreen());
+      body.append(header, overviewScreen()); // always re-renders fresh from appData
 
     } else if(t==='money'||t==='_accounts'||t==='_transactions'||t==='_analytics'){
       if(t!=='money') moneySubTab = t.slice(1);
