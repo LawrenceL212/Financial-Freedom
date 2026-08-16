@@ -546,16 +546,24 @@ function overviewScreen(){
     const totalCommitted = upcomingOut + upcomingSubCost;
 
     // ── HIDDEN SUBSCRIPTION DETECTION ──
-    // Find recurring patterns in transactions that aren't in the subscriptions list
+    // Find recurring patterns not in subscriptions list AND not already reviewed
     const hiddenSubs = [];
     if(txns.length > 10){
       const patterns = detectRecurring(txns);
       const knownSubNames = subscriptions.map(s=>s.name.toLowerCase().split(' ')[0]);
+
+      // Load already-reviewed recurring patterns from Firebase
+      const recSnap = await db.ref('users/'+currentUser.uid+'/recurringPatterns').once('value');
+      const recVal = recSnap.val() || {};
+      const reviewedMerchants = new Set(Object.values(recVal).map(p=>p.merchant));
+
       for(const p of patterns){
         if(p.frequency !== 'Monthly' && p.frequency !== 'Weekly' && p.frequency !== 'Fortnightly') continue;
         if(p.confidence < 0.75) continue;
         if(p.observations < 2) continue;
-        // Check if already in subscriptions list
+        // Skip if already reviewed (confirmed or ignored)
+        if(reviewedMerchants.has(p.merchant)) continue;
+        // Skip if already in subscriptions list
         const alreadyKnown = knownSubNames.some(n=>
           p.merchant.toLowerCase().includes(n) || n.includes(p.merchant.toLowerCase().split(' ')[0])
         );
