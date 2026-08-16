@@ -2200,6 +2200,160 @@ async function updateSubscriptionBillingDates(allTxns){
   appData.subscriptions = updatedSubs;
 }
 
+// ── Barclaycard PDF Parser (validated against real statement) ──
+// NOTE: Barclaycard PDFs are TWO-COLUMN. A single extracted text line can contain
+// two unrelated transactions, so we scan within each line rather than anchoring.
+async function loadPdfJs(){
+  if(window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=res; s.onerror=()=>rej(new Error('Could not load PDF library. Check your connection.'));
+    document.head.append(s);
+  });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+
+async function extractPdfText(file){
+  const lib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await lib.getDocument({data:buf}).promise;
+  let out='';
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const content=await page.getTextContent();
+    const rows={};
+    for(const it of content.items){
+      const y=Math.round(it.transform[5]);
+      (rows[y]=rows[y]||[]).push({x:it.transform[4],s:it.str});
+    }
+    for(const y of Object.keys(rows).map(Number).sort((a,b)=>b-a)){
+      out += rows[y].sort((a,b)=>a.x-b.x).map(i=>i.s).join(' ').replace(/\s+/g,' ').trim()+'\n';
+    }
+  }
+  return out;
+}
+
+const CARD_MONTHS={Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+
+function parseBarclaycardText(text){
+  if(!/barclaycard/i.test(text)) throw new Error('This does not look like a Barclaycard statement.');
+
+  const num = s => s ? parseFloat(s.replace(/,/g,'')) : null;
+  const grab = re => { const m=text.match(re); return m?m[1]:null; };
+
+  const newBalance  = num(grab(/Your new balance:?\s*£([\d,]+\.\d{2})/i));
+  const prevBalance = num(grab(/Your previous balance:?\s*£([\d,]+\.\d{2})/i));
+  const paymentMade = num(grab(/Payments towards your account:?\s*£([\d,]+\.\d{2})/i));
+  const creditLimit = num(grab(/credit limit:?\s*£([\d,]+\.\d{2})/i));
+  const statedSpend = num(grab(/How you've used your card\s*£([\d,]+\.\d{2})/i));
+  const minPayment  = num(grab(/Minimum payment:?\s*£([\d,]+\.\d{2})/i));
+  const dueDateStr  = grab(/Please pay by:?\s*(\d{1,2}\s+\w+\s+\d{4})/i);
+  const cardLast4   = (grab(/Number\s+((?:\d{4}\s*){4})/)||'').replace(/\s/g,'').slice(-4)||null;
+
+  // Statement issue date anchors the year for DD-MMM transaction dates
+  const issued = grab(/issued on (\d{1,2}\s+\w+\s+\d{4})/i) || dueDateStr;
+  const issuedDate = issued ? new Date(issued) : new Date();
+  const issuedYear = issuedDate.getFullYear();
+  const issuedMon  = issuedDate.getMonth();
+
+  const MON='Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec';
+  const pat = new RegExp('(\\d{1,2})\\s+('+MON+')\\s+(.+?)\\s*(?:\\be\\b\\s*)?£([\\d,]+\\.\\d{2})','g');
+
+  const txns=[];
+  for(const line of text.split('\n')){
+    pat.lastIndex=0;
+    let m;
+    while((m=pat.exec(line))!==null){
+      const day=parseInt(m[1],10);
+      const mon=CARD_MONTHS[m[2]];
+      if(mon===undefined) continue;
+      const desc=m[3].trim().replace(/,$/,'').trim();
+      if(!desc) continue;
+      const amount=num(m[4]);
+      // Statement covers the weeks before issue: a month AFTER the issue month
+      // must belong to the previous year.
+      const year = mon > issuedMon ? issuedYear-1 : issuedYear;
+      const date = year+'-'+String(mon+1).padStart(2,'0')+'-'+String(day).padStart(2,'0');
+      txns.push({date, description:desc, amount,
+        isPayment: /payment by direct debit|payment received|payment thank/i.test(desc)});
+    }
+  }
+
+  const spending = txns.filter(t=>!t.isPayment);
+  const parsedSpend = Math.round(spending.reduce((s,t)=>s+t.amount,0)*100)/100;
+  const dates = spending.map(t=>t.date).sort();
+
+  return {
+    txns,
+    meta:{
+      newBalance, prevBalance, paymentMade, creditLimit, minPayment,
+      statedSpend, parsedSpend,
+      reconciles: statedSpend!=null ? Math.abs(statedSpend-parsedSpend)<0.02 : null,
+      dueDate: dueDateStr, cardLast4,
+      periodStart: dates[0]||null, periodEnd: dates[dates.length-1]||null,
+    },
+  };
+}
+
+async function parseBarclaycardPDF(file){
+  const text = await extractPdfText(file);
+  return parseBarclaycardText(text);
+}
+
+// Card purchases become EXPENSE transactions on the card account.
+// The DDR that settles the card is NOT spending — it is excluded here and
+// reclassified as a transfer on the current account, so nothing double-counts.
+function normaliseCardTransactions(parsed, statementId, accountId){
+  const now=new Date().toISOString();
+  return parsed.txns.filter(t=>!t.isPayment).map(t=>{
+    const merchant=normaliseMerchant(t.description);
+    const [category,subcategory]=suggestCategory(merchant,'EXPENSE');
+    const idSource=accountId+'|'+t.date+'|'+t.amount+'|'+t.description;
+    const txnId='txn_'+btoa(unescape(encodeURIComponent(idSource))).replace(/[^a-z0-9]/gi,'').slice(0,20)+'_'+Math.random().toString(36).slice(2,6);
+    return {
+      transactionId:txnId, statementId, accountId,
+      postingDate:t.date, transactionDate:t.date, transactionDateInferred:false,
+      amount:t.amount, currency:'GBP', direction:'debit',
+      bankTransactionNumber:null, bankTransactionType:'Card Purchase', bankPaymentCode:'CPM',
+      rawDescription:t.description, rawMemo:t.description,
+      raw:{date:t.date, description:t.description, amount:String(t.amount)},
+      normalisedMerchant:merchant, financialType:'EXPENSE',
+      category, subcategory:subcategory||null,
+      purpose:null, goalId:null, tags:[], notes:'',
+      reconciliationStatus:'unmatched', matchedTransactionId:null,
+      paycheckId:null, subscriptionId:null,
+      confidence:0.85, source:'credit_card_statement', sourceType:'credit_card',
+      userConfirmed:false, userCategory:null,
+      createdAt:now, updatedAt:now,
+    };
+  });
+}
+
+// Reclassify the current-account DDR that settles this card as a transfer,
+// so card spending is not counted twice.
+async function reclassifyCardSettlement(paymentAmount, paymentDate){
+  if(!paymentAmount) return 0;
+  const snap=await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+  const all=Object.values(snap.val()||{});
+  const target=new Date(paymentDate||Date.now());
+  let changed=0;
+  for(const t of all){
+    if(t.sourceType==='credit_card') continue;
+    if(t.direction!=='debit') continue;
+    if(Math.abs(t.amount-paymentAmount)>0.01) continue;
+    if(!/b\/card|barclaycard/i.test((t.rawMemo||'')+(t.rawDescription||''))) continue;
+    if(paymentDate && Math.abs(new Date(t.postingDate)-target)/86400000>5) continue;
+    if(t.financialType==='TRANSFER_OUT') continue;
+    await txnDB.write({...t, financialType:'TRANSFER_OUT', category:'Transfer',
+      notes:(t.notes?t.notes+' ':'')+'Credit card settlement — excluded from spending',
+      updatedAt:new Date().toISOString()});
+    changed++;
+  }
+  return changed;
+}
+
 // ══════════════════════════════════════
 // STATEMENT IMPORT SCREEN
 // ══════════════════════════════════════
@@ -2211,6 +2365,7 @@ function statementsScreen(){
   let analysisResult = null;
   let statementMeta = null;
   let fileContent = null;
+  let cardParsed = null;
 
   const stmtWrap = el('div',{}); // statement history
   const importWrap = el('div',{}); // import UI
@@ -2264,12 +2419,12 @@ function statementsScreen(){
       const uploadCard = el('div',{class:'card'});
       uploadCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Import Statement</div>`;
 
-      const fileInp = el('input',{type:'file',accept:'.csv',style:{display:'none'}});
-      const uploadBtn = el('button',{class:'btn-primary'},'📂 Choose CSV file');
+      const fileInp = el('input',{type:'file',accept:'.csv,.pdf',style:{display:'none'}});
+      const uploadBtn = el('button',{class:'btn-primary'},'📂 Choose statement file');
       uploadBtn.addEventListener('click',()=>fileInp.click());
 
       const infoDiv = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'10px',lineHeight:'1.6'}},
-        'Supports Barclays current account CSV export. Raw bank data is preserved — your interpretations are stored separately.');
+        'Supports Barclays current account CSV and Barclaycard PDF statements. The type is detected automatically. Raw statement data is preserved — your interpretations are stored separately.');
 
       fileInp.addEventListener('change',async(e)=>{
         const file = e.target.files[0];
@@ -2279,8 +2434,19 @@ function statementsScreen(){
         uploadBtn.disabled = true;
 
         try {
-          fileContent = await file.text();
-          const fingerprint = await hashFile(fileContent);
+          const isPDF = /\.pdf$/i.test(file.name) || file.type==='application/pdf';
+
+          // Fingerprint: PDFs are binary, so hash the bytes rather than text
+          let fingerprint;
+          if(isPDF){
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const digest = await crypto.subtle.digest('SHA-256', bytes);
+            fingerprint = Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+            fileContent = null;
+          } else {
+            fileContent = await file.text();
+            fingerprint = await hashFile(fileContent);
+          }
 
           // Check for duplicate file
           const existing = await txnDB.getFingerprints();
@@ -2296,7 +2462,43 @@ function statementsScreen(){
             return;
           }
 
-          // Parse
+          // ── CREDIT CARD (PDF) BRANCH ──
+          if(isPDF){
+            const parsed = await parseBarclaycardPDF(file);
+            const m = parsed.meta;
+            const accountId = 'barclaycard'+(m.cardLast4?'_'+m.cardLast4:'');
+            const cardTxns = normaliseCardTransactions(parsed, null, accountId);
+            parsedTxns = cardTxns;
+            cardParsed = parsed;
+
+            const dupResult = await detectDuplicates(cardTxns, [], null);
+            const subMatches = findSubscriptionMatches(cardTxns, appData.subscriptions||[]);
+
+            analysisResult = {
+              statementKind:'credit_card',
+              fingerprint,
+              account: 'Barclaycard'+(m.cardLast4?' ••••'+m.cardLast4:''),
+              periodStart: m.periodStart,
+              periodEnd: m.periodEnd,
+              total: cardTxns.length,
+              income:0,
+              expenses: cardTxns.length,
+              transfers:0,
+              refunds:0,
+              possibleDuplicates: dupResult.possible.length,
+              paycheckMatches: [],
+              subMatches,
+              needsReview: cardTxns.filter(t=>t.category==='Uncategorised').length,
+              filename: file.name,
+              cardMeta: m,
+            };
+            importState = 'preview';
+            renderImportUI();
+            return;
+          }
+
+          // ── CURRENT ACCOUNT (CSV) BRANCH ──
+          cardParsed = null;
           const {txns, account, minDate, maxDate} = parseBarclaysCSV(fileContent);
           parsedTxns = txns;
 
@@ -2318,6 +2520,7 @@ function statementsScreen(){
           const needsReview = txns.filter(t=>t.confidence<0.6||t.financialType.startsWith('UNKNOWN')).length;
 
           analysisResult = {
+            statementKind:'current_account',
             fingerprint,
             account,
             periodStart: minDate,
@@ -2372,15 +2575,61 @@ function statementsScreen(){
         );
         return box;
       };
-      grid.append(
-        stat('Total transactions', a.total),
-        stat('Income credits', a.income, 'var(--green)'),
-        stat('Expenses', a.expenses, 'var(--red)'),
-        stat('Transfers', a.transfers, 'var(--text2)'),
-        stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
-        stat('Possible duplicates', a.possibleDuplicates, a.possibleDuplicates>0?'var(--amber)':'var(--text)'),
-      );
-      previewCard.append(grid);
+      if(a.statementKind==='credit_card'){
+        const cm = a.cardMeta||{};
+        grid.append(
+          stat('Card purchases', a.total),
+          stat('Total spent', fmt(cm.parsedSpend||0), 'var(--red)'),
+          stat('Statement balance', fmt(cm.newBalance||0), 'var(--red)'),
+          stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
+        );
+        previewCard.append(grid);
+
+        // Reconciliation against the figure printed on the statement
+        if(cm.statedSpend!=null){
+          const ok = cm.reconciles;
+          previewCard.append(el('div',{style:{background:ok?'var(--green-dim)':'var(--amber-dim)',
+            borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'13px',
+            color:ok?'var(--green)':'var(--amber)'}},
+            ok ? '✓ Reconciled — parsed total matches the '+fmt(cm.statedSpend)+' printed on your statement'
+               : '⚠️ Parsed '+fmt(cm.parsedSpend)+' but statement says '+fmt(cm.statedSpend)+'. Review before importing.'));
+        }
+
+        // Credit utilisation
+        if(cm.creditLimit){
+          const util = Math.round((cm.newBalance||0)/cm.creditLimit*100);
+          const uCol = util>70?'var(--red)':util>30?'var(--amber)':'var(--green)';
+          const uDiv = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
+          uDiv.append(
+            el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'12px',marginBottom:'6px'}},
+              el('span',{style:{color:'var(--text2)'}},'Credit used'),
+              el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:uCol}},util+'% of '+fmt(cm.creditLimit))),
+            el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:Math.min(100,util)+'%',background:uCol}}))
+          );
+          previewCard.append(uDiv);
+        }
+
+        // Settlement explanation
+        if(cm.paymentMade){
+          previewCard.append(el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+            'The '+fmt(cm.paymentMade)+' direct debit that cleared this card will be marked as a transfer on your current account, so this spending is not counted twice.'));
+        }
+
+        if(cm.dueDate){
+          previewCard.append(el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}},
+            'Next payment '+fmt(cm.newBalance||0)+' due '+cm.dueDate+(cm.minPayment?' · minimum '+fmt(cm.minPayment):'')));
+        }
+      } else {
+        grid.append(
+          stat('Total transactions', a.total),
+          stat('Income credits', a.income, 'var(--green)'),
+          stat('Expenses', a.expenses, 'var(--red)'),
+          stat('Transfers', a.transfers, 'var(--text2)'),
+          stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
+          stat('Possible duplicates', a.possibleDuplicates, a.possibleDuplicates>0?'var(--amber)':'var(--text)'),
+        );
+        previewCard.append(grid);
+      }
 
       // Paycheck matches
       if(a.paycheckMatches.length>0){
@@ -2437,6 +2686,67 @@ function statementsScreen(){
           // Create statement record
           const statementId = 'stmt_'+Date.now();
           const a = analysisResult;
+
+          // ── CREDIT CARD IMPORT ──
+          if(a.statementKind==='credit_card'){
+            const cm = a.cardMeta||{};
+            const cardTxns = parsedTxns.map(t=>({...t, statementId}));
+            const BATCH2 = 100;
+            for(let i=0;i<cardTxns.length;i+=BATCH2){
+              await txnDB.writeBatch(cardTxns.slice(i,i+BATCH2));
+            }
+
+            await txnDB.writeStatement({
+              statementId,
+              accountId: a.account,
+              filename: a.filename,
+              sourceFormat: 'barclaycard_pdf_v1',
+              sourceBank: 'Barclaycard',
+              statementKind: 'credit_card',
+              periodStart: a.periodStart,
+              periodEnd: a.periodEnd,
+              uploadedAt: new Date().toISOString(),
+              transactionCount: cardTxns.length,
+              importStatus: 'complete',
+              newCount: cardTxns.length - a.possibleDuplicates,
+              duplicateCount: a.possibleDuplicates,
+              matchedPaycheckCount: 0,
+              matchedSubscriptionCount: a.subMatches.length,
+              reviewCount: a.needsReview,
+              fileFingerprint: a.fingerprint,
+              statementBalance: cm.newBalance ?? null,
+              creditLimit: cm.creditLimit ?? null,
+              paymentDue: cm.dueDate || null,
+              minimumPayment: cm.minPayment ?? null,
+            });
+
+            // Stop the settling DDR being counted as spending as well
+            const settlementDate = (parsedTxns.find(t=>t.isPayment)||{}).date || null;
+            await reclassifyCardSettlement(cm.paymentMade, settlementDate);
+
+            // Keep the credit card balance in step with the statement
+            if(cm.newBalance!=null){
+              const accts = appData.accounts||[];
+              if(accts.length){
+                const upd = accts.map(x=>x.type==='credit_card'
+                  ? {...x, balance:cm.newBalance, creditLimit:cm.creditLimit??x.creditLimit,
+                     updatedAt:new Date().toISOString()} : x);
+                await save({...appData, accounts:upd,
+                  balances:{...appData.balances, creditCard:cm.newBalance}});
+              } else {
+                await save({...appData, balances:{...appData.balances, creditCard:cm.newBalance}});
+              }
+            }
+
+            const allNow = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+            if(allNow.val()) await updateSubscriptionBillingDates(Object.values(allNow.val()));
+
+            importState = 'complete';
+            parsedTxns = []; analysisResult = null; cardParsed = null;
+            renderImportUI();
+            renderHistory();
+            return;
+          }
 
           // Mark paycheck matches
           const paycheckMatchIds = new Set(a.paycheckMatches.map(m=>m.txn.transactionId));
