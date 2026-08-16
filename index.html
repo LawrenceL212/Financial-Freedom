@@ -3355,11 +3355,44 @@ function calendarScreen(){
     const recVal = recSnap.val() || {};
     const confirmed = Object.values(recVal).filter(p=>p.status==='confirmed');
 
-    return {cashFlow, paychecks, subs, txns, confirmed};
+    // 4. Hours-based predicted paychecks
+    const hoursLog = appData.hoursLog || [];
+    const actualPay = appData.actualPay || {};
+    const RATE = appData.hourlyRate || 14.50;
+    const parseLabel = l => { const p=l.split('/'); return new Date(`${p[2]}-${p[1]}-${p[0]}`); };
+    const sortedHours = [...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
+
+    // Pair weeks into pay periods
+    const hoursPairs = [];
+    for(let i=0;i<sortedHours.length;i+=2){
+      const w1 = sortedHours[i];
+      const w2 = sortedHours[i+1];
+      const totalH = w1.total + (w2?w2.total:0);
+      const predicted = Math.round(totalH * RATE * 100)/100;
+      const actual = actualPay[w1.id+'_actual'] || null;
+
+      // Estimate payday = end of second week + 2 days (Friday pattern)
+      const w2Date = w2 ? parseLabel(w2.label) : parseLabel(w1.label);
+      const paydayDate = new Date(w2Date);
+      paydayDate.setDate(paydayDate.getDate() + 11); // ~end of 2nd week + fri
+      // Find the nearest Friday
+      while(paydayDate.getDay() !== 5) paydayDate.setDate(paydayDate.getDate()+1);
+      const paydayStr = paydayDate.toISOString().slice(0,10);
+
+      // Check if this period already has a logged paycheck (within 5 days)
+      const alreadyLogged = paychecks.some(p=>{
+        const pd = new Date(p.date);
+        return Math.abs(pd-paydayDate)/86400000 < 5 && Math.abs(p.income-predicted) < 50;
+      });
+
+      hoursPairs.push({w1, w2, totalH, predicted, actual, paydayStr, alreadyLogged});
+    }
+
+    return {cashFlow, paychecks, subs, txns, confirmed, hoursPairs};
   }
 
   function buildDayEvents(data, year, month){
-    const {cashFlow, paychecks, subs, txns, confirmed} = data;
+    const {cashFlow, paychecks, subs, txns, confirmed, hoursPairs} = data;
     const days = {};
 
     const addEvent = (dateStr, event) => {
@@ -3399,6 +3432,27 @@ function calendarScreen(){
         financialType: 'INCOME',
         source: 'paycheck',
         paycheckId: p.id,
+      });
+    }
+
+    // ── EXPECTED: hours-predicted paychecks ──
+    for(const pair of (hoursPairs||[])){
+      const {paydayStr, predicted, actual, alreadyLogged, totalH} = pair;
+      if(!paydayStr) continue;
+      const [y,m] = paydayStr.split('-').map(Number);
+      if(y !== year || m-1 !== month) continue;
+      if(alreadyLogged) continue; // already showing as actual paycheck
+
+      const isPast = new Date(paydayStr) < now;
+      addEvent(paydayStr, {
+        type: actual ? 'actual' : (isPast ? 'expected' : 'expected'),
+        label: 'Predicted payday',
+        amount: actual || predicted,
+        direction: 'credit',
+        financialType: 'INCOME',
+        source: 'hours',
+        detail: `${totalH.toFixed(1)}h × £${(appData.hourlyRate||14.50).toFixed(2)}/hr`
+          + (actual ? ` · Actual: £${actual.toFixed(2)}` : ' · estimated'),
       });
     }
 
@@ -3622,7 +3676,7 @@ function calendarScreen(){
       const info = el('div',{style:{flex:'1'}},
         el('div',{style:{fontSize:'13px',fontWeight:'500'}},e.label),
         el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},
-          (e.type==='actual'?'✓ Actual':'Expected')+(e.source?' · '+e.source:''))
+          (e.type==='actual'?'✓ Actual':'Expected')+(e.detail?' · '+e.detail:e.source?' · '+e.source:''))
       );
       const amt = el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',
         color:e.direction==='credit'?'var(--green)':e.type==='expected'?'var(--amber)':'var(--red)'}},
