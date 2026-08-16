@@ -4978,11 +4978,38 @@ function calendarScreen(){
     const recVal = recSnap.val() || {};
     const confirmed = Object.values(recVal).filter(p=>p.status==='confirmed');
 
-    // 3b. Credit card payments due — the biggest committed outgoing there is
+    // 3b. Credit card payments due — the biggest committed outgoing there is.
+    // Statements imported by older versions may be missing some fields, so
+    // identify card statements loosely and derive anything absent.
     const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
     const cardStmts = Object.values(stmtSnap.val()||{})
-      .filter(s=>s.statementKind==='credit_card' && s.paymentDue)
+      .filter(s =>
+        s.statementKind==='credit_card' ||
+        s.sourceBank==='Barclaycard' ||
+        /barclaycard/i.test(s.sourceFormat||'') ||
+        s.statementBalance!=null || s.creditLimit!=null
+      )
+      .map(s=>{
+        // Barclaycard collects roughly 25 days after the statement date
+        let due = s.paymentDue;
+        if(!due && s.periodEnd){
+          const d=new Date(s.periodEnd);
+          if(!isNaN(d)){ d.setDate(d.getDate()+25); due=d.toISOString().slice(0,10); }
+        }
+        return {...s, paymentDue:due, _derivedDue:!s.paymentDue};
+      })
+      .filter(s=>s.paymentDue && s.statementBalance!=null && s.statementBalance>0)
       .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+
+    // Fallback: no usable statement, but a card account with a balance exists
+    const cardAcct = (appData.accounts||[]).find(a=>a.type==='credit_card' && a.balance>0);
+    if(!cardStmts.length && cardAcct){
+      const d=new Date(); d.setMonth(d.getMonth()+1); d.setDate(1);
+      cardStmts.push({
+        statementId:'derived_card', paymentDue:d.toISOString().slice(0,10),
+        statementBalance:cardAcct.balance, _derivedDue:true, _derivedFromAccount:true,
+      });
+    }
 
     // 4. Hours-based predicted paychecks
     const hoursLog = appData.hoursLog || [];
@@ -5162,7 +5189,10 @@ function calendarScreen(){
         direction: 'debit',
         financialType: settled ? 'TRANSFER_OUT' : 'EXPENSE',
         source: 'credit card',
-        detail: settled ? 'Paid in full' : 'Full balance — pay this to avoid interest',
+        detail: settled ? 'Paid in full'
+                : s._derivedFromAccount ? 'Estimated from your card balance — import a statement for the exact date'
+                : s._derivedDue ? 'Date estimated from the statement period'
+                : 'Full balance — pay this to avoid interest',
         statementId: s.statementId,
       });
     }
@@ -5407,7 +5437,25 @@ function calendarScreen(){
   });
   formCard.append(nameInp,amtInp,dateInp,recurSel,typeRow,addBtn);
 
-  content.append(legendWrap, calWrap, dayDetailWrap, addToggle, formCard);
+  // If no card payment can be shown, say why rather than showing nothing
+  const cardNote = el('div',{style:{display:'none'}});
+  loadCalendarData().then(d=>{
+    if(d.cardStmts && d.cardStmts.length) return;
+    const hasCardAcct = (appData.accounts||[]).some(a=>a.type==='credit_card');
+    cardNote.style.display='block';
+    cardNote.className='card';
+    cardNote.style.borderLeft='3px solid var(--amber)';
+    cardNote.style.marginTop='12px';
+    cardNote.append(
+      el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'6px',color:'var(--amber)'}},'No card payment shown'),
+      el('div',{style:{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+        hasCardAcct
+          ? 'Your imported statements are missing the balance or due date, so the payment cannot be placed on a day. Set your card balance in Money → Accounts, or import a recent statement, and it will appear.'
+          : 'Add your credit card in Money → Accounts, or import a Barclaycard PDF, and its payment date will show here.')
+    );
+  }).catch(()=>{});
+
+  content.append(legendWrap, calWrap, dayDetailWrap, cardNote, addToggle, formCard);
   renderCalendar();
   return content;
 }
