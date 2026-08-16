@@ -276,9 +276,15 @@ const app = document.getElementById('app');
 function render(node){ app.innerHTML=''; app.append(node); }
 
 // ── persist ──
-async function save(data){
+// Every sign-in starts a new session. Async work started under an old session
+// must never write, or one user's data can land in another user's account.
+let sessionId = 0;
+
+async function save(data, expectedUid){
+  if(!currentUser) return;                                   // never write signed out
+  if(expectedUid && expectedUid !== currentUser.uid) return;  // stale caller, abandon
   appData = data;
-  if(currentUser) await db.ref('users/'+currentUser.uid).set(data);
+  await db.ref('users/'+currentUser.uid).set(data);
 }
 
 // ── screens ──
@@ -1070,7 +1076,7 @@ function overviewScreen(){
     const florasiiCard = el('div',{class:'card',style:{marginBottom:'12px'}});
     florasiiCard.append(
       el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'14px'}},
-        el('div',{style:{fontWeight:'700',fontSize:'15px'}},'🌸 Florasii Fund'),
+        el('div',{style:{fontWeight:'700',fontSize:'15px'}},'🌸 '+(pots.goals.exists?pots.goals.names:'Savings Goals')),
         el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:'var(--green)'}},fmt(florasiiNow))
       )
     );
@@ -1275,7 +1281,7 @@ function overviewScreen(){
     if(balances.current<0) actions.push({icon:'🚨',text:'Your account is overdrawn — avoid spending until next payday',urgent:true});
     if(balances.creditCard>0&&balances.personalSavings>balances.creditCard) actions.push({icon:'💳',text:'You have enough in savings to clear your £'+Math.round(balances.creditCard)+' credit card balance',urgent:false});
     if(subTotal>150) actions.push({icon:'✂️',text:'Review your subscriptions — £'+Math.round(subTotal)+'/mo is significant',urgent:false});
-    if(totalRequiredPerPaycheck>avgFlorasiiPerPay) actions.push({icon:'💰',text:'You need £'+Math.round(totalRequiredPerPaycheck)+'/paycheck to hit your Florasii goals — currently saving £'+Math.round(avgFlorasiiPerPay),urgent:false});
+    if(totalRequiredPerPaycheck>avgFlorasiiPerPay) actions.push({icon:'💰',text:'You need £'+Math.round(totalRequiredPerPaycheck)+'/paycheck to hit your goals — currently saving £'+Math.round(avgFlorasiiPerPay),urgent:false});
     const behindGoals = goalDetails.filter(g=>!g.onTrack);
     if(behindGoals.length) actions.push({icon:'⏰',text:behindGoals.map(g=>g.name).join(' and ')+' '+( behindGoals.length>1?'are':'is')+' behind target',urgent:false});
     const totalDebtsOwed = (appData.debts||[]).reduce((s,d)=>s+Math.max(0,d.amount-d.paid),0);
@@ -1283,10 +1289,9 @@ function overviewScreen(){
     if(totalDebtsOwed>0){
       const florasiiWithDebt = (appData.balances?.florasii||0)+earmarkedForSavings;
       actions.push({icon:'🤝',text:fmt(totalDebtsOwed)+' still owed to you'+
-        (earmarkedForSavings>0?' · '+fmt(earmarkedForSavings)+' earmarked for Florasii (would reach '+fmt(florasiiWithDebt)+')':''),urgent:false});
+        (earmarkedForSavings>0?' · '+fmt(earmarkedForSavings)+' earmarked for savings (would reach '+fmt(florasiiWithDebt)+')':''),urgent:false});
     }
-    const unsorted = txns.filter(t=>t.direction==='debit' && !t.userConfirmed &&
-      (!t.category || t.category==='Uncategorised' || t.category==='Other')).length;
+    const unsorted = txns.filter(t=>t.direction==='debit' && needsReview(t)).length;
     if(unsorted>20) actions.push({icon:'🏷️',
       text:unsorted+' transactions still need a category — sort them by merchant in More → Sort Transactions',urgent:false});
     if(txns.length===0) actions.push({icon:'📥',text:'Import your bank statement to unlock spending insights',urgent:false});
@@ -1328,7 +1333,7 @@ function overviewScreen(){
     color:a.type==='credit_card'?'var(--red)':a.type==='savings'?'var(--green)':'var(--text)'
   })) : [
     {label:'Current', val:legacyBalances.current||0, color:(legacyBalances.current||0)<0?'var(--red)':'var(--text)'},
-    {label:'Florasii', val:legacyBalances.florasii||0, color:'var(--green)'},
+    {label:'Savings', val:legacyBalances.florasii||0, color:'var(--green)'},
     {label:'Savings', val:legacyBalances.personalSavings||0, color:'var(--text)'},
     ...(legacyBalances.creditCard>0?[{label:'Credit Card', val:-(legacyBalances.creditCard||0), color:'var(--red)'}]:[]),
   ];
@@ -1439,7 +1444,7 @@ function settingsScreen(){
 
   const mkLabel = txt => el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'6px',letterSpacing:'0.5px'}},txt);
 
-  const profileInput = el('input',{placeholder:'Your name (e.g. Lawrence)',value:appData.profile?.displayName||''});
+  const profileInput = el('input',{placeholder:'Your name',value:appData.profile?.displayName||''});
   const saveProfileBtn = el('button',{class:'btn-primary',style:{marginTop:'8px',fontSize:'14px',padding:'12px'}},'Save name');
   saveProfileBtn.addEventListener('click',async()=>{
     const name = profileInput.value.trim();
@@ -1765,12 +1770,12 @@ function askScreen(){
   }
 
   // Welcome message
-  addMessage('assistant', 'Hi! I can answer questions about your finances using your real data.\n\nTry asking:\n• "How much do I normally get paid?"\n• "Can I afford £300?"\n• "When will I hit my Florasii goal?"\n• "How much do my subscriptions cost?"\n• "What\'s my savings rate?"');
+  addMessage('assistant', 'Hi! I can answer questions about your finances using your real data.\n\nTry asking:\n• "How much do I normally get paid?"\n• "Can I afford £300?"\n• "When will I hit my savings goal?"\n• "How much do my subscriptions cost?"\n• "What\'s my savings rate?"');
 
   // Suggested questions
   const suggestions = [
     'Can I afford £300?',
-    'When will I hit my Florasii goal?',
+    'When will I hit my savings goal?',
     'What\'s my savings rate?',
     'How much are my subscriptions?',
     'How much do I normally get paid?',
@@ -2354,8 +2359,11 @@ function findSubscriptionMatches(txns, subscriptions){
 }
 
 // ── Update subscription billing dates from all transactions ──
-async function updateSubscriptionBillingDates(allTxns){
+async function updateSubscriptionBillingDates(allTxns, expectedUid){
   if(!allTxns || !allTxns.length) return;
+  if(!currentUser) return;
+  if(expectedUid && expectedUid !== currentUser.uid) return;
+  if(!appData || !Array.isArray(appData.subscriptions)) return;
   const debitTxns = allTxns.filter(t=>t.direction==='debit');
 
   const updatedSubs = appData.subscriptions.map(sub=>{
@@ -2390,9 +2398,8 @@ async function updateSubscriptionBillingDates(allTxns){
     };
   });
 
-  await save({...appData, subscriptions: updatedSubs});
-  // Update in-memory too
-  appData.subscriptions = updatedSubs;
+  await save({...appData, subscriptions: updatedSubs}, expectedUid);
+  if(appData) appData.subscriptions = updatedSubs;
 }
 
 // ── Barclaycard PDF Parser (validated against real statement) ──
@@ -2643,7 +2650,7 @@ function statementsScreen(){
           periodStart:m.periodStart, periodEnd:m.periodEnd,
           total:txns.length, income:0, expenses:txns.length, transfers:0,
           possibleDuplicates:dupes,
-          needsReview:txns.filter(t=>t.category==='Uncategorised').length,
+          needsReview:txns.filter(t=>needsReview(t)).length,
           cardMeta:m,
         },
       };
@@ -2667,7 +2674,7 @@ function statementsScreen(){
         expenses:txns.filter(t=>t.financialType==='EXPENSE').length,
         transfers:txns.filter(t=>t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER').length,
         possibleDuplicates:dupes,
-        needsReview:txns.filter(t=>t.confidence<0.6||t.financialType.startsWith('UNKNOWN')).length,
+        needsReview:txns.filter(t=>needsReview(t)||t.financialType.startsWith('UNKNOWN')).length,
       },
     };
   }
@@ -3057,7 +3064,7 @@ function transactionsScreen(){
       if(filterType==='income' && t.financialType!=='INCOME') return false;
       if(filterType==='expense' && t.financialType!=='EXPENSE') return false;
       if(filterType==='transfer' && !t.financialType.includes('TRANSFER') && t.financialType!=='SAVINGS_TRANSFER') return false;
-      if(filterType==='review' && t.userConfirmed) return false;
+      if(filterType==='review' && !needsReview(t)) return false;
       if(searchQ){
         const q = searchQ.toLowerCase();
         if(!t.normalisedMerchant.toLowerCase().includes(q) &&
@@ -3126,7 +3133,7 @@ function transactionsScreen(){
           el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px',
             color:t.direction==='credit'?'var(--green)':'var(--text)'}},
             (t.direction==='credit'?'+':'-')+'£'+t.amount.toFixed(2)),
-          !t.userConfirmed?el('div',{style:{fontSize:'9px',color:'var(--amber)',marginTop:'1px'}},'review'):el('span')
+          needsReview(t)?el('div',{style:{fontSize:'9px',color:'var(--amber)',marginTop:'1px'}},'review'):el('span')
         );
 
         row.append(dateSpan, info, amtCol);
@@ -3792,6 +3799,17 @@ function recurringScreen(){
 // PHASE J — MERCHANT LEARNING SCREEN
 // ═══════════════════════════════════════════════════════════════
 
+// A transaction needs review only when there is still a decision to make —
+// not merely because you have not tapped it. Anything with a usable category,
+// however it got there, is settled.
+function needsReview(t){
+  if(!t) return false;
+  if(t.userConfirmed) return false;
+  const c = t.userCategory || t.category;
+  if(!c) return true;
+  return c === 'Uncategorised' || c === 'Other';
+}
+
 // ── Auto-categorisation rules, built from real statement merchants ──
 // Ordered: the first pattern that matches wins, so put specific before general.
 const AUTO_RULES = [
@@ -3935,11 +3953,7 @@ function bulkCategoriseScreen(){
   async function load(){
     const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
     const all = Object.values(snap.val()||{});
-    const pending = all.filter(t=>
-      t.direction==='debit' &&
-      !t.userConfirmed &&
-      (!t.category || t.category==='Uncategorised' || t.category==='Other')
-    );
+    const pending = all.filter(t=>t.direction==='debit' && needsReview(t));
 
     const byMerchant = {};
     for(const t of pending){
@@ -4299,7 +4313,7 @@ function trendsScreen(){
     <span style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px">to goal</span>
   </div>`;
   countdownCard.append(dialDiv, el('div',{style:{flex:'1'}},
-    el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'4px'}},'Florasii Fund'),
+    el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'4px'}},'Savings'),
     el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'22px',fontWeight:'700',color:'var(--green)'}},fmt(florasiiNow)),
     el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'4px'}},fmt(florasiiRemaining)+' remaining'),
     el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'6px'}},
@@ -4349,12 +4363,12 @@ function trendsScreen(){
   }
 
   content.append(
-    el('div',{class:'section-hdr'},'Florasii Goal'),
+    el('div',{class:'section-hdr'},'Savings Goal'),
     countdownCard,
     el('div',{class:'section-hdr'},'Net Worth over time'),
-    makeGraph('Net worth (Florasii + savings − credit card)','#64B5F6',netWorthSeries,dates),
-    el('div',{class:'section-hdr'},'Florasii Fund'),
-    makeGraph('Florasii Fund — running balance','var(--green)',florasiiSeries,dates),
+    makeGraph('Net worth (savings − credit card)','#64B5F6',netWorthSeries,dates),
+    el('div',{class:'section-hdr'},'Savings'),
+    makeGraph('Savings — running balance','var(--green)',florasiiSeries,dates),
     el('div',{class:'section-hdr'},'Current Account'),
     makeGraph('Current Account — running balance','#4FC3F7',currentSeries,dates)
   );
@@ -4467,7 +4481,9 @@ function trendsScreen(){
     const extraSpending = extraGross * 0.25;
     const florasiiNow = appData.balances?.florasii||0;
     const newFlorasii = florasiiNow + extraFlorasii;
-    const newPct = Math.min(100,(newFlorasii/15000*100)).toFixed(1);
+    const goalTarget = ((appData.goals||[]).filter(g=>g.active!==false&&g.target)
+      .reduce((s,g)=>s+g.target,0)) || 15000;
+    const newPct = Math.min(100,(newFlorasii/goalTarget*100)).toFixed(1);
     wiResult.style.display='block';
     wiResult.innerHTML=`
       <div style="font-size:13px;color:var(--text2);margin-bottom:10px">${extraH}h extra at £${RATE}/hr</div>
@@ -4476,7 +4492,7 @@ function trendsScreen(){
         <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--amber)">${fmt(extraGross)}</span>
       </div>
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:13px;color:var(--text2)">→ Extra to Florasii (75%)</span>
+        <span style="font-size:13px;color:var(--text2)">→ Extra to savings (75%)</span>
         <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(extraFlorasii)}</span>
       </div>
       <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
@@ -4484,7 +4500,7 @@ function trendsScreen(){
         <span style="font-family:'Space Mono',monospace;font-weight:700">${fmt(extraSpending)}</span>
       </div>
       <div style="display:flex;justify-content:space-between;padding:8px 0">
-        <span style="font-size:13px;color:var(--text2)">Florasii would reach</span>
+        <span style="font-size:13px;color:var(--text2)">Savings would reach</span>
         <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--green)">${fmt(newFlorasii)} <span style="font-size:11px;color:var(--text3)">(${newPct}%)</span></span>
       </div>
     `;
@@ -5448,7 +5464,7 @@ function accountsScreen(){
   // ── Add account form ──
   const formCard = el('div',{class:'card'});
   formCard.innerHTML=`<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif;font-weight:700">Add account</div>`;
-  const nameInp = el('input',{placeholder:'Account name (e.g. Florasii, Barclays, AMEX)',style:{marginBottom:'10px'}});
+  const nameInp = el('input',{placeholder:'Account name (e.g. Barclays, Emergency Fund, AMEX)',style:{marginBottom:'10px'}});
   const balInp  = el('input',{inputmode:'decimal',placeholder:'Current balance (£)',style:{marginBottom:'10px'}});
 
   const typeSel = el('select',{style:{marginBottom:'14px'}});
@@ -5893,7 +5909,7 @@ function debtScreen(){
       ),
       totalOwed>0?el('div',{style:{marginTop:'12px',fontSize:'13px',color:'var(--text2)',lineHeight:'1.6'}},
         'Once fully paid, your balance would be '+fmt((appData.balances?.current||0)+totalOwed)+
-        '. If going to Florasii, your savings would reach '+fmt((appData.balances?.florasii||0)+totalOwed)+'.'):el('span')
+        '. If it goes to savings, your goals pot would reach '+fmt((appData.balances?.florasii||0)+totalOwed)+'.'):el('span')
     ));
 
     for(const d of debts){
@@ -5941,7 +5957,7 @@ function debtScreen(){
       if(!isCleared && d.earmarkForSavings && remaining>0 && goals2.length){
         const newSavings = florasiiNow2 + remaining;
         const impactDiv = el('div',{style:{background:'var(--green-dim)',borderRadius:'10px',padding:'10px 12px',marginBottom:'10px',fontSize:'12px',lineHeight:'1.6'}});
-        impactDiv.innerHTML = `💰 If ${fmt(remaining)} goes to Florasii: savings reach <strong style="color:var(--green)">${fmt(newSavings)}</strong><br>`;
+        impactDiv.innerHTML = `💰 If ${fmt(remaining)} goes to savings: pot reaches <strong style="color:var(--green)">${fmt(newSavings)}</strong><br>`;
         for(const g of goals2){
           const share = g.target/goals2.reduce((s,x)=>s+x.target,0);
           const myShare = newSavings*share;
@@ -5961,7 +5977,7 @@ function debtScreen(){
           color: d.earmarkForSavings?'#000':'var(--text2)',
           border: d.earmarkForSavings?'none':'1px solid var(--border)',
           borderRadius:'100px',padding:'5px 12px',fontSize:'12px',fontWeight:'600'
-        }}, d.earmarkForSavings?'✓ Goes to Florasii':'Going to Florasii?');
+        }}, d.earmarkForSavings?'✓ Goes to savings':'Put toward savings?');
         earmarkBtn.addEventListener('click',async()=>{
           const updated = debts.map(x=>x.id===d.id?{...x,earmarkForSavings:!x.earmarkForSavings}:x);
           debts=updated; appData.debts=updated;
@@ -6217,10 +6233,14 @@ function mainScreen(startTab='home'){
 
 // ── boot ──
 auth.onAuthStateChanged(async user => {
+  const mySession = ++sessionId;   // supersedes anything the previous user started
   currentUser = user;
+  appData = null;                  // drop the previous user's data immediately
+  if(window._setTab) window._setTab = null;
   if(!user){ render(authScreen()); return; }
   render(el('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px'}},'Loading…'));
   const snap = await db.ref('users/'+user.uid).once('value');
+  if(mySession !== sessionId) return;   // a different user signed in mid-load
   const val = snap.val();
   appData = val ? {
     ...DEFAULT_DATA,
@@ -6248,8 +6268,10 @@ auth.onAuthStateChanged(async user => {
   mainScreen();
   // Silently update subscription billing dates from all existing transactions
   db.ref('users/'+user.uid+'/transactions').limitToLast(500).once('value').then(snap=>{
+    // By the time this resolves the user may have signed out or switched
+    if(mySession !== sessionId || !currentUser || currentUser.uid !== user.uid) return;
     const val = snap.val();
-    if(val) updateSubscriptionBillingDates(Object.values(val));
+    if(val) updateSubscriptionBillingDates(Object.values(val), user.uid);
   });
 
   // Seed default goals if none exist and this is Lawrence's account
