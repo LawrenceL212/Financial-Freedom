@@ -965,17 +965,100 @@ function overviewScreen(){
           (lastMonthSpend>0?' · '+(spendChange>0?'+':'')+Math.round(spendChange)+'% vs last month':'')));
       }
 
+      // Drill-down panel
+      const drillWrap = el('div',{style:{display:'none'}});
+
+      // Standard categories for picker
+      const STANDARD_CATS = ['Groceries','Eating out','Transport','Shopping','Health',
+        'Entertainment','Bars & Nights out','Travel','Bills','Subscriptions',
+        'Personal care','Education','Gifts','Other'];
+
+      function showDrill(cat, catTxns){
+        drillWrap.style.display='block';
+        drillWrap.innerHTML='';
+        const header = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}});
+        header.append(
+          el('div',{style:{fontWeight:'700',fontSize:'14px'}},cat+' — '+fmt(catTxns.reduce((s,t)=>s+t.amount,0))),
+          el('button',{style:{background:'none',color:'var(--text3)',fontSize:'18px',padding:'0'}},'×')
+        );
+        header.querySelector('button').addEventListener('click',()=>{ drillWrap.style.display='none'; });
+        drillWrap.append(header);
+
+        for(const t of catTxns.slice(0,15)){
+          const tRow = el('div',{style:{padding:'10px 0',borderBottom:'1px solid var(--border)'}});
+          const top = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}});
+          top.append(
+            el('div',{},
+              el('div',{style:{fontSize:'13px',fontWeight:'500'}},t.normalisedMerchant||t.rawDescription),
+              el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},t.postingDate)
+            ),
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px',color:'var(--red)'}},'-'+fmt(t.amount))
+          );
+          tRow.append(top);
+
+          // Mini category picker
+          const chipWrap = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'5px'}});
+          let selCat = t.userCategory||t.category||cat;
+          function renderChips(cw, tc){
+            cw.innerHTML='';
+            for(const c of STANDARD_CATS){
+              const chip = el('button',{style:{
+                background:selCat===c?'var(--green)':'var(--surface2)',
+                color:selCat===c?'#000':'var(--text2)',
+                border:selCat===c?'none':'1px solid var(--border)',
+                borderRadius:'100px',padding:'4px 10px',fontSize:'11px',fontWeight:'600'
+              }},c);
+              chip.addEventListener('click',async()=>{
+                selCat=c;
+                renderChips(cw,tc);
+                // Save immediately
+                const updated={...tc,userCategory:c,category:c,userConfirmed:true,updatedAt:new Date().toISOString()};
+                await txnDB.write(updated);
+                // Save merchant rule
+                if(tc.normalisedMerchant){
+                  const ruleId='mr_'+tc.normalisedMerchant.replace(/\W/g,'').toLowerCase();
+                  const ex=await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).once('value');
+                  await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).set({
+                    id:ruleId,matchPattern:tc.normalisedMerchant.toUpperCase(),
+                    normalisedMerchant:tc.normalisedMerchant,preferredCategory:c,
+                    confirmationCount:(ex.val()?.confirmationCount||0)+1,
+                    active:true,createdAt:ex.val()?.createdAt||new Date().toISOString(),
+                    updatedAt:new Date().toISOString(),
+                  });
+                }
+              });
+              cw.append(chip);
+            }
+          }
+          renderChips(chipWrap, t);
+          tRow.append(chipWrap);
+          drillWrap.append(tRow);
+        }
+        if(catTxns.length>15) drillWrap.append(
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',padding:'8px 0',textAlign:'center'}},
+            '+'+(catTxns.length-15)+' more — see Money → Transactions for full list')
+        );
+      }
+
       for(const [cat,data] of topCats){
         const pctOfSpend = thisMonthSpend>0?Math.round(data.total/thisMonthSpend*100):0;
-        const row = el('div',{style:{marginBottom:'10px'}});
+        // Get the actual transactions for this category
+        const catTxns = thisMonthTxns.filter(t=>
+          t.financialType==='EXPENSE' && (t.userCategory||t.category)===cat
+        ).sort((a,b)=>b.amount-a.amount);
+
+        const row = el('div',{style:{marginBottom:'10px',cursor:'pointer',padding:'6px',borderRadius:'10px',transition:'background .15s'}});
+        row.addEventListener('mouseenter',()=>row.style.background='var(--surface2)');
+        row.addEventListener('mouseleave',()=>row.style.background='transparent');
         row.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
-          <span>${cat}</span>
+          <span style="font-weight:500">${cat} <span style="font-size:11px;color:var(--text3)">↗ tap to see</span></span>
           <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--red)">${fmt(data.total)}</span>
         </div>
         <div style="background:var(--surface2);border-radius:100px;height:5px;overflow:hidden">
           <div style="height:100%;width:${pctOfSpend}%;background:var(--red);border-radius:100px"></div>
         </div>
         <div style="font-size:11px;color:var(--text3);margin-top:2px">${data.count} transactions · ${pctOfSpend}% of spending</div>`;
+        row.addEventListener('click',()=>showDrill(cat, catTxns));
         leakCard.append(row);
       }
 
@@ -988,6 +1071,7 @@ function overviewScreen(){
           ));
         }
       }
+      leakCard.append(drillWrap);
       intelligenceWrap.append(leakCard);
     }
 
@@ -999,6 +1083,8 @@ function overviewScreen(){
     if(totalRequiredPerPaycheck>avgFlorasiiPerPay) actions.push({icon:'💰',text:'You need £'+Math.round(totalRequiredPerPaycheck)+'/paycheck to hit your Florasii goals — currently saving £'+Math.round(avgFlorasiiPerPay),urgent:false});
     const behindGoals = goalDetails.filter(g=>!g.onTrack);
     if(behindGoals.length) actions.push({icon:'⏰',text:behindGoals.map(g=>g.name).join(' and ')+' '+( behindGoals.length>1?'are':'is')+' behind target',urgent:false});
+    const totalDebtsOwed = (appData.debts||[]).reduce((s,d)=>s+Math.max(0,d.amount-d.paid),0);
+    if(totalDebtsOwed>0) actions.push({icon:'🤝',text:fmt(totalDebtsOwed)+' owed to you — your balance would be '+fmt((balances.current||0)+totalDebtsOwed)+' once received',urgent:false});
     if(txns.length===0) actions.push({icon:'📥',text:'Import your bank statement to unlock spending insights',urgent:false});
 
     if(actions.length){
@@ -4896,6 +4982,150 @@ function spendingInsightsScreen(){
   return content;
 }
 
+// ── DEBT TRACKER ──
+function debtScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  let debts = [...(appData.debts||[])];
+
+  const listWrap = el('div',{});
+  const summaryWrap = el('div',{});
+
+  function renderDebts(){
+    listWrap.innerHTML='';
+    summaryWrap.innerHTML='';
+    if(!debts.length){
+      listWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'24px',color:'var(--text2)',fontSize:'13px'}},
+        'No debts tracked yet. Add people who owe you money below.'));
+      return;
+    }
+
+    const totalOwed = debts.reduce((s,d)=>s+Math.max(0,d.amount-d.paid),0);
+    const totalPaid = debts.reduce((s,d)=>s+d.paid,0);
+    const totalOriginal = debts.reduce((s,d)=>s+d.amount,0);
+
+    // Summary card
+    summaryWrap.append(el('div',{class:'card',style:{marginBottom:'12px'}},
+      el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px'}},
+        el('div',{},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'1px'}},'Total owed to you'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'22px',color:'var(--green)'}},fmt(totalOwed))
+        ),
+        el('div',{},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'1px'}},'Received so far'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'22px',color:'var(--text)'}},fmt(totalPaid))
+        )
+      ),
+      totalOwed>0?el('div',{style:{marginTop:'12px',fontSize:'13px',color:'var(--text2)',lineHeight:'1.6'}},
+        'Once fully paid, your balance would be '+fmt((appData.balances?.current||0)+totalOwed)):el('span')
+    ));
+
+    for(const d of debts){
+      const remaining = Math.max(0, d.amount - d.paid);
+      const pct = Math.min(100, Math.round(d.paid/d.amount*100));
+      const isCleared = remaining === 0;
+
+      const card = el('div',{class:'card',style:{marginBottom:'8px',borderLeft:'3px solid '+(isCleared?'var(--text3)':'var(--green)')}});
+
+      // Header
+      card.append(el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'10px'}},
+        el('div',{},
+          el('div',{style:{fontWeight:'700',fontSize:'15px',color:isCleared?'var(--text2)':'var(--text)'}},d.person),
+          d.description?el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'1px'}},d.description):el('span')
+        ),
+        el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color:isCleared?'var(--text3)':'var(--green)'}},
+            isCleared?'Cleared ✓':fmt(remaining)+' left'),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},fmt(d.paid)+' of '+fmt(d.amount)+' received')
+        )
+      ));
+
+      // Progress bar
+      card.append(
+        el('div',{class:'prog-wrap',style:{marginBottom:'8px'}},
+          el('div',{class:'prog-fill',style:{width:pct+'%',background:isCleared?'var(--text3)':'var(--green)'}})
+        )
+      );
+
+      // Payment log
+      if(d.payments&&d.payments.length){
+        const logWrap = el('div',{style:{marginBottom:'10px'}});
+        for(const p of d.payments.slice(-5)){
+          logWrap.append(el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'12px',color:'var(--text2)',padding:'3px 0'}},
+            el('span',{},p.date+' — '+(p.note||'Payment')),
+            el('span',{style:{color:'var(--green)',fontFamily:"'Space Mono',monospace"}},'+'+fmt(p.amount))
+          ));
+        }
+        card.append(logWrap);
+      }
+
+      // Log payment button
+      if(!isCleared){
+        const payRow = el('div',{style:{display:'flex',gap:'8px',alignItems:'center'}});
+        const payInp = el('input',{inputmode:'decimal',placeholder:'Amount received (£)',style:{flex:'1',fontSize:'13px',padding:'8px 12px'}});
+        const payNoteInp = el('input',{placeholder:'Note (optional)',style:{flex:'1',fontSize:'13px',padding:'8px 12px'}});
+        const logBtn = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'10px',padding:'8px 14px',fontWeight:'700',fontSize:'13px',flexShrink:'0'}},'Log');
+        logBtn.addEventListener('click',async()=>{
+          const amt = parseFloat(payInp.value)||0;
+          if(!amt) return;
+          const payment = {amount:amt, date:new Date().toISOString().slice(0,10), note:payNoteInp.value.trim()||null};
+          const updated = debts.map(x=>x.id===d.id?{
+            ...x,
+            paid: x.paid+amt,
+            payments:[...(x.payments||[]),payment]
+          }:x);
+          debts = updated;
+          appData.debts = updated;
+          await save({...appData, debts:updated});
+          payInp.value=''; payNoteInp.value='';
+          renderDebts();
+        });
+        payRow.append(payInp, payNoteInp, logBtn);
+        card.append(payRow);
+      }
+
+      // Delete
+      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'8px'}},'Remove');
+      delBtn.addEventListener('click',async()=>{
+        if(!confirm('Remove debt for '+d.person+'?')) return;
+        debts = debts.filter(x=>x.id!==d.id);
+        appData.debts=debts;
+        await save({...appData,debts});
+        renderDebts();
+      });
+      card.append(delBtn);
+      listWrap.append(card);
+    }
+  }
+  renderDebts();
+
+  // Add debt form
+  const formCard = el('div',{class:'card'});
+  formCard.innerHTML=`<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif;font-weight:700">Add debt</div>`;
+  const personInp = el('input',{placeholder:'Who owes you? (e.g. Mum, Dad)',style:{marginBottom:'10px'}});
+  const amtInp   = el('input',{inputmode:'decimal',placeholder:'Total amount owed (£)',style:{marginBottom:'10px'}});
+  const descInp  = el('input',{placeholder:'What for? (optional)',style:{marginBottom:'14px'}});
+  const addBtn   = el('button',{class:'btn-primary'},'Add debt');
+  addBtn.addEventListener('click',async()=>{
+    if(!personInp.value.trim()||!amtInp.value) return;
+    const newDebt = {
+      id:uid(), person:personInp.value.trim(),
+      amount:parseFloat(amtInp.value)||0, paid:0,
+      description:descInp.value.trim()||null,
+      payments:[], createdAt:new Date().toISOString()
+    };
+    debts=[...debts,newDebt];
+    appData.debts=debts;
+    await save({...appData,debts});
+    personInp.value=''; amtInp.value=''; descInp.value='';
+    addBtn.textContent='Added ✓';
+    setTimeout(()=>{ addBtn.textContent='Add debt'; renderDebts(); },1200);
+  });
+  formCard.append(personInp,amtInp,descInp,addBtn);
+
+  content.append(summaryWrap, listWrap, el('div',{class:'section-hdr'},'Add Debt'), formCard);
+  return content;
+}
+
 function mainScreen(startTab='home'){
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
@@ -4953,6 +5183,7 @@ function mainScreen(startTab='home'){
   function moreScreen(){
     const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
     const items = [
+      {icon:'🤝', label:'Money Owed to Me',  sub:'Track debts from family and friends',   tab:'_debts'},
       {icon:'📋', label:'Subscriptions',       sub:'Add, edit or remove subscriptions',     tab:'_settings'},
       {icon:'🔍', label:'Spending Insights',   sub:'Weekly spend, trends, cut suggestions', tab:'_spending'},
       {icon:'📥', label:'Import Statement',   sub:'Import bank CSV files',             tab:'_statements'},
@@ -5034,6 +5265,7 @@ function mainScreen(startTab='home'){
       body.append(header, moreScreen());
 
     // ── More sub-screens ──
+    } else if(t==='_debts'){       makeHeader('Money Owed to Me'); body.append(header, debtScreen());
     } else if(t==='_spending'){     makeHeader('Spending Insights'); body.append(header, spendingInsightsScreen());
     } else if(t==='_statements'){ makeHeader('Import Statement'); body.append(header, statementsScreen());
     } else if(t==='_recurring'){  makeHeader('Recurring');        body.append(header, recurringScreen());
@@ -5080,11 +5312,13 @@ auth.onAuthStateChanged(async user => {
     balances:{...DEFAULT_DATA.balances,...(val.balances||{})},
     subscriptions: Array.isArray(val.subscriptions) ? val.subscriptions : [],
     paychecks: Array.isArray(val.paychecks) ? val.paychecks : [],
+    debts: Array.isArray(val.debts) ? val.debts : [],
     lifestyleRequirements: Array.isArray(val.lifestyleRequirements) ? val.lifestyleRequirements : [],
     goals: Array.isArray(val.goals) ? val.goals : [],
     habits: val.habits || {lastPaycheckLog:null, lastReview:null, streak:0, xp:0, level:1, achievements:[]},
   } : {
     ...DEFAULT_DATA,
+    debts: [],
     lifestyleRequirements: [],
     goals: [],
     habits: {lastPaycheckLog:null, lastReview:null, streak:0, xp:0, level:1, achievements:[]},
