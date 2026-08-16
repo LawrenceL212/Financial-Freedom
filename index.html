@@ -768,33 +768,49 @@ function overviewScreen(){
     const florasiiNow = trueGoals;
     const now2 = new Date();
 
-    // Goals fill in deadline order — the soonest deadline is funded first,
-    // rather than splitting the pot proportionally across goals you need later.
+    // Goals are worked through one at a time by default: the nearest deadline is
+    // funded first, and later goals only start once it is met. Set goalMode to
+    // 'parallel' to fund everything at once instead.
+    const goalMode = appData.goalMode || 'sequential';
     let totalRequiredPerPaycheck = 0;
     const sortedGoals = [...GOALS].sort((a,b)=>String(a.deadline).localeCompare(String(b.deadline)));
     let poolLeft = florasiiNow;
-    const goalDetails = sortedGoals.map(g=>{
+    let activeAssigned = false;
+
+    const goalDetails = sortedGoals.map((g,idx)=>{
       const deadline = new Date(g.deadline);
-      const msLeft = deadline - now2;
-      const daysLeft = Math.ceil(msLeft/86400000);
+      const daysLeft = Math.ceil((deadline - now2)/86400000);
       const overdue = daysLeft < 0;
 
-      // Waterfall: this goal takes what it needs from the pot before later goals
+      // Waterfall: nearer deadlines take from the pot first
       const myShare = Math.min(poolLeft, g.target);
       poolLeft = Math.max(0, poolLeft - myShare);
       const remaining = Math.max(0, g.target - myShare);
       const met = remaining <= 0;
 
-      // Only future deadlines generate a per-paycheck requirement
+      // Which goal am I actually saving into right now?
+      let isActive;
+      if(goalMode === 'parallel'){
+        isActive = !met && !overdue;
+      } else {
+        isActive = !met && !overdue && !activeAssigned;
+        if(isActive) activeAssigned = true;
+      }
+      const queued = !met && !overdue && !isActive;
+
       const payPeriodsLeft = overdue ? 0 : Math.max(1, Math.floor(daysLeft/14));
       const requiredPerPeriod = (overdue || met) ? 0 : remaining/payPeriodsLeft;
-      if(!overdue && !met) totalRequiredPerPaycheck += requiredPerPeriod;
+      // Only what you are actually saving into counts against this paycheck
+      if(isActive) totalRequiredPerPaycheck += requiredPerPeriod;
 
       const pctDone = g.target>0 ? Math.min(100, Math.round(myShare/g.target*100)) : 0;
-      const onTrack = met ? true : (overdue ? false : avgFlorasiiPerPay >= requiredPerPeriod*0.9);
+      const onTrack = met ? true : overdue ? false
+                    : isActive ? avgFlorasiiPerPay >= requiredPerPeriod*0.9 : true;
 
       return {...g, remaining, requiredPerPeriod, payPeriodsLeft, pctDone, myShare,
-              onTrack, daysLeft, overdue, met, color:g.color||'var(--green)'};
+              onTrack, daysLeft, overdue, met, isActive, queued,
+              waitingFor: queued && idx>0 ? sortedGoals[idx-1].name : null,
+              color:g.color||'var(--green)'};
     });
 
     // Safe to spend using goal-required savings (not just historical avg)
@@ -1069,10 +1085,17 @@ function overviewScreen(){
       florasiiCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('_goals'); });
     } else {
       for(const g of goalDetails){
-        const STATUS = g.met ? '✓ Funded' : g.overdue ? '⏰ Deadline passed' : g.onTrack ? '✓ On track' : '⚠ Behind';
-        const statusColor = g.met ? 'var(--green)' : g.overdue ? 'var(--red)' : g.onTrack ? 'var(--green)' : 'var(--amber)';
+        const STATUS = g.met ? '✓ Funded'
+                     : g.overdue ? '⏰ Deadline passed'
+                     : g.queued ? '⏸ Up next'
+                     : g.onTrack ? '✓ On track' : '⚠ Behind';
+        const statusColor = g.met ? 'var(--green)'
+                          : g.overdue ? 'var(--red)'
+                          : g.queued ? 'var(--text3)'
+                          : g.onTrack ? 'var(--green)' : 'var(--amber)';
         const deadlineStr = new Date(g.deadline).toLocaleDateString('en-GB',{month:'short',year:'numeric'});
-        const goalBlock = el('div',{style:{marginBottom:'14px',paddingBottom:'14px',borderBottom:'1px solid var(--border)'}});
+        const goalBlock = el('div',{style:{marginBottom:'14px',paddingBottom:'14px',
+          borderBottom:'1px solid var(--border)', opacity: g.queued ? '0.55' : '1'}});
         goalBlock.append(
           el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}},
             el('div',{},
@@ -1092,14 +1115,18 @@ function overviewScreen(){
             el('span',{style:{textAlign:'right'}},
               g.met ? 'Target reached'
                     : g.overdue ? 'Deadline was '+Math.abs(g.daysLeft)+'d ago — update it in Goals'
+                    : g.queued ? 'Starts after '+(g.waitingFor||'your current goal')
                     : g.daysLeft+'d · need '+fmt(g.requiredPerPeriod)+'/paycheck')
           )
         );
         florasiiCard.append(goalBlock);
       }
       florasiiCard.append(
-        el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'13px',paddingTop:'2px'}},
-          el('span',{style:{color:'var(--text2)'}},'Required per paycheck (combined)'),
+        el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'13px',paddingTop:'2px',gap:'8px'}},
+          el('span',{style:{color:'var(--text2)'}},(()=>{
+            const act = goalDetails.find(x=>x.isActive);
+            return act ? 'Needed for '+act.name : 'Required per paycheck';
+          })()),
           el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:totalRequiredPerPaycheck>avgFlorasiiPerPay?'var(--red)':'var(--green)'}},
             fmt(totalRequiredPerPaycheck))
         ),
@@ -5410,7 +5437,31 @@ function goalsScreen(){
     el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'6px'}},'Colour'),
     colourRow, addBtn);
 
-  content.append(listWrap, el('div',{class:'section-hdr'},'Add Goal'), formCard);
+  // How goals are funded — one at a time, or all together
+  const modeCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+  modeCard.append(el('div',{style:{fontSize:'13px',fontWeight:'600',marginBottom:'8px'}},'How do you save for these?'));
+  const modeRow = el('div',{style:{display:'flex',gap:'6px',marginBottom:'8px'}});
+  const modes=[['sequential','One at a time'],['parallel','All at once']];
+  const currentMode = appData.goalMode || 'sequential';
+  for(const [key,label] of modes){
+    const on = currentMode===key;
+    const b = el('button',{style:{flex:'1',background:on?'var(--green)':'var(--surface2)',
+      color:on?'#000':'var(--text2)',border:on?'none':'1px solid var(--border)',
+      borderRadius:'10px',padding:'9px',fontSize:'13px',fontWeight:'600'}},label);
+    b.addEventListener('click',async()=>{
+      appData.goalMode=key;
+      await save({...appData,goalMode:key});
+      if(window._setTab) window._setTab('_goals');
+    });
+    modeRow.append(b);
+  }
+  modeCard.append(modeRow,
+    el('div',{style:{fontSize:'11px',color:'var(--text3)',lineHeight:'1.5'}},
+      currentMode==='sequential'
+        ? 'Your soonest deadline is funded first. Later goals wait their turn, so only one target counts against each paycheck.'
+        : 'Every goal is funded at the same time, so each paycheck has to cover all of them together.'));
+
+  content.append(modeCard, listWrap, el('div',{class:'section-hdr'},'Add Goal'), formCard);
   return content;
 }
 
