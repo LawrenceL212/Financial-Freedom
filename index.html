@@ -48,8 +48,9 @@ button:active{transform:scale(.97)}
 .big-wrap{position:relative;margin-bottom:24px}
 .big-wrap .sym{position:absolute;left:16px;top:50%;transform:translateY(-50%);font-family:'Space Mono',monospace;font-size:28px;font-weight:700;color:var(--text3);pointer-events:none}
 .big-input{font-family:'Space Mono',monospace!important;font-size:28px!important;font-weight:700!important;padding:20px 20px 20px 44px!important;border-radius:16px!important}
-.nav{display:flex;justify-content:space-around;padding:10px 0 max(10px,env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);position:sticky;bottom:0}
-.nav-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 12px;background:none;color:var(--text3);font-size:11px;border-radius:12px;min-width:56px}
+.nav{display:flex;padding:10px 8px max(10px,env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border);position:sticky;bottom:0;overflow-x:auto;overflow-y:visible;-webkit-overflow-scrolling:touch;scrollbar-width:none;gap:2px}
+.nav::-webkit-scrollbar{display:none}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 10px;background:none;color:var(--text3);font-size:10px;border-radius:10px;min-width:52px;flex-shrink:0;white-space:nowrap}
 .nav-btn.active{color:var(--green)}
 .prog-wrap{background:var(--surface2);border-radius:100px;height:8px;overflow:hidden;margin:8px 0}
 .prog-fill{height:100%;border-radius:100px;background:var(--green);transition:width .6s}
@@ -3833,22 +3834,29 @@ function mainScreen(startTab='home'){
 
   window._setTab = setTab;
 
-  homeBtn.addEventListener('click',()=>setTab('home'));
-  trendsBtn.addEventListener('click',()=>setTab('trends'));
-  stmtBtn.addEventListener('click',()=>setTab('statements'));
-  analyticsBtn.addEventListener('click',()=>setTab('analytics'));
-  recurBtn.addEventListener('click',()=>setTab('recurring'));
-  txnBtn.addEventListener('click',()=>setTab('transactions'));
-  calBtn.addEventListener('click',()=>setTab('calendar'));
-  hoursBtn.addEventListener('click',()=>setTab('hours'));
-  lifeBtn.addEventListener('click',()=>setTab('lifestyle'));
-  askBtn.addEventListener('click',()=>setTab('ask'));
-  settBtn.addEventListener('click',()=>setTab('settings'));
+  // Auto-scroll active tab into view
+  function scrollActiveTab(){
+    const activeBtn = nav.querySelector('.nav-btn.active');
+    if(activeBtn) activeBtn.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  }
+
+  homeBtn.addEventListener('click',()=>{ setTab('home'); setTimeout(scrollActiveTab,50); });
+  trendsBtn.addEventListener('click',()=>{ setTab('trends'); setTimeout(scrollActiveTab,50); });
+  stmtBtn.addEventListener('click',()=>{ setTab('statements'); setTimeout(scrollActiveTab,50); });
+  analyticsBtn.addEventListener('click',()=>{ setTab('analytics'); setTimeout(scrollActiveTab,50); });
+  recurBtn.addEventListener('click',()=>{ setTab('recurring'); setTimeout(scrollActiveTab,50); });
+  txnBtn.addEventListener('click',()=>{ setTab('transactions'); setTimeout(scrollActiveTab,50); });
+  calBtn.addEventListener('click',()=>{ setTab('calendar'); setTimeout(scrollActiveTab,50); });
+  hoursBtn.addEventListener('click',()=>{ setTab('hours'); setTimeout(scrollActiveTab,50); });
+  lifeBtn.addEventListener('click',()=>{ setTab('lifestyle'); setTimeout(scrollActiveTab,50); });
+  askBtn.addEventListener('click',()=>{ setTab('ask'); setTimeout(scrollActiveTab,50); });
+  settBtn.addEventListener('click',()=>{ setTab('settings'); setTimeout(scrollActiveTab,50); });
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, stmtBtn, txnBtn, analyticsBtn, payBtn, recurBtn, calBtn, hoursBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, stmtBtn, txnBtn, analyticsBtn, payBtn, recurBtn, calBtn, hoursBtn, lifeBtn, trendsBtn, askBtn, settBtn);
   wrap.append(body, nav);
   setTab(startTab);
+  setTimeout(scrollActiveTab, 100);
   render(wrap);
 }
 
