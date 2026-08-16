@@ -1011,20 +1011,32 @@ function overviewScreen(){
               chip.addEventListener('click',async()=>{
                 selCat=c;
                 renderChips(cw,tc);
-                // Save immediately
-                const updated={...tc,userCategory:c,category:c,userConfirmed:true,updatedAt:new Date().toISOString()};
-                await txnDB.write(updated);
-                // Save merchant rule
-                if(tc.normalisedMerchant){
-                  const ruleId='mr_'+tc.normalisedMerchant.replace(/\W/g,'').toLowerCase();
-                  const ex=await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).once('value');
-                  await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).set({
-                    id:ruleId,matchPattern:tc.normalisedMerchant.toUpperCase(),
-                    normalisedMerchant:tc.normalisedMerchant,preferredCategory:c,
-                    confirmationCount:(ex.val()?.confirmationCount||0)+1,
-                    active:true,createdAt:ex.val()?.createdAt||new Date().toISOString(),
-                    updatedAt:new Date().toISOString(),
-                  });
+                // Show saving indicator
+                const saving = el('div',{style:{fontSize:'11px',color:'var(--text3)',padding:'2px 0'}},'Saving…');
+                cw.append(saving);
+                try {
+                  const updated={...tc,userCategory:c,category:c,userConfirmed:true,updatedAt:new Date().toISOString()};
+                  await txnDB.write(updated);
+                  // Update the local transaction reference so it persists in this session
+                  Object.assign(tc, updated);
+                  // Save merchant rule
+                  if(tc.normalisedMerchant){
+                    const ruleId='mr_'+tc.normalisedMerchant.replace(/\W/g,'').toLowerCase();
+                    const ex=await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).once('value');
+                    await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).set({
+                      id:ruleId,matchPattern:tc.normalisedMerchant.toUpperCase(),
+                      normalisedMerchant:tc.normalisedMerchant,preferredCategory:c,
+                      confirmationCount:(ex.val()?.confirmationCount||0)+1,
+                      active:true,createdAt:ex.val()?.createdAt||new Date().toISOString(),
+                      updatedAt:new Date().toISOString(),
+                    });
+                  }
+                  saving.textContent='✓ Saved';
+                  saving.style.color='var(--green)';
+                  setTimeout(()=>saving.remove(),1500);
+                } catch(e){
+                  saving.textContent='Error saving — try again';
+                  saving.style.color='var(--red)';
                 }
               });
               cw.append(chip);
