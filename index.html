@@ -68,6 +68,12 @@ button:active{transform:scale(.97)}
 <body>
 <div id="app"></div>
 <script>
+// ── AI Worker URL ──
+// Set this to your Cloudflare Worker URL to enable Ask My Finances.
+// The Anthropic API key lives ONLY in the Worker — never here.
+// See ff_worker/README.md for setup instructions.
+window.FF_WORKER_URL = null; // e.g. 'https://financial-freedom-ai.your-subdomain.workers.dev'
+
 firebase.initializeApp({
   apiKey:"AIzaSyBqjVFKGnQujQQ0rQqsPZ2px1DCCkjlzyA",
   authDomain:"financial-freedom-eb995.firebaseapp.com",
@@ -101,21 +107,9 @@ const el = (tag, props={}, ...kids) => {
 };
 
 const DEFAULT_DATA = {
-  balances:{current:-5.40,creditCard:0,florasii:1973.24,personalSavings:0.51},
+  balances:{current:0,creditCard:0,florasii:0,personalSavings:0},
   paychecks:[],
-  subscriptions:[
-    {id:'s1',name:'Spotify',amount:12.99},
-    {id:'s2',name:'Amazon Prime',amount:8.99},
-    {id:'s3',name:'Discord Nitro',amount:7.99},
-    {id:'s4',name:'Prime Video',amount:2.99},
-    {id:'s5',name:'BH Live (Gym)',amount:47.00},
-    {id:'s6',name:'Aloha VPN',amount:4.99},
-    {id:'s7',name:'Crunchyroll',amount:6.99},
-    {id:'s8',name:'iCloud+',amount:8.99},
-    {id:'s9',name:'OKOK (Scale)',amount:9.99},
-    {id:'s10',name:'Runna',amount:15.99},
-    {id:'s11',name:'YouTube Premium',amount:16.99},
-  ]
+  subscriptions:[]
 };
 
 let appData = null;
@@ -314,7 +308,15 @@ function paydayFlow(){
             personalSavings: newBalances.personalSavings,
           }
         };
-        await save({...appData, balances:newBalances, paychecks:[newPay,...(appData.paychecks||[])]});
+        // Award XP only for genuinely new paychecks (idempotency via paycheck ID)
+        const habits = appData.habits||{streak:0,xp:0,level:1,achievements:[],rewardedPaychecks:[]};
+        const rewardedIds = Array.isArray(habits.rewardedPaychecks) ? habits.rewardedPaychecks : [];
+        const alreadyRewarded = rewardedIds.includes(newPay.id);
+        const newXP = alreadyRewarded ? (habits.xp||0) : (habits.xp||0) + 50;
+        const newLevel = Math.floor(newXP/200)+1;
+        const newRewardedIds = alreadyRewarded ? rewardedIds : [...rewardedIds, newPay.id];
+        const newHabits = {...habits, xp:newXP, level:newLevel, lastPaycheckLog:new Date().toISOString(), rewardedPaychecks:newRewardedIds};
+        await save({...appData, balances:newBalances, paychecks:[newPay,...(appData.paychecks||[])], habits:newHabits});
         step=3; show();
       });
 
@@ -370,6 +372,9 @@ function paydayFlow(){
 
 function overviewScreen(){
   const {balances,paychecks,subscriptions} = appData;
+  const habits = appData.habits||{xp:0,level:1,streak:0};
+  const xpToNext = 200 - ((habits.xp||0) % 200);
+  const xpPct = Math.round(((habits.xp||0)%200)/200*100);
   const subTotal = subscriptions.reduce((s,x)=>s+x.amount,0);
   const recent = (paychecks||[]).slice(0,5);
   const totalInc = (paychecks||[]).reduce((s,p)=>s+p.income,0);
@@ -440,6 +445,41 @@ function overviewScreen(){
     content.append(el('div',{style:{textAlign:'center',marginTop:'8px',fontSize:'13px',color:'var(--text3)'}},
       'Total tracked: '+fmt(totalInc)+' across '+paychecks.length+' paychecks'));
   }
+
+  // XP / Level card
+  const lifestyle = appData.lifestyleRequirements||[];
+  const topLifestyle = lifestyle.filter(r=>r.active!==false&&r.priority==='Non-negotiable').slice(0,3);
+  content.append(
+    el('div',{class:'section-hdr'},'Financial Progress'),
+    el('div',{class:'card'},
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}},
+        el('div',{},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'1px',textTransform:'uppercase'}},'Level'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',color:'var(--green)',lineHeight:'1'}},String(habits.level||1))
+        ),
+        el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'1px',textTransform:'uppercase'}},'Total XP'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'20px',fontWeight:'700'}},String(habits.xp||0))
+        )
+      ),
+      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'6px'}},'Next level: '+xpToNext+' XP to go'),
+      el('div',{class:'prog-wrap'},el('div',{class:'prog-fill',style:{width:xpPct+'%',background:'var(--amber)'}})),
+      el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'8px'}},'Earn XP by logging paychecks, reviewing finances, and meeting savings targets.')
+    )
+  );
+
+  if(topLifestyle.length>0){
+    content.append(
+      el('div',{class:'section-hdr'},'Non-negotiables'),
+      el('div',{class:'card'},
+        ...topLifestyle.map(r=>el('div',{class:'balance-row'},
+          el('div',{class:'balance-label'},r.name),
+          r.estimatedCost>0?el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmt(r.estimatedCost)):el('div',{class:'balance-value',style:{color:'var(--text3)'}},r.frequency||'')
+        ))
+      )
+    );
+  }
+
   return content;
 }
 
@@ -508,7 +548,25 @@ function settingsScreen(){
 
   const mkLabel = txt => el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'6px',letterSpacing:'0.5px'}},txt);
 
+  const profileInput = el('input',{placeholder:'Your name (e.g. Lawrence)',value:appData.profile?.displayName||''});
+  const saveProfileBtn = el('button',{class:'btn-primary',style:{marginTop:'8px',fontSize:'14px',padding:'12px'}},'Save name');
+  saveProfileBtn.addEventListener('click',async()=>{
+    const name = profileInput.value.trim();
+    if(!name) return;
+    const newProfile = {...(appData.profile||{}), displayName:name};
+    await db.ref('users/'+currentUser.uid+'/profile').set(newProfile);
+    appData.profile = newProfile;
+    saveProfileBtn.textContent='Saved ✓';
+    setTimeout(()=>saveProfileBtn.textContent='Save name',2000);
+  });
+
   content.append(
+    el('div',{class:'section-hdr'},'Your Name'),
+    el('div',{class:'card'},
+      el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'6px'}},'Shown in the app header so each user knows whose account is active.'),
+      profileInput,
+      saveProfileBtn
+    ),
     el('div',{class:'section-hdr'},'Update Balances'),
     el('div',{class:'card'},
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Current Account (£)'), curInput),
@@ -525,6 +583,2000 @@ function settingsScreen(){
     ),
     signOutBtn
   );
+  return content;
+}
+
+// ── PHASE 2: Lifestyle Requirements ──
+function lifestyleScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const reqs = appData.lifestyleRequirements || [];
+  const PRIORITIES = ['Non-negotiable','Important','Flexible','Optional'];
+  const FREQS = ['One-time','Weekly','Monthly','Quarterly','Annually'];
+  const PRIORITY_COLORS = {'Non-negotiable':'var(--red)','Important':'var(--amber)','Flexible':'var(--green)','Optional':'var(--text3)'};
+
+  const listWrap = el('div',{});
+
+  function renderList(){
+    listWrap.innerHTML='';
+    if(reqs.length===0){
+      listWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},'No requirements yet. Add things you need to spend money on — visits, training, commitments.'));
+      return;
+    }
+    const grouped = {};
+    for(const p of PRIORITIES) grouped[p]=reqs.filter(r=>r.priority===p&&r.active!==false);
+    const inactive = reqs.filter(r=>r.active===false);
+
+    for(const p of PRIORITIES){
+      if(!grouped[p].length) continue;
+      listWrap.append(el('div',{class:'section-hdr',style:{marginTop:'16px'}},p));
+      for(const r of grouped[p]){
+        const card = el('div',{class:'card',style:{marginBottom:'8px',borderLeft:'3px solid '+PRIORITY_COLORS[p]}});
+        const hdr = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}});
+        hdr.append(
+          el('div',{},
+            el('div',{style:{fontWeight:'600',fontSize:'15px'}},r.name),
+            el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},r.description||'')
+          ),
+          el('div',{style:{textAlign:'right',flexShrink:'0'}},
+            r.estimatedCost>0?el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--amber)',fontSize:'14px'}},fmt(r.estimatedCost)):el('span'),
+            r.frequency?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},r.frequency):el('span')
+          )
+        );
+        const actions = el('div',{style:{display:'flex',gap:'12px',marginTop:'10px'}});
+        const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'0'}},'Remove');
+        const toggleBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'0'}},'Pause');
+        delBtn.addEventListener('click',async()=>{
+          const updated = reqs.filter(x=>x.id!==r.id);
+          appData.lifestyleRequirements=updated;
+          await save({...appData,lifestyleRequirements:updated});
+          renderList();
+        });
+        toggleBtn.addEventListener('click',async()=>{
+          const updated = reqs.map(x=>x.id===r.id?{...x,active:false}:x);
+          appData.lifestyleRequirements=updated;
+          await save({...appData,lifestyleRequirements:updated});
+          renderList();
+        });
+        actions.append(delBtn,toggleBtn);
+        if(r.targetDate) actions.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginLeft:'auto'}},new Date(r.targetDate).toLocaleDateString('en-GB',{month:'short',year:'numeric'})));
+        card.append(hdr,actions);
+        listWrap.append(card);
+      }
+    }
+  }
+  renderList();
+
+  // Add form
+  const formCard = el('div',{class:'card'});
+  formCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Add requirement</div>`;
+  const nameInp = el('input',{placeholder:'Name (e.g. Visit girlfriend, Half marathon)',style:{marginBottom:'10px'}});
+  const descInp = el('input',{placeholder:'Description (optional)',style:{marginBottom:'10px'}});
+  const costInp = el('input',{inputmode:'decimal',placeholder:'Estimated cost (£)',style:{marginBottom:'10px'}});
+  const dateInp = el('input',{type:'date',style:{marginBottom:'10px'}});
+
+  const priSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'10px'}});
+  for(const p of PRIORITIES) priSel.append(el('option',{value:p},p));
+
+  const freqSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'14px'}});
+  for(const f of FREQS) freqSel.append(el('option',{value:f},f));
+
+  const addBtn = el('button',{class:'btn-primary'},'Add requirement');
+  addBtn.addEventListener('click',async()=>{
+    if(!nameInp.value.trim()) return;
+    const newReq = {
+      id:uid(), name:nameInp.value.trim(), description:descInp.value.trim(),
+      estimatedCost:parseFloat(costInp.value)||0, targetDate:dateInp.value||null,
+      priority:priSel.value, frequency:freqSel.value, active:true,
+      createdAt:new Date().toISOString()
+    };
+    const updated=[...reqs,newReq];
+    appData.lifestyleRequirements=updated;
+    await save({...appData,lifestyleRequirements:updated});
+    nameInp.value=''; descInp.value=''; costInp.value=''; dateInp.value='';
+    renderList();
+    addBtn.textContent='Added ✓';
+    setTimeout(()=>addBtn.textContent='Add requirement',1500);
+  });
+  formCard.append(nameInp,descInp,costInp,priSel,freqSel,dateInp,addBtn);
+
+  // Monthly cost summary
+  const monthlyCommitted = reqs.filter(r=>r.active!==false).reduce((s,r)=>{
+    if(r.frequency==='Monthly') return s+r.estimatedCost;
+    if(r.frequency==='Weekly') return s+r.estimatedCost*4.33;
+    if(r.frequency==='Annually') return s+r.estimatedCost/12;
+    if(r.frequency==='Quarterly') return s+r.estimatedCost/3;
+    return s;
+  },0);
+
+  content.append(
+    el('div',{class:'section-hdr'},'Add Requirement'),
+    formCard,
+    monthlyCommitted>0?el('div',{class:'card',style:{marginTop:'0'}},
+      el('div',{style:{display:'flex',justifyContent:'space-between'}},
+        el('div',{class:'balance-label'},'Monthly lifestyle cost'),
+        el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmt(monthlyCommitted))
+      )
+    ):el('span'),
+    listWrap
+  );
+  return content;
+}
+
+// ── PHASE 4/5: Financial Intelligence Engine ──
+function askScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  // ── deterministic financial context builder ──
+  function buildFinancialContext(){
+    const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
+    const sorted = [...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const balances = appData.balances||{};
+    const subs = appData.subscriptions||[];
+    const cashFlow = appData.cashFlow||[];
+    const goals = appData.goals||[];
+    const lifestyle = appData.lifestyleRequirements||[];
+    const hoursLog = appData.hoursLog||[];
+    const actualPay = appData.actualPay||{};
+    const now = new Date();
+
+    // Income stats
+    const incomes = sorted.map(p=>p.income);
+    const avgIncome = incomes.length?incomes.reduce((s,v)=>s+v,0)/incomes.length:0;
+    const recentIncomes = incomes.slice(-6);
+    const recentAvg = recentIncomes.length?recentIncomes.reduce((s,v)=>s+v,0)/recentIncomes.length:0;
+    const lastPaycheck = sorted[sorted.length-1];
+    const subTotal = subs.reduce((s,x)=>s+x.amount,0);
+
+    // Florasii growth rate
+    const snapshots = (appData.paychecks||[]).filter(p=>p.snapshot).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    let avgFlorasiiPerPay = 0;
+    if(snapshots.length>=2){
+      const growth = snapshots[snapshots.length-1].snapshot.florasii - snapshots[0].snapshot.florasii;
+      avgFlorasiiPerPay = growth/Math.max(snapshots.length-1,1);
+    }
+
+    // Upcoming cash flow events (next 60 days)
+    const upcoming = cashFlow.filter(e=>{
+      const d = new Date(e.date);
+      return d>=now && d<=new Date(now.getTime()+60*86400000);
+    }).sort((a,b)=>new Date(a.date)-new Date(b.date));
+    const upcomingOut = upcoming.filter(e=>e.type==='out').reduce((s,e)=>s+e.amount,0);
+    const upcomingIn = upcoming.filter(e=>e.type==='in').reduce((s,e)=>s+e.amount,0);
+
+    // Savings rate
+    const totalSaved = avgFlorasiiPerPay>0?avgFlorasiiPerPay:0;
+    const savingsRate = recentAvg>0?((totalSaved/recentAvg)*100).toFixed(1):0;
+
+    // Hours data
+    const parseLabel = l=>{const p=l.split('/');return new Date(`${p[2]}-${p[1]}-${p[0]}`);};
+    const sortedH=[...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
+    const pairs=[];
+    for(let i=0;i<sortedH.length;i+=2) pairs.push({w1:sortedH[i],w2:sortedH[i+1]});
+    const latestPair = pairs[pairs.length-1];
+    const currentPeriodHours = latestPair?(latestPair.w1.total+(latestPair.w2?latestPair.w2.total:0)):0;
+    const predictedNextPay = currentPeriodHours*(appData.hourlyRate||14.5);
+
+    return {
+      currentDate: now.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'}),
+      balances: {
+        currentAccount: balances.current||0,
+        florasii: balances.florasii||0,
+        personalSavings: balances.personalSavings||0,
+        creditCard: balances.creditCard||0,
+      },
+      income: {
+        averagePaycheck: Math.round(avgIncome*100)/100,
+        recentAverage: Math.round(recentAvg*100)/100,
+        totalPaychecksLogged: paychecks.length,
+        lastPaycheckAmount: lastPaycheck?lastPaycheck.income:0,
+        lastPaycheckDate: lastPaycheck?lastPaycheck.date:null,
+        predictedNextPaycheck: Math.round(predictedNextPay*100)/100,
+        currentPeriodHoursWorked: currentPeriodHours,
+      },
+      subscriptions: {
+        total: Math.round(subTotal*100)/100,
+        monthly: Math.round(subTotal*100)/100,
+        annual: Math.round(subTotal*12*100)/100,
+        list: subs.map(s=>({name:s.name,amount:s.amount})),
+      },
+      savings: {
+        florasiiGoal: 15000,
+        florasiiCurrent: balances.florasii||0,
+        florasiiRemaining: Math.max(0,15000-(balances.florasii||0)),
+        avgSavedPerPaycheck: Math.round(avgFlorasiiPerPay*100)/100,
+        estimatedSavingsRate: savingsRate+'%',
+      },
+      cashFlow: {
+        upcomingCommittedExpenses: Math.round(upcomingOut*100)/100,
+        upcomingExpectedIncome: Math.round(upcomingIn*100)/100,
+        next60DaysEvents: upcoming.slice(0,10).map(e=>({label:e.label,amount:e.amount,type:e.type,date:e.date})),
+      },
+      lifestyle: lifestyle.filter(r=>r.active!==false).map(r=>({
+        name:r.name, priority:r.priority, estimatedCost:r.estimatedCost, frequency:r.frequency
+      })),
+      goals: goals.map(g=>({name:g.name,target:g.target,current:g.current,targetDate:g.targetDate})),
+      userName: appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'User',
+    };
+  }
+
+  // ── affordability engine ──
+  function calculateAffordability(amount){
+    const ctx = buildFinancialContext();
+    const goals = appData.goals || [];
+
+    // Step 1: Projected cash = current balance + expected income - committed expenses - subscriptions
+    const projectedCash = ctx.balances.currentAccount
+      + ctx.income.predictedNextPaycheck
+      - ctx.cashFlow.upcomingCommittedExpenses
+      - ctx.subscriptions.monthly;
+
+    // Step 2: Required additional savings = savings needed to stay on goal
+    // Only count if there's a goal with a target date that hasn't been reached
+    let requiredSavings = 0;
+    const goalDetails = [];
+    for(const g of goals){
+      if(!g.targetDate || !g.target) continue;
+      const remaining = Math.max(0, (g.target||0) - (g.current||0));
+      if(remaining <= 0) continue;
+      const daysLeft = Math.max(1, Math.ceil((new Date(g.targetDate) - new Date()) / 86400000));
+      const payPeriodsLeft = Math.max(1, Math.floor(daysLeft / 14));
+      const requiredPerPeriod = remaining / payPeriodsLeft;
+      requiredSavings += requiredPerPeriod;
+      goalDetails.push({name:g.name, requiredPerPeriod:Math.round(requiredPerPeriod*100)/100});
+    }
+    // If no explicit goals, use historical Florasii savings rate as target
+    if(goals.length === 0 && ctx.savings.avgSavedPerPaycheck > 0){
+      requiredSavings = ctx.savings.avgSavedPerPaycheck;
+    }
+
+    // Step 3: Flexible money = projected cash minus required savings
+    const flexibleMoney = projectedCash - requiredSavings;
+    const canAfford = flexibleMoney >= amount;
+    const wouldLeave = flexibleMoney - amount;
+
+    return {
+      // Components (shown to user)
+      currentBalance: ctx.balances.currentAccount,
+      expectedIncome: ctx.income.predictedNextPaycheck,
+      upcomingCommitments: ctx.cashFlow.upcomingCommittedExpenses,
+      subscriptions: ctx.subscriptions.monthly,
+      projectedCash: Math.round(projectedCash*100)/100,
+      requiredSavings: Math.round(requiredSavings*100)/100,
+      flexibleMoney: Math.round(flexibleMoney*100)/100,
+      // Result
+      canAfford,
+      wouldLeave: Math.round(wouldLeave*100)/100,
+      goalDetails,
+      hasGoals: goals.length > 0,
+    };
+  }
+
+  // ── chat UI ──
+  const messages = [];
+  const chatWrap = el('div',{style:{display:'flex',flexDirection:'column',gap:'12px',marginBottom:'16px'}});
+
+  function addMessage(role, text){
+    messages.push({role,text});
+    const bubble = el('div',{style:{
+      maxWidth:'88%',
+      padding:'12px 14px',
+      borderRadius: role==='user'?'18px 18px 4px 18px':'18px 18px 18px 4px',
+      background: role==='user'?'var(--green)':'var(--surface)',
+      color: role==='user'?'#000':'var(--text)',
+      alignSelf: role==='user'?'flex-end':'flex-start',
+      fontSize:'14px',
+      lineHeight:'1.55',
+      border: role==='assistant'?'1px solid var(--border)':'none',
+      whiteSpace:'pre-wrap',
+    }},text);
+    chatWrap.append(bubble);
+    chatWrap.scrollTop=chatWrap.scrollHeight;
+  }
+
+  // Welcome message
+  addMessage('assistant', 'Hi! I can answer questions about your finances using your real data.\n\nTry asking:\n• "How much do I normally get paid?"\n• "Can I afford £300?"\n• "When will I hit my Florasii goal?"\n• "How much do my subscriptions cost?"\n• "What\'s my savings rate?"');
+
+  // Suggested questions
+  const suggestions = [
+    'Can I afford £300?',
+    'When will I hit my Florasii goal?',
+    'What\'s my savings rate?',
+    'How much are my subscriptions?',
+    'How much do I normally get paid?',
+    'What happens if I save £50 more per paycheck?',
+  ];
+  const suggWrap = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'16px'}});
+  for(const s of suggestions){
+    const btn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)',borderRadius:'100px',padding:'6px 12px',fontSize:'12px',whiteSpace:'nowrap'}},s);
+    btn.addEventListener('click',()=>{ inp.value=s; sendMessage(); });
+    suggWrap.append(btn);
+  }
+
+  const inp = el('input',{placeholder:'Ask about your finances...',style:{flex:'1'}});
+  const sendBtn = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'12px',padding:'12px 16px',fontWeight:'700',fontSize:'14px',flexShrink:'0'}},'Ask');
+
+  async function sendMessage(){
+    const q = inp.value.trim();
+    if(!q) return;
+    inp.value='';
+    addMessage('user',q);
+    sendBtn.disabled=true;
+    sendBtn.textContent='…';
+
+    // Build deterministic context
+    const ctx = buildFinancialContext();
+
+    // Check for affordability question
+    const affordMatch = q.match(/afford[^\d]*£?(\d+[\d,.]*)/i) || q.match(/£(\d+[\d,.]*)/i);
+    let affordCtx = '';
+    if(affordMatch){
+      const amount = parseFloat(affordMatch[1].replace(',',''));
+      if(amount>0){
+        const aff = calculateAffordability(amount);
+        affordCtx = `\n\nAFFORDABILITY BREAKDOWN for £${amount}:
+Components:
+  Current account balance:        £${aff.currentBalance.toFixed(2)}
++ Expected next paycheck:         £${aff.expectedIncome.toFixed(2)}
+- Upcoming committed expenses:    £${aff.upcomingCommitments.toFixed(2)}
+- Monthly subscriptions:          £${aff.subscriptions.toFixed(2)}
+= Projected cash:                 £${aff.projectedCash.toFixed(2)}
+- Required savings (to stay on goal): £${aff.requiredSavings.toFixed(2)}
+= Flexible money available:       £${aff.flexibleMoney.toFixed(2)}
+
+Purchase amount: £${amount}
+Can afford: ${aff.canAfford ? 'YES' : 'NO'}
+Would leave: £${aff.wouldLeave.toFixed(2)}
+${aff.goalDetails.length>0?'Goal savings breakdown: '+aff.goalDetails.map(g=>`${g.name}: £${g.requiredPerPeriod}/period`).join(', '):'No specific goal targets set — using historical savings rate as guide.'}
+
+IMPORTANT: Present these components to the user. Do not just say yes or no. Show the breakdown. Note what is ACTUAL vs ESTIMATED vs PROJECTED.`;
+      }
+    }
+
+    const systemPrompt = `You are a personal financial assistant for ${ctx.userName}. You have access to their real financial data below. 
+Answer questions using ONLY the data provided. Never invent numbers. If data is insufficient, say so clearly.
+Keep answers concise and conversational. Use £ for currency. Be direct — give the answer first, then context.
+Do NOT tell the user what they must do. Present facts and let them decide.
+
+FINANCIAL DATA (as of ${ctx.currentDate}):
+${JSON.stringify(ctx, null, 2)}${affordCtx}`;
+
+    try {
+      // SECURITY NOTE: The Anthropic API key must never be in client-side code.
+      // This call goes to a Cloudflare Worker that:
+      //   1. Verifies the Firebase auth token
+      //   2. Confirms the UID matches the data being requested
+      //   3. Calls Anthropic API with the key stored securely server-side
+      //   4. Returns only the AI response — never the raw financial data or key
+      //
+      // WORKER_URL is set to the deployed Cloudflare Worker endpoint.
+      // If not configured, Ask My Finances is unavailable on this deployment.
+      const WORKER_URL = window.FF_WORKER_URL || null;
+
+      if(!WORKER_URL){
+        addMessage('assistant', '⚠️ Ask My Finances is not available on this deployment.\n\nIt requires a secure server-side connection to process your financial data safely. The Anthropic API key cannot be stored in a browser app.\n\nTo enable this feature, a Cloudflare Worker needs to be set up and configured.');
+        sendBtn.disabled=false;
+        sendBtn.textContent='Ask';
+        return;
+      }
+
+      // Get Firebase ID token — the Worker verifies this to confirm identity
+      const idToken = await auth.currentUser.getIdToken();
+
+      const res = await fetch(WORKER_URL, {
+        method:'POST',
+        headers:{
+          'Content-Type':'application/json',
+          'Authorization':'Bearer '+idToken,  // Worker verifies this — never trust UID from body
+        },
+        body:JSON.stringify({
+          question: q,
+          financialContext: ctx,       // deterministic data calculated client-side from user's own Firebase data
+          affordabilityContext: affordCtx,
+        })
+      });
+
+      if(res.status===401){
+        addMessage('assistant','Authentication error — please sign out and sign back in.');
+        sendBtn.disabled=false; sendBtn.textContent='Ask'; return;
+      }
+      if(!res.ok){
+        addMessage('assistant','Server error — please try again.');
+        sendBtn.disabled=false; sendBtn.textContent='Ask'; return;
+      }
+
+      const data = await res.json();
+      const reply = data.reply || 'Sorry, I couldn\'t process that. Try again.';
+      addMessage('assistant', reply);
+    } catch(e) {
+      addMessage('assistant','Connection error — please try again.');
+    }
+
+    sendBtn.disabled=false;
+    sendBtn.textContent='Ask';
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inp.addEventListener('keydown',e=>{ if(e.key==='Enter') sendMessage(); });
+
+  const inputRow = el('div',{style:{display:'flex',gap:'8px',position:'sticky',bottom:'0',background:'var(--bg)',paddingBottom:'max(16px,env(safe-area-inset-bottom))',paddingTop:'8px'}});
+  inputRow.append(inp, sendBtn);
+
+  content.append(
+    el('div',{class:'section-hdr'},'Suggested'),
+    suggWrap,
+    el('div',{class:'section-hdr'},'Chat'),
+    chatWrap,
+    inputRow
+  );
+  return content;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TRANSACTION & STATEMENT IMPORT SYSTEM
+// Phase A: Transaction schema + Firebase write layer
+// Phase B: CSV parser (Barclays format)
+// Phase C: Import preview
+// Phase D: Transaction persistence
+// Phase E: Transaction history UI
+// ═══════════════════════════════════════════════════════════════
+
+// ── Transaction write layer (bypasses save() for scalability) ──
+const txnDB = {
+  async write(txn){
+    const ref = db.ref('users/'+currentUser.uid+'/transactions/'+txn.transactionId);
+    await ref.set(txn);
+  },
+  async writeBatch(txns){
+    const updates = {};
+    for(const t of txns) updates['users/'+currentUser.uid+'/transactions/'+t.transactionId] = t;
+    await db.ref().update(updates);
+  },
+  async writeStatement(stmt){
+    await db.ref('users/'+currentUser.uid+'/statements/'+stmt.statementId).set(stmt);
+  },
+  async getStatements(){
+    const snap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+    const val = snap.val();
+    return val ? Object.values(val) : [];
+  },
+  async getTransactions(limitToLast=200){
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').limitToLast(limitToLast).once('value');
+    const val = snap.val();
+    return val ? Object.values(val).sort((a,b)=>b.postingDate.localeCompare(a.postingDate)) : [];
+  },
+  async getFingerprints(){
+    const stmts = await this.getStatements();
+    return stmts.map(s=>s.fileFingerprint).filter(Boolean);
+  },
+  async deleteStatement(statementId){
+    // Get all transactions for this statement
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions')
+      .orderByChild('statementId').equalTo(statementId).once('value');
+    const val = snap.val();
+    if(val){
+      const updates = {};
+      for(const key of Object.keys(val)) updates['users/'+currentUser.uid+'/transactions/'+key] = null;
+      await db.ref().update(updates);
+    }
+    await db.ref('users/'+currentUser.uid+'/statements/'+statementId).remove();
+  }
+};
+
+// ── Merchant normalisation (deterministic, no AI) ──
+const MERCHANT_PATTERNS = [
+  // Subscriptions
+  [/SPOTIFY/i, 'Spotify'],
+  [/AMAZON PRIME|AMZN PRIME/i, 'Amazon Prime'],
+  [/AMAZON|AMZN/i, 'Amazon'],
+  [/NETFLIX/i, 'Netflix'],
+  [/APPLE\.COM|APPLE STORE/i, 'Apple'],
+  [/GOOGLE/i, 'Google'],
+  [/DISCORD/i, 'Discord'],
+  [/CRUNCHYROLL/i, 'Crunchyroll'],
+  [/YOUTUBE|GOOGLE.*YT/i, 'YouTube Premium'],
+  [/RUNNA/i, 'Runna'],
+  [/ICLOUD/i, 'iCloud'],
+  // Gyms
+  [/BH LIVE|BHLIVE/i, 'BH Live'],
+  [/PURE GYM/i, 'PureGym'],
+  [/THE GYM/i, 'The Gym'],
+  // Food
+  [/WAGAMAMA/i, 'Wagamama'],
+  [/MCDONALD/i, 'McDonald\'s'],
+  [/KFC/i, 'KFC'],
+  [/SUBWAY/i, 'Subway'],
+  [/DOMINO/i, 'Domino\'s'],
+  [/TESCO/i, 'Tesco'],
+  [/SAINSBURY/i, 'Sainsbury\'s'],
+  [/ASDA/i, 'Asda'],
+  [/LIDL/i, 'Lidl'],
+  [/ALDI/i, 'Aldi'],
+  [/MORRISON/i, 'Morrisons'],
+  [/CO-OP|COOP/i, 'Co-op'],
+  [/WAITROSE/i, 'Waitrose'],
+  // Transport
+  [/TRAINLINE/i, 'Trainline'],
+  [/NATIONAL RAIL|SOUTH WESTERN|GREAT WESTERN|AVANTI|CROSS COUNTRY|NORTHERN RAIL/i, 'National Rail'],
+  [/UBER(?! EATS)/i, 'Uber'],
+  [/UBER EATS/i, 'Uber Eats'],
+  [/DELIVEROO/i, 'Deliveroo'],
+  [/JUST EAT/i, 'Just Eat'],
+  [/BOLT/i, 'Bolt'],
+  [/STAGECOACH|FIRST BUS|ARRIVA|GO AHEAD|NATIONAL EXPRESS/i, 'Bus'],
+  // Finance
+  [/B\/CARD FORWARD|BARCLAYCARD/i, 'Barclaycard'],
+  [/PAYPAL/i, 'PayPal'],
+  [/TRADING 212/i, 'Trading 212'],
+  [/REVOLUT/i, 'Revolut'],
+  [/MONZO/i, 'Monzo'],
+  // Retail
+  [/B&M/i, 'B&M'],
+  [/PRIMARK/i, 'Primark'],
+  [/ZARA/i, 'Zara'],
+  [/H&M/i, 'H&M'],
+  [/BOOTS/i, 'Boots'],
+  [/SUPERDRUG/i, 'Superdrug'],
+  // Other
+  [/BCP COUNCIL|COUNCIL/i, 'Council'],
+  [/GOCARDLESS/i, 'GoCardless'],
+];
+
+const PAYMENT_CODE_MAP = {
+  CPM: 'Card Purchase',
+  BCC: 'Barclays Card',
+  BGC: 'Bank Credit',
+  FT:  'Funds Transfer',
+  DDR: 'Direct Debit',
+  UNP: 'Unpaid',
+  WOT: 'Wire/Online Transfer',
+  SO:  'Standing Order',
+  SV:  'Internal Savings',
+  BBP: 'Bill Payment',
+};
+
+function normaliseMerchant(rawDesc){
+  const upper = rawDesc.toUpperCase();
+  for(const [pat, name] of MERCHANT_PATTERNS){
+    if(pat.test(upper)) return name;
+  }
+  // Generic cleanup: remove trailing reference numbers, ON DD MON, codes
+  return rawDesc
+    .replace(/\s+(ON \d{1,2} [A-Z]{3})\s*$/i, '')
+    .replace(/\s+[A-Z0-9]{8,}\s*$/,'')
+    .replace(/\s+\d{4,}\s*$/, '')
+    .replace(/\t.*/,'')
+    .trim()
+    .split(/\s+/)
+    .slice(0, 4)
+    .join(' ')
+    .replace(/\s+/,' ')
+    .trim() || rawDesc.trim();
+}
+
+// ── Financial type classifier ──
+function classifyFinancialType(row, amount, subcat, memo){
+  const INTERNAL_ACCOUNTS = ['201139 03562921','201139 93224309'];
+  const isInternal = INTERNAL_ACCOUNTS.some(a => memo.includes(a.replace(' ','')||a));
+
+  if(subcat === 'Counter Credit' || subcat === 'Bill Payment'){
+    // BGC = bank giro credit = incoming payment
+    if(memo.includes(' BGC') && amount > 0) return 'INCOME';
+  }
+  if(subcat === 'Funds Transfer'){
+    if(isInternal || memo.match(/FLORASII|FLOLOSII|FLOLOSIII|FLORAIII|FLORA|SAVINGS|CREDIT CARD|SP\b|SV\b|SO\b/i)){
+      return amount < 0 ? 'SAVINGS_TRANSFER' : 'TRANSFER_IN';
+    }
+    return amount < 0 ? 'TRANSFER_OUT' : 'TRANSFER_IN';
+  }
+  if(subcat === 'Direct Debit') return 'EXPENSE';
+  if(subcat === 'Unpaid') return 'TRANSFER_IN'; // reversed payment
+  if(subcat === 'Cash Withdrawal') return 'EXPENSE';
+  if(['Card Purchase','Contactless Card Purchase','Debit'].includes(subcat)){
+    return amount < 0 ? 'EXPENSE' : 'REFUND';
+  }
+  if(amount > 0) return 'UNKNOWN_CREDIT';
+  return 'EXPENSE';
+}
+
+// ── Category suggester (deterministic) ──
+const CATEGORY_RULES = [
+  ['Wagamama', 'Income', 'Employment'],
+  ['Barclaycard', 'Finance', 'Credit Card Payment'],
+  ['Trading 212', 'Finance', 'Investment'],
+  ['BH Live', 'Health & Fitness', 'Gym'],
+  ['Spotify', 'Subscriptions', 'Music'],
+  ['Amazon Prime', 'Subscriptions', 'Shopping'],
+  ['Netflix', 'Subscriptions', 'Entertainment'],
+  ['Discord', 'Subscriptions', 'Entertainment'],
+  ['Crunchyroll', 'Subscriptions', 'Entertainment'],
+  ['YouTube Premium', 'Subscriptions', 'Entertainment'],
+  ['Runna', 'Subscriptions', 'Fitness'],
+  ['iCloud', 'Subscriptions', 'Technology'],
+  ['Amazon', 'Shopping', 'Online Retail'],
+  ['Tesco', 'Groceries', null],
+  ['Sainsbury\'s', 'Groceries', null],
+  ['Asda', 'Groceries', null],
+  ['Lidl', 'Groceries', null],
+  ['Aldi', 'Groceries', null],
+  ['Morrisons', 'Groceries', null],
+  ['Co-op', 'Groceries', null],
+  ['Waitrose', 'Groceries', null],
+  ['B&M', 'Shopping', 'Home & Garden'],
+  ['McDonald\'s', 'Food & Drink', 'Fast Food'],
+  ['KFC', 'Food & Drink', 'Fast Food'],
+  ['Subway', 'Food & Drink', 'Fast Food'],
+  ['Domino\'s', 'Food & Drink', 'Fast Food'],
+  ['Uber Eats', 'Food & Drink', 'Delivery'],
+  ['Deliveroo', 'Food & Drink', 'Delivery'],
+  ['Just Eat', 'Food & Drink', 'Delivery'],
+  ['Uber', 'Transport', 'Taxi'],
+  ['Trainline', 'Transport', 'Rail'],
+  ['National Rail', 'Transport', 'Rail'],
+  ['Bus', 'Transport', 'Bus'],
+  ['Council', 'Bills', 'Council'],
+  ['PayPal', 'Shopping', 'Online'],
+  ['Revolut', 'Finance', 'Transfer'],
+  ['GoCardless', 'Finance', 'Direct Debit'],
+];
+
+function suggestCategory(merchant, financialType){
+  if(financialType === 'INCOME') return ['Income', 'Employment'];
+  if(financialType.includes('TRANSFER') || financialType === 'SAVINGS_TRANSFER') return ['Transfer', null];
+  if(financialType === 'REFUND') return ['Refund', null];
+  for(const [m, cat, sub] of CATEGORY_RULES){
+    if(merchant === m) return [cat, sub];
+  }
+  return ['Uncategorised', null];
+}
+
+// ── File fingerprinting ──
+async function hashFile(content){
+  const buf = new TextEncoder().encode(content);
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+// ── CSV Parser (Barclays format) ──
+function parseBarclaysCSV(content){
+  const lines = content.split('\n');
+  const header = lines[0].trim();
+
+  if(!header.includes('Number') || !header.includes('Subcategory') || !header.includes('Memo')){
+    throw new Error('Unrecognised CSV format. Expected Barclays format with columns: Number, Date, Account, Amount, Subcategory, Memo');
+  }
+
+  const ON_DATE_PAT = /\bON (\d{1,2}) ([A-Z]{3})\b/;
+  const CODE_PAT = /\b(CPM|BCC|BGC|FT|DDR|UNP|WOT|SO|SV|BBP|DEB)\b/g;
+
+  const MONTH_MAP = {JAN:0,FEB:1,MAR:2,APR:3,MAY:4,JUN:5,JUL:6,AUG:7,SEP:8,OCT:9,NOV:10,DEC:11};
+
+  function parseDate(str){
+    // DD/MM/YYYY
+    const p = str.trim().split('/');
+    if(p.length===3) return `${p[2]}-${p[1].padStart(2,'0')}-${p[0].padStart(2,'0')}`;
+    return str.trim();
+  }
+
+  function extractTransactionDate(postingDateStr, memo, year){
+    const m = ON_DATE_PAT.exec(memo);
+    if(!m) return null;
+    const day = parseInt(m[1]);
+    const mon = MONTH_MAP[m[2]];
+    if(mon === undefined) return null;
+    // Handle year rollover: if posting is Jan and txn is Dec, txn year = posting year - 1
+    const postingParts = postingDateStr.split('-');
+    let txnYear = parseInt(postingParts[0]);
+    const postingMon = parseInt(postingParts[1]) - 1;
+    if(postingMon === 0 && mon === 11) txnYear--;
+    // Conversely if posting is Dec and txn is Jan (very rare for card transactions)
+    if(postingMon === 11 && mon === 0) txnYear++;
+    return `${txnYear}-${String(mon+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+
+  const txns = [];
+  let account = null;
+  let minDate = null, maxDate = null;
+
+  for(const rawLine of lines.slice(1)){
+    const line = rawLine.replace(/^\t+/,'').trim();
+    if(!line) continue;
+
+    const parts = line.split(',', 5);
+    if(parts.length < 5) continue;
+    const [rawNum, rawDate, rawAccount, rawAmount] = parts;
+    const rawMemo = line.slice(parts.slice(0,4).join(',').length + 1).replace(/\t/g,' ').trim();
+    const rawSubcat = parts[4].trim();
+
+    const amountVal = parseFloat(rawAmount);
+    if(isNaN(amountVal)) continue;
+
+    if(!account && rawAccount.trim()) account = rawAccount.trim();
+
+    const postingDate = parseDate(rawDate);
+    const txnDate = extractTransactionDate(postingDate, rawMemo, parseInt(postingDate.split('-')[0])) || postingDate;
+    const txnDateInferred = txnDate === postingDate;
+
+    // Extract payment codes
+    const codes = [];
+    let codeMatch;
+    CODE_PAT.lastIndex = 0;
+    while((codeMatch = CODE_PAT.exec(rawMemo)) !== null) codes.push(codeMatch[1]);
+    const primaryCode = codes[0] || null;
+
+    // Clean raw description (memo minus codes and date suffix)
+    const rawDesc = rawMemo
+      .replace(/\bON \d{1,2} [A-Z]{3}\b/g,'')
+      .replace(/\b(CPM|BCC|BGC|FT|DDR|UNP|WOT|SO|SV|BBP|DEB|FIRST|PISP\w+|OBA\w+|212T\w+|BHL\w+|4929\w+)\b/g,'')
+      .replace(/\s+/,' ').trim();
+
+    const merchant = normaliseMerchant(rawMemo);
+    const financialType = classifyFinancialType({}, amountVal, rawSubcat, rawMemo);
+    const [category, subcategory] = suggestCategory(merchant, financialType);
+
+    // Stable ID: we use a hash of key fields since Number is often 0
+    const idSource = `${rawAccount.trim()}|${rawDate.trim()}|${rawAmount.trim()}|${rawMemo.trim()}`;
+    const txnId = 'txn_' + btoa(idSource).replace(/[^a-z0-9]/gi,'').slice(0,20) + '_' + Math.random().toString(36).slice(2,6);
+
+    const now = new Date().toISOString();
+    const txn = {
+      transactionId: txnId,
+      statementId: null, // set when statement is saved
+      accountId: rawAccount.trim(),
+      postingDate,
+      transactionDate: txnDate,
+      transactionDateInferred: txnDateInferred,
+      amount: Math.abs(amountVal),
+      currency: 'GBP',
+      direction: amountVal < 0 ? 'debit' : 'credit',
+      bankTransactionNumber: rawNum.trim() || null,
+      bankTransactionType: rawSubcat,
+      bankPaymentCode: primaryCode,
+      rawDescription: rawDesc,
+      rawMemo: rawMemo,
+      raw: { number: rawNum.trim(), date: rawDate.trim(), account: rawAccount.trim(), amount: rawAmount.trim(), subcategory: rawSubcat, memo: rawMemo },
+      normalisedMerchant: merchant,
+      financialType,
+      category,
+      subcategory: subcategory || null,
+      purpose: null,
+      goalId: null,
+      tags: [],
+      notes: '',
+      reconciliationStatus: 'unmatched',
+      matchedTransactionId: null,
+      paycheckId: null,
+      subscriptionId: null,
+      confidence: financialType === 'UNKNOWN_CREDIT' || financialType === 'TRANSFER_IN' ? 0.5 : 0.8,
+      source: 'statement',
+      userConfirmed: false,
+      userCategory: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    txns.push(txn);
+
+    if(!minDate || postingDate < minDate) minDate = postingDate;
+    if(!maxDate || postingDate > maxDate) maxDate = postingDate;
+  }
+
+  return { txns, account, minDate, maxDate };
+}
+
+// ── Duplicate detection ──
+async function detectDuplicates(newTxns, existingFingerprints, statementId){
+  // We check against existing transactions in Firebase
+  const existingSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+  const existingVal = existingSnap.val() || {};
+  const existing = Object.values(existingVal);
+
+  const results = { strong: [], possible: [], clean: [] };
+
+  for(const txn of newTxns){
+    let strongMatch = false, possibleMatch = false;
+
+    for(const ex of existing){
+      if(ex.statementId === statementId) { strongMatch = true; break; } // same file
+      // Possible duplicate: same account, date, amount, direction
+      if(ex.accountId === txn.accountId &&
+         ex.postingDate === txn.postingDate &&
+         ex.amount === txn.amount &&
+         ex.direction === txn.direction &&
+         ex.rawDescription === txn.rawDescription){
+        possibleMatch = true;
+      }
+    }
+
+    if(strongMatch) results.strong.push(txn);
+    else if(possibleMatch) results.possible.push({...txn, _duplicateWarning: true});
+    else results.clean.push(txn);
+  }
+
+  return results;
+}
+
+// ── Paycheck reconciliation ──
+function findPaycheckMatches(txns, paychecks){
+  const matches = [];
+  const incomeTxns = txns.filter(t => t.financialType === 'INCOME' && t.direction === 'credit');
+
+  for(const txn of incomeTxns){
+    for(const p of paychecks){
+      const pDate = p.date ? p.date.slice(0,10) : null;
+      const pAmount = p.income;
+      const txnDate = txn.postingDate;
+      const txnAmount = txn.amount;
+
+      // Date within 3 days
+      if(!pDate) continue;
+      const daysDiff = Math.abs((new Date(txnDate) - new Date(pDate)) / 86400000);
+      if(daysDiff > 3) continue;
+
+      // Amount exact or within £5
+      const amtDiff = Math.abs(txnAmount - pAmount);
+      if(amtDiff > 5) continue;
+
+      matches.push({
+        txn,
+        paycheck: p,
+        amountDiff: amtDiff,
+        daysDiff: Math.round(daysDiff),
+        exact: amtDiff < 0.01,
+        discrepancy: amtDiff > 0.01 ? amtDiff : null,
+      });
+    }
+  }
+  return matches;
+}
+
+// ── Subscription reconciliation ──
+function findSubscriptionMatches(txns, subscriptions){
+  const matches = [];
+  const debitTxns = txns.filter(t => t.direction === 'debit' && ['Direct Debit','Bill Payment','Debit'].includes(t.bankTransactionType));
+
+  for(const txn of debitTxns){
+    for(const sub of subscriptions){
+      const amtDiff = Math.abs(txn.amount - sub.amount);
+      if(amtDiff > 2) continue; // within £2
+      // Merchant name match
+      const merchantMatch = txn.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
+                            sub.name.toLowerCase().includes(txn.normalisedMerchant.toLowerCase().split(' ')[0]);
+      if(!merchantMatch) continue;
+
+      matches.push({
+        txn,
+        subscription: sub,
+        amountDiff: amtDiff,
+        priceChanged: amtDiff > 0.01,
+      });
+    }
+  }
+  return matches;
+}
+
+// ══════════════════════════════════════
+// STATEMENT IMPORT SCREEN
+// ══════════════════════════════════════
+function statementsScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  let importState = 'idle'; // idle | parsing | preview | importing | complete | error
+  let parsedTxns = [];
+  let analysisResult = null;
+  let statementMeta = null;
+  let fileContent = null;
+
+  const stmtWrap = el('div',{}); // statement history
+  const importWrap = el('div',{}); // import UI
+
+  // ── Statement history ──
+  async function renderHistory(){
+    stmtWrap.innerHTML = '';
+    const stmts = await txnDB.getStatements();
+    if(stmts.length === 0){
+      stmtWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'24px 16px',color:'var(--text2)',fontSize:'13px'}},'No statements imported yet.'));
+      return;
+    }
+    const sorted = [...stmts].sort((a,b)=>(b.periodStart||'').localeCompare(a.periodStart||''));
+    stmtWrap.append(el('div',{class:'section-hdr'},'Imported Statements'));
+    for(const s of sorted){
+      const card = el('div',{class:'card',style:{marginBottom:'8px'}});
+      const hdr = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}});
+      hdr.append(
+        el('div',{},
+          el('div',{style:{fontWeight:'600',fontSize:'14px'}},s.filename||'Statement'),
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},
+            (s.periodStart?s.periodStart.slice(0,7):'?')+' → '+(s.periodEnd?s.periodEnd.slice(0,7):'?'))
+        ),
+        el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--green)'}},s.transactionCount+' txns'),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
+            new Date(s.uploadedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}))
+        )
+      );
+      const details = el('div',{style:{display:'flex',gap:'16px',marginTop:'8px',fontSize:'12px',color:'var(--text2)'}});
+      if(s.newCount!=null) details.append(el('span',{},s.newCount+' new'));
+      if(s.matchedPaycheckCount) details.append(el('span',{style:{color:'var(--green)'}},s.matchedPaycheckCount+' paychecks matched'));
+      if(s.duplicateCount) details.append(el('span',{style:{color:'var(--amber)'}},s.duplicateCount+' possible duplicates'));
+      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'8px'}},'Delete import');
+      delBtn.addEventListener('click',async()=>{
+        if(!confirm('Delete this statement and all its transactions? This cannot be undone.')) return;
+        delBtn.textContent='Deleting…'; delBtn.disabled=true;
+        await txnDB.deleteStatement(s.statementId);
+        renderHistory();
+      });
+      card.append(hdr, details, delBtn);
+      stmtWrap.append(card);
+    }
+  }
+
+  // ── Import UI ──
+  function renderImportUI(){
+    importWrap.innerHTML = '';
+
+    if(importState === 'idle'){
+      const uploadCard = el('div',{class:'card'});
+      uploadCard.innerHTML = `<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Import Statement</div>`;
+
+      const fileInp = el('input',{type:'file',accept:'.csv',style:{display:'none'}});
+      const uploadBtn = el('button',{class:'btn-primary'},'📂 Choose CSV file');
+      uploadBtn.addEventListener('click',()=>fileInp.click());
+
+      const infoDiv = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'10px',lineHeight:'1.6'}},
+        'Supports Barclays current account CSV export. Raw bank data is preserved — your interpretations are stored separately.');
+
+      fileInp.addEventListener('change',async(e)=>{
+        const file = e.target.files[0];
+        if(!file) return;
+        importState = 'parsing';
+        uploadBtn.textContent = 'Parsing…';
+        uploadBtn.disabled = true;
+
+        try {
+          fileContent = await file.text();
+          const fingerprint = await hashFile(fileContent);
+
+          // Check for duplicate file
+          const existing = await txnDB.getFingerprints();
+          if(existing.includes(fingerprint)){
+            importWrap.innerHTML='';
+            const dupCard = el('div',{class:'card',style:{borderLeft:'3px solid var(--amber)'}});
+            dupCard.innerHTML=`<div style="font-weight:700;margin-bottom:8px;color:var(--amber)">⚠️ This statement has already been imported</div>
+<div style="font-size:13px;color:var(--text2)">The exact same file was previously imported. Importing it again would create duplicate transactions.</div>`;
+            const resetBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Choose a different file');
+            resetBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
+            dupCard.append(resetBtn);
+            importWrap.append(dupCard);
+            return;
+          }
+
+          // Parse
+          const {txns, account, minDate, maxDate} = parseBarclaysCSV(fileContent);
+          parsedTxns = txns;
+
+          // Analyse
+          const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
+          const subs = appData.subscriptions||[];
+          const dupResult = await detectDuplicates(txns, [], null);
+          const paycheckMatches = findPaycheckMatches(txns, paychecks);
+          const subMatches = findSubscriptionMatches(txns, subs);
+
+          // Financial type breakdown
+          const byType = {};
+          for(const t of txns){
+            byType[t.financialType] = (byType[t.financialType]||0)+1;
+          }
+
+          const transferKeywords = ['FLORASII','FLOLOSII','FLORAIII','SAVINGS','CREDIT CARD'];
+          const likelySavings = txns.filter(t=>t.financialType==='SAVINGS_TRANSFER').length;
+          const needsReview = txns.filter(t=>t.confidence<0.6||t.financialType.startsWith('UNKNOWN')).length;
+
+          analysisResult = {
+            fingerprint,
+            account,
+            periodStart: minDate,
+            periodEnd: maxDate,
+            total: txns.length,
+            byType,
+            income: txns.filter(t=>t.financialType==='INCOME').length,
+            expenses: txns.filter(t=>t.financialType==='EXPENSE').length,
+            transfers: txns.filter(t=>t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER').length,
+            refunds: txns.filter(t=>t.financialType==='REFUND').length,
+            possibleDuplicates: dupResult.possible.length,
+            paycheckMatches,
+            subMatches,
+            needsReview,
+            filename: file.name,
+          };
+          statementMeta = {fingerprint, account, periodStart:minDate, periodEnd:maxDate, filename:file.name};
+
+          importState = 'preview';
+          renderImportUI();
+        } catch(err){
+          importState = 'error';
+          importWrap.innerHTML = '';
+          importWrap.append(el('div',{class:'card',style:{color:'var(--red)'}},
+            el('div',{style:{fontWeight:'700',marginBottom:'8px'}},'Parse error'),
+            el('div',{style:{fontSize:'13px'}},err.message)
+          ));
+        }
+      });
+      uploadCard.append(fileInp, uploadBtn, infoDiv);
+      importWrap.append(uploadCard);
+    }
+
+    if(importState === 'preview'){
+      const a = analysisResult;
+      const previewCard = el('div',{class:'card'});
+
+      // Header
+      previewCard.append(
+        el('div',{style:{fontWeight:'700',fontSize:'16px',marginBottom:'4px'}}, a.filename),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'16px'}},
+          'Account '+a.account+' · '+(a.periodStart?a.periodStart.slice(0,7):' ')+' → '+(a.periodEnd?a.periodEnd.slice(0,7):' '))
+      );
+
+      // Analysis grid
+      const grid = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',marginBottom:'16px'}});
+      const stat = (label,val,color)=>{
+        const box = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
+        box.append(
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'2px'}},label),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:color||'var(--text)'}},String(val))
+        );
+        return box;
+      };
+      grid.append(
+        stat('Total transactions', a.total),
+        stat('Income credits', a.income, 'var(--green)'),
+        stat('Expenses', a.expenses, 'var(--red)'),
+        stat('Transfers', a.transfers, 'var(--text2)'),
+        stat('Needs review', a.needsReview, a.needsReview>0?'var(--amber)':'var(--text)'),
+        stat('Possible duplicates', a.possibleDuplicates, a.possibleDuplicates>0?'var(--amber)':'var(--text)'),
+      );
+      previewCard.append(grid);
+
+      // Paycheck matches
+      if(a.paycheckMatches.length>0){
+        const pmDiv = el('div',{style:{background:'var(--green-dim)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
+        pmDiv.append(el('div',{style:{fontWeight:'600',color:'var(--green)',marginBottom:'8px',fontSize:'13px'}},
+          `✓ ${a.paycheckMatches.length} paycheck match${a.paycheckMatches.length>1?'es':''} found`));
+        for(const m of a.paycheckMatches.slice(0,3)){
+          const row = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'4px',display:'flex',justifyContent:'space-between'}});
+          row.append(
+            el('span',{},m.txn.postingDate+' '+m.txn.normalisedMerchant),
+            el('span',{},m.exact?'✓ Exact match':'~£'+m.amountDiff.toFixed(2)+' diff')
+          );
+          pmDiv.append(row);
+        }
+        if(a.paycheckMatches.length>3) pmDiv.append(el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'+ '+(a.paycheckMatches.length-3)+' more'));
+        previewCard.append(pmDiv);
+      }
+
+      // Subscription matches
+      if(a.subMatches.length>0){
+        const smDiv = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'10px'}});
+        smDiv.append(el('div',{style:{fontWeight:'600',marginBottom:'8px',fontSize:'13px'}},
+          `${a.subMatches.length} subscription payment${a.subMatches.length>1?'s':''} found`));
+        for(const m of a.subMatches.slice(0,3)){
+          const row = el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'4px',display:'flex',justifyContent:'space-between'}});
+          row.append(
+            el('span',{},m.txn.normalisedMerchant),
+            el('span',{style:{color:m.priceChanged?'var(--amber)':'var(--text2)'}},
+              m.priceChanged?'Price changed: was £'+m.subscription.amount.toFixed(2)+', paid £'+m.txn.amount.toFixed(2):'£'+m.txn.amount.toFixed(2))
+          );
+          smDiv.append(row);
+        }
+        previewCard.append(smDiv);
+      }
+
+      if(a.possibleDuplicates>0){
+        previewCard.append(el('div',{style:{background:'var(--amber-dim)',borderRadius:'10px',padding:'12px',marginBottom:'10px',fontSize:'13px',color:'var(--amber)'}},
+          `⚠️ ${a.possibleDuplicates} possible duplicate${a.possibleDuplicates>1?'s':''} detected. These will be imported but flagged for review.`));
+      }
+
+      // Import button
+      const importingNote = el('div',{style:{fontSize:'12px',color:'var(--text2)',margin:'10px 0'}},
+        `Ready to import ${a.total} transactions into your private financial history.`);
+      const confirmBtn = el('button',{class:'btn-primary'},'Import '+a.total+' transactions');
+      const cancelBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Cancel');
+      cancelBtn.addEventListener('click',()=>{ importState='idle'; parsedTxns=[]; analysisResult=null; renderImportUI(); });
+
+      confirmBtn.addEventListener('click',async()=>{
+        importState = 'importing';
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = 'Importing…';
+
+        try {
+          // Create statement record
+          const statementId = 'stmt_'+Date.now();
+          const a = analysisResult;
+
+          // Mark paycheck matches
+          const paycheckMatchIds = new Set(a.paycheckMatches.map(m=>m.txn.transactionId));
+          const subMatchIds = new Map(a.subMatches.map(m=>[m.txn.transactionId, m.subscription.id]));
+
+          // Assign statementId to all transactions and mark reconciliation
+          const finalTxns = parsedTxns.map(t => {
+            let rec = t.reconciliationStatus;
+            let paycheckId = null, subscriptionId = null;
+            if(paycheckMatchIds.has(t.transactionId)){
+              rec = 'matched';
+              const match = a.paycheckMatches.find(m=>m.txn.transactionId===t.transactionId);
+              paycheckId = match?.paycheck?.id || null;
+            }
+            if(subMatchIds.has(t.transactionId)){
+              rec = 'matched';
+              subscriptionId = subMatchIds.get(t.transactionId);
+            }
+            return {...t, statementId, reconciliationStatus:rec, paycheckId, subscriptionId};
+          });
+
+          // Import in batches of 100 to avoid Firebase limits
+          const BATCH = 100;
+          for(let i=0;i<finalTxns.length;i+=BATCH){
+            await txnDB.writeBatch(finalTxns.slice(i,i+BATCH));
+          }
+
+          // Save statement record
+          const stmt = {
+            statementId,
+            accountId: a.account,
+            filename: a.filename,
+            sourceFormat: 'barclays_csv_v1',
+            sourceBank: 'Barclays',
+            periodStart: a.periodStart,
+            periodEnd: a.periodEnd,
+            uploadedAt: new Date().toISOString(),
+            transactionCount: a.total,
+            importStatus: 'complete',
+            newCount: a.total - a.possibleDuplicates,
+            duplicateCount: a.possibleDuplicates,
+            matchedPaycheckCount: a.paycheckMatches.length,
+            matchedSubscriptionCount: a.subMatches.length,
+            reviewCount: a.needsReview,
+            fileFingerprint: a.fingerprint,
+          };
+          await txnDB.writeStatement(stmt);
+
+          importState = 'complete';
+          parsedTxns = []; analysisResult = null;
+          renderImportUI();
+          renderHistory();
+        } catch(err){
+          importState = 'error';
+          renderImportUI();
+          console.error('Import error:', err);
+        }
+      });
+
+      previewCard.append(importingNote, confirmBtn, cancelBtn);
+      importWrap.append(previewCard);
+    }
+
+    if(importState === 'importing'){
+      importWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px'}},
+        el('div',{style:{fontSize:'16px',fontWeight:'600',marginBottom:'8px'}},'Importing transactions…'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)'}},'Please wait, do not close the app.')
+      ));
+    }
+
+    if(importState === 'complete'){
+      const doneCard = el('div',{class:'card',style:{textAlign:'center',padding:'30px'}});
+      doneCard.append(
+        el('div',{style:{fontSize:'32px',marginBottom:'12px'}},'✅'),
+        el('div',{style:{fontSize:'18px',fontWeight:'700',marginBottom:'8px'}},'Import complete'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',marginBottom:'16px'}},'Your transactions are now in your financial history.')
+      );
+      const newImportBtn = el('button',{class:'btn-primary'},'Import another statement');
+      newImportBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
+      const viewTxnsBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'View transactions');
+      viewTxnsBtn.addEventListener('click',()=>{ /* switch to transactions tab - set via global */ if(window._setTab) window._setTab('transactions'); });
+      doneCard.append(newImportBtn, viewTxnsBtn);
+      importWrap.append(doneCard);
+    }
+
+    if(importState === 'error'){
+      importWrap.append(el('div',{class:'card',style:{color:'var(--red)',padding:'20px'}},
+        el('div',{style:{fontWeight:'700',marginBottom:'8px'}},'Import failed'),
+        el('div',{style:{fontSize:'13px'}},'Something went wrong. Please try again.')
+      ));
+      const retryBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Try again');
+      retryBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
+      importWrap.append(retryBtn);
+    }
+  }
+
+  renderImportUI();
+  renderHistory();
+
+  content.append(
+    el('div',{class:'section-hdr'},'Import Statement'),
+    importWrap,
+    stmtWrap
+  );
+  return content;
+}
+
+// ══════════════════════════════════════
+// TRANSACTION HISTORY SCREEN
+// ══════════════════════════════════════
+function transactionsScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  let allTxns = [];
+  let filtered = [];
+  let filterType = 'all';
+  let searchQ = '';
+  let selectedTxn = null;
+
+  const listWrap = el('div',{});
+  const detailWrap = el('div',{});
+
+  const FINANCIAL_TYPE_LABELS = {
+    INCOME:'Income', EXPENSE:'Expense', TRANSFER_OUT:'Transfer Out',
+    TRANSFER_IN:'Transfer In', SAVINGS_TRANSFER:'Savings', REFUND:'Refund',
+    UNKNOWN_CREDIT:'Unknown Credit', GOAL_ALLOCATION:'Goal',
+  };
+  const FINANCIAL_TYPE_COLORS = {
+    INCOME:'var(--green)', EXPENSE:'var(--red)', SAVINGS_TRANSFER:'var(--amber)',
+    REFUND:'var(--green)', TRANSFER_OUT:'var(--text3)', TRANSFER_IN:'var(--text3)',
+  };
+
+  async function load(){
+    listWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:20px 0">Loading transactions…</div>';
+    allTxns = await txnDB.getTransactions(500);
+    applyFilter();
+  }
+
+  function applyFilter(){
+    filtered = allTxns.filter(t=>{
+      if(filterType==='income' && t.financialType!=='INCOME') return false;
+      if(filterType==='expense' && t.financialType!=='EXPENSE') return false;
+      if(filterType==='transfer' && !t.financialType.includes('TRANSFER') && t.financialType!=='SAVINGS_TRANSFER') return false;
+      if(filterType==='review' && t.userConfirmed) return false;
+      if(searchQ){
+        const q = searchQ.toLowerCase();
+        if(!t.normalisedMerchant.toLowerCase().includes(q) &&
+           !t.rawDescription.toLowerCase().includes(q) &&
+           !(t.category||'').toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+    renderList();
+  }
+
+  function renderList(){
+    listWrap.innerHTML = '';
+    if(allTxns.length === 0){
+      listWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},
+        'No transactions yet. Import a bank statement to get started.'));
+      return;
+    }
+    if(filtered.length === 0){
+      listWrap.append(el('div',{style:{color:'var(--text3)',fontSize:'13px',padding:'16px 0'}},'No transactions match this filter.'));
+      return;
+    }
+
+    // Group by month
+    const byMonth = {};
+    for(const t of filtered){
+      const month = t.postingDate.slice(0,7);
+      if(!byMonth[month]) byMonth[month] = [];
+      byMonth[month].push(t);
+    }
+
+    for(const [month, txns] of Object.entries(byMonth)){
+      const d = new Date(month+'-01');
+      const label = d.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+      const totalIn = txns.filter(t=>t.direction==='credit').reduce((s,t)=>s+t.amount,0);
+      const totalOut = txns.filter(t=>t.direction==='debit').reduce((s,t)=>s+t.amount,0);
+
+      const monthHdr = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px',marginTop:'16px'}});
+      monthHdr.append(
+        el('div',{style:{fontSize:'11px',letterSpacing:'2px',textTransform:'uppercase',color:'var(--text3)',fontFamily:"'Space Grotesk',sans-serif"}},label),
+        el('div',{style:{fontSize:'11px',color:'var(--text3)',fontFamily:"'Space Mono',monospace"}},
+          '+'+fmt(totalIn)+' / -'+fmt(totalOut))
+      );
+      listWrap.append(monthHdr);
+
+      for(const t of txns){
+        const row = el('div',{style:{
+          display:'flex',alignItems:'center',gap:'10px',
+          padding:'11px 14px',background:'var(--surface)',border:'1px solid var(--border)',
+          borderRadius:'12px',marginBottom:'6px',cursor:'pointer',
+          borderLeft:'3px solid '+(FINANCIAL_TYPE_COLORS[t.financialType]||'var(--border)')
+        }});
+
+        const dateSpan = el('div',{style:{fontSize:'11px',color:'var(--text3)',minWidth:'32px',textAlign:'center',lineHeight:'1.2'}});
+        const d = new Date(t.postingDate);
+        dateSpan.append(el('div',{},String(d.getDate())),el('div',{},d.toLocaleDateString('en-GB',{month:'short'})));
+
+        const info = el('div',{style:{flex:'1',minWidth:'0'}});
+        info.append(
+          el('div',{style:{fontWeight:'500',fontSize:'13px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},t.normalisedMerchant||t.rawDescription),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},t.category+(t.subcategory?' · '+t.subcategory:''))
+        );
+
+        const amtCol = el('div',{style:{textAlign:'right',flexShrink:'0'}});
+        amtCol.append(
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px',
+            color:t.direction==='credit'?'var(--green)':'var(--text)'}},
+            (t.direction==='credit'?'+':'-')+'£'+t.amount.toFixed(2)),
+          !t.userConfirmed?el('div',{style:{fontSize:'9px',color:'var(--amber)',marginTop:'1px'}},'review'):el('span')
+        );
+
+        row.append(dateSpan, info, amtCol);
+        row.addEventListener('click',()=>{ selectedTxn=t; renderDetail(); });
+        listWrap.append(row);
+      }
+    }
+  }
+
+  function renderDetail(){
+    detailWrap.innerHTML = '';
+    if(!selectedTxn) return;
+    const t = selectedTxn;
+
+    const panel = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid '+(FINANCIAL_TYPE_COLORS[t.financialType]||'var(--border)')}});
+
+    // Header
+    panel.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'14px'}},
+        el('div',{},
+          el('div',{style:{fontWeight:'700',fontSize:'16px'}},t.normalisedMerchant||t.rawDescription),
+          el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},t.postingDate+
+            (t.transactionDate!==t.postingDate?' (txn: '+t.transactionDate+')':''))
+        ),
+        el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'20px',
+            color:t.direction==='credit'?'var(--green)':'var(--red)'}},
+            (t.direction==='credit'?'+':'-')+'£'+t.amount.toFixed(2)),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},FINANCIAL_TYPE_LABELS[t.financialType]||t.financialType)
+        )
+      )
+    );
+
+    // Raw bank data (immutable)
+    const rawSection = el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'12px',marginBottom:'12px'}});
+    rawSection.innerHTML = `<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:8px;font-family:'Space Grotesk',sans-serif">Original Bank Data</div>`;
+    const rawFields = [
+      ['Description', t.rawDescription],
+      ['Bank type', t.bankTransactionType],
+      ['Payment code', t.bankPaymentCode ? (t.bankPaymentCode+' — '+(PAYMENT_CODE_MAP[t.bankPaymentCode]||'Unknown')) : '—'],
+      ['Account', t.accountId],
+      ['Full memo', t.rawMemo],
+    ];
+    for(const [label, val] of rawFields){
+      if(!val) continue;
+      const row = el('div',{style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid var(--border)',fontSize:'12px'}});
+      row.append(el('span',{style:{color:'var(--text3)'}},label), el('span',{style:{textAlign:'right',maxWidth:'60%',wordBreak:'break-word'}},val||'—'));
+      rawSection.append(row);
+    }
+    panel.append(rawSection);
+
+    // Financial interpretation (editable)
+    const interpSection = el('div',{});
+    interpSection.innerHTML = `<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:8px;font-family:'Space Grotesk',sans-serif">Financial Interpretation</div>`;
+
+    const typeOpts = Object.entries(FINANCIAL_TYPE_LABELS);
+    const typeSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 12px',fontSize:'13px',marginBottom:'8px',outline:'none'}});
+    for(const [k,v] of typeOpts){
+      const opt = el('option',{value:k},v);
+      if(k===t.financialType) opt.selected=true;
+      typeSel.append(opt);
+    }
+
+    const catInp = el('input',{placeholder:'Category',value:t.userCategory||t.category||'',style:{marginBottom:'8px'}});
+    const notesInp = el('input',{placeholder:'Notes',value:t.notes||'',style:{marginBottom:'12px'}});
+
+    const saveBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'11px'}},'Save interpretation');
+    saveBtn.addEventListener('click',async()=>{
+      const updated = {
+        ...t,
+        financialType: typeSel.value,
+        userCategory: catInp.value.trim()||null,
+        category: catInp.value.trim()||t.category,
+        notes: notesInp.value.trim(),
+        userConfirmed: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await txnDB.write(updated);
+      // Update local
+      const idx = allTxns.findIndex(x=>x.transactionId===t.transactionId);
+      if(idx>=0) allTxns[idx] = updated;
+      selectedTxn = updated;
+      saveBtn.textContent = 'Saved ✓';
+      setTimeout(()=>{ saveBtn.textContent='Save interpretation'; applyFilter(); },1500);
+    });
+
+    const closeBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Close');
+    closeBtn.addEventListener('click',()=>{ selectedTxn=null; detailWrap.innerHTML=''; });
+
+    if(t.reconciliationStatus==='matched'){
+      interpSection.append(el('div',{style:{background:'var(--green-dim)',borderRadius:'8px',padding:'8px 10px',marginBottom:'8px',fontSize:'12px',color:'var(--green)'}},
+        '✓ Reconciled with '+(t.paycheckId?'paycheck':t.subscriptionId?'subscription':'known transaction')));
+    }
+
+    interpSection.append(typeSel, catInp, notesInp, saveBtn, closeBtn);
+    panel.append(interpSection);
+    detailWrap.append(panel);
+    detailWrap.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  // Filter bar
+  const filterBar = el('div',{style:{display:'flex',gap:'6px',marginBottom:'12px',flexWrap:'wrap'}});
+  const filters = [['all','All'],['income','Income'],['expense','Expenses'],['transfer','Transfers'],['review','Needs review']];
+  for(const [id,label] of filters){
+    const btn = el('button',{style:{
+      background:filterType===id?'var(--green)':'var(--surface2)',
+      color:filterType===id?'#000':'var(--text2)',
+      border:'none',borderRadius:'100px',padding:'6px 12px',fontSize:'12px',fontWeight:'600'
+    }},label);
+    btn.addEventListener('click',()=>{
+      filterType=id;
+      filterBar.querySelectorAll('button').forEach((b,i)=>{
+        b.style.background=filters[i][0]===id?'var(--green)':'var(--surface2)';
+        b.style.color=filters[i][0]===id?'#000':'var(--text2)';
+      });
+      applyFilter();
+    });
+    filterBar.append(btn);
+  }
+
+  const searchInp = el('input',{placeholder:'Search merchant, description, category…',style:{marginBottom:'12px'}});
+  searchInp.addEventListener('input',()=>{ searchQ=searchInp.value; applyFilter(); });
+
+  content.append(detailWrap, filterBar, searchInp, listWrap);
+  load();
+  return content;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE F — RECURRING TRANSACTION DETECTION
+// ═══════════════════════════════════════════════════════════════
+
+function detectRecurring(transactions){
+  // Group by normalised merchant
+  const byMerchant = {};
+  for(const t of transactions){
+    if(t.financialType === 'INCOME' || t.financialType.includes('TRANSFER')) continue;
+    const key = t.normalisedMerchant || t.rawDescription;
+    if(!byMerchant[key]) byMerchant[key] = [];
+    byMerchant[key].push(t);
+  }
+
+  const patterns = [];
+
+  for(const [merchant, txns] of Object.entries(byMerchant)){
+    if(txns.length < 2) continue;
+    const sorted = [...txns].sort((a,b)=>a.postingDate.localeCompare(b.postingDate));
+
+    // Calculate gaps between transactions in days
+    const gaps = [];
+    for(let i=1;i<sorted.length;i++){
+      const days = Math.round((new Date(sorted[i].postingDate) - new Date(sorted[i-1].postingDate)) / 86400000);
+      gaps.push(days);
+    }
+
+    if(!gaps.length) continue;
+
+    // Calculate average gap and amount
+    const avgGap = gaps.reduce((s,g)=>s+g,0)/gaps.length;
+    const amounts = sorted.map(t=>t.amount);
+    const avgAmount = amounts.reduce((s,a)=>s+a,0)/amounts.length;
+    const amountVariance = amounts.map(a=>Math.abs(a-avgAmount)).reduce((s,v)=>s+v,0)/amounts.length;
+
+    // Classify frequency
+    let frequency = null;
+    let confidence = 0;
+    const gapVariance = gaps.map(g=>Math.abs(g-avgGap)).reduce((s,v)=>s+v,0)/gaps.length;
+
+    if(avgGap >= 6 && avgGap <= 8 && gapVariance < 3){
+      frequency = 'Weekly'; confidence = 0.9;
+    } else if(avgGap >= 12 && avgGap <= 16 && gapVariance < 4){
+      frequency = 'Fortnightly'; confidence = 0.85;
+    } else if(avgGap >= 28 && avgGap <= 33 && gapVariance < 5){
+      frequency = 'Monthly'; confidence = 0.9;
+    } else if(avgGap >= 85 && avgGap <= 95 && gapVariance < 7){
+      frequency = 'Quarterly'; confidence = 0.8;
+    } else if(avgGap >= 350 && avgGap <= 380 && gapVariance < 15){
+      frequency = 'Annual'; confidence = 0.75;
+    }
+
+    if(!frequency) continue;
+    // Amount must be consistent (variance < 10% of average)
+    if(amountVariance > avgAmount * 0.15) continue;
+    // Need at least 2 observations, prefer 3+
+    if(sorted.length < 2) continue;
+    if(sorted.length < 3) confidence *= 0.7;
+
+    // Predict next payment
+    const lastDate = new Date(sorted[sorted.length-1].postingDate);
+    const nextDate = new Date(lastDate);
+    if(frequency==='Weekly') nextDate.setDate(nextDate.getDate()+7);
+    else if(frequency==='Fortnightly') nextDate.setDate(nextDate.getDate()+14);
+    else if(frequency==='Monthly') nextDate.setMonth(nextDate.getMonth()+1);
+    else if(frequency==='Quarterly') nextDate.setMonth(nextDate.getMonth()+3);
+    else if(frequency==='Annual') nextDate.setFullYear(nextDate.getFullYear()+1);
+
+    patterns.push({
+      id: 'rec_'+merchant.replace(/\W/g,'').toLowerCase()+'_'+Date.now(),
+      merchant,
+      category: sorted[0].category,
+      typicalAmount: Math.round(avgAmount*100)/100,
+      frequency,
+      confidence: Math.round(confidence*100)/100,
+      observations: sorted.length,
+      lastPayment: sorted[sorted.length-1].postingDate,
+      nextExpected: nextDate.toISOString().slice(0,10),
+      transactionIds: sorted.map(t=>t.transactionId),
+      status: 'detected', // detected | confirmed | ignored
+    });
+  }
+
+  return patterns.sort((a,b)=>b.confidence-a.confidence || b.observations-a.observations);
+}
+
+// ── Merchant rules DB ──
+const merchantRulesDB = {
+  async getAll(){
+    const snap = await db.ref('users/'+currentUser.uid+'/merchantRules').once('value');
+    return snap.val() ? Object.values(snap.val()) : [];
+  },
+  async save(rule){
+    await db.ref('users/'+currentUser.uid+'/merchantRules/'+rule.id).set(rule);
+  },
+  async delete(id){
+    await db.ref('users/'+currentUser.uid+'/merchantRules/'+id).remove();
+  },
+  async applyToTransaction(rawDesc, merchant){
+    // Check if user has a rule for this merchant
+    const snap = await db.ref('users/'+currentUser.uid+'/merchantRules')
+      .orderByChild('matchPattern').once('value');
+    const val = snap.val();
+    if(!val) return null;
+    for(const rule of Object.values(val)){
+      if(!rule.active) continue;
+      if(rawDesc.toUpperCase().includes(rule.matchPattern.toUpperCase()) ||
+         merchant.toLowerCase().includes(rule.matchPattern.toLowerCase())){
+        return rule;
+      }
+    }
+    return null;
+  }
+};
+
+// ── Recurring rules DB ──
+const recurringDB = {
+  async getAll(){
+    const snap = await db.ref('users/'+currentUser.uid+'/recurringPatterns').once('value');
+    return snap.val() ? Object.values(snap.val()) : [];
+  },
+  async save(pattern){
+    await db.ref('users/'+currentUser.uid+'/recurringPatterns/'+pattern.id).set(pattern);
+  },
+  async delete(id){
+    await db.ref('users/'+currentUser.uid+'/recurringPatterns/'+id).remove();
+  },
+};
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE K — HISTORICAL ANALYTICS
+// ═══════════════════════════════════════════════════════════════
+
+async function buildAnalytics(periodMonths){
+  const now = new Date();
+  const cutoff = new Date(now);
+  if(periodMonths > 0) cutoff.setMonth(cutoff.getMonth() - periodMonths);
+  const cutoffStr = cutoff.toISOString().slice(0,10);
+
+  // Load transactions for period
+  const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+  const val = snap.val() || {};
+  const allTxns = Object.values(val).filter(t=>
+    periodMonths === 0 || t.postingDate >= cutoffStr
+  );
+
+  // Separate by financial type — transfers EXCLUDED from income/expense calcs
+  const income   = allTxns.filter(t=>t.financialType==='INCOME');
+  const expenses = allTxns.filter(t=>t.financialType==='EXPENSE');
+  const savings  = allTxns.filter(t=>t.financialType==='SAVINGS_TRANSFER' && t.direction==='debit');
+  const refunds  = allTxns.filter(t=>t.financialType==='REFUND');
+
+  // Monthly aggregates
+  const monthly = {};
+  for(const t of [...income,...expenses,...savings]){
+    const m = t.postingDate.slice(0,7);
+    if(!monthly[m]) monthly[m]={income:0,expenses:0,savings:0,txnCount:0};
+    if(t.financialType==='INCOME') monthly[m].income+=t.amount;
+    if(t.financialType==='EXPENSE') monthly[m].expenses+=t.amount;
+    if(t.financialType==='SAVINGS_TRANSFER') monthly[m].savings+=t.amount;
+    monthly[m].txnCount++;
+  }
+
+  // Category breakdown (expenses only)
+  const byCategory = {};
+  for(const t of expenses){
+    const cat = t.userCategory || t.category || 'Uncategorised';
+    if(!byCategory[cat]) byCategory[cat]={total:0,count:0};
+    byCategory[cat].total += t.amount;
+    byCategory[cat].count++;
+  }
+
+  // Merchant breakdown
+  const byMerchant = {};
+  for(const t of expenses){
+    const m = t.normalisedMerchant || t.rawDescription;
+    if(!byMerchant[m]) byMerchant[m]={total:0,count:0};
+    byMerchant[m].total += t.amount;
+    byMerchant[m].count++;
+  }
+
+  const totalIncome   = income.reduce((s,t)=>s+t.amount,0);
+  const totalExpenses = expenses.reduce((s,t)=>s+t.amount,0);
+  const totalSavings  = savings.reduce((s,t)=>s+t.amount,0);
+  const netIncome     = totalIncome - totalExpenses;
+  const savingsRate   = totalIncome > 0 ? (totalSavings/totalIncome*100) : 0;
+
+  const monthlyArr = Object.entries(monthly).sort((a,b)=>a[0].localeCompare(b[0]));
+  const avgMonthlyIncome   = monthlyArr.length ? monthlyArr.reduce((s,[,m])=>s+m.income,0)/monthlyArr.length : 0;
+  const avgMonthlyExpenses = monthlyArr.length ? monthlyArr.reduce((s,[,m])=>s+m.expenses,0)/monthlyArr.length : 0;
+
+  return {
+    totalIncome, totalExpenses, totalSavings, netIncome, savingsRate,
+    avgMonthlyIncome, avgMonthlyExpenses,
+    txnCount: allTxns.length,
+    incomeCount: income.length,
+    expenseCount: expenses.length,
+    byCategory: Object.entries(byCategory).sort((a,b)=>b[1].total-a[1].total).slice(0,10),
+    byMerchant: Object.entries(byMerchant).sort((a,b)=>b[1].total-a[1].total).slice(0,10),
+    monthly: monthlyArr,
+    hasTxnData: allTxns.length > 0,
+  };
+}
+
+function analyticsScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  let period = 3; // months, 0 = all time
+  const resultsWrap = el('div',{});
+  const loadingDiv = el('div',{style:{color:'var(--text3)',fontSize:'13px',padding:'20px 0',textAlign:'center'}},'Loading analytics…');
+
+  async function render(){
+    resultsWrap.innerHTML = '';
+    resultsWrap.append(loadingDiv);
+    const a = await buildAnalytics(period);
+
+    resultsWrap.innerHTML = '';
+    if(!a.hasTxnData){
+      resultsWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},
+        'No transaction data yet. Import a bank statement first.'));
+      return;
+    }
+
+    // Summary cards
+    const grid = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'12px'}});
+    const scard = (label,val,color,sub) => {
+      const c = el('div',{class:'card',style:{padding:'14px'}});
+      c.append(
+        el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'1px'}},label),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',color:color||'var(--text)'}},val),
+        sub?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},sub):el('span')
+      );
+      return c;
+    };
+    grid.append(
+      scard('Income', fmt(a.totalIncome), 'var(--green)', a.incomeCount+' payments'),
+      scard('Expenses', fmt(a.totalExpenses), 'var(--red)', a.expenseCount+' transactions'),
+      scard('Saved', fmt(a.totalSavings), 'var(--amber)', 'savings transfers'),
+      scard('Savings rate', Math.round(a.savingsRate)+'%', a.savingsRate>=20?'var(--green)':'var(--amber)', 'of income'),
+    );
+    resultsWrap.append(el('div',{class:'section-hdr'},'Summary'), grid);
+
+    // Monthly trend
+    if(a.monthly.length > 1){
+      const trendCard = el('div',{class:'card',style:{overflowX:'auto',padding:'16px 20px',marginBottom:'12px'}});
+      trendCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:10px;font-family:'Space Grotesk',sans-serif">Monthly income vs spending</div>`;
+      const W=Math.min(window.innerWidth-40,440), H=140;
+      const PAD={top:10,right:8,bottom:24,left:52};
+      const iW=W-PAD.left-PAD.right, iH=H-PAD.top-PAD.bottom;
+      const maxVal = Math.max(...a.monthly.map(([,m])=>Math.max(m.income,m.expenses)),1);
+      const barW = Math.max(4,(iW/a.monthly.length)*0.35);
+      const gap = iW/a.monthly.length;
+
+      const bars = a.monthly.map(([month,m],i)=>{
+        const x = PAD.left + i*gap;
+        const ih = (m.income/maxVal)*iH;
+        const eh = (m.expenses/maxVal)*iH;
+        const lbl = month.slice(5)+'/'+ month.slice(2,4);
+        return `
+          <rect x="${x+(gap-barW*2-2)/2}" y="${PAD.top+iH-ih}" width="${barW}" height="${ih}" fill="var(--green)" rx="2" opacity="0.8"/>
+          <rect x="${x+(gap-barW*2-2)/2+barW+2}" y="${PAD.top+iH-eh}" width="${barW}" height="${eh}" fill="var(--red)" rx="2" opacity="0.8"/>
+          <text x="${x+gap/2}" y="${H-4}" text-anchor="middle" fill="#555" font-size="8" font-family="Space Grotesk,sans-serif">${lbl}</text>`;
+      }).join('');
+
+      const yLbls = [0, Math.round(maxVal/2), Math.round(maxVal)].map(v=>{
+        const y=PAD.top+iH-(v/maxVal)*iH;
+        return `<text x="${PAD.left-4}" y="${y+3}" text-anchor="end" fill="#555" font-size="9" font-family="Space Mono,monospace">${v>=1000?'£'+(v/1000).toFixed(1)+'k':'£'+v}</text>`;
+      }).join('');
+
+      trendCard.innerHTML += `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible">${bars}${yLbls}</svg>`;
+      trendCard.innerHTML += `<div style="display:flex;gap:16px;margin-top:8px;font-size:11px;color:var(--text2)">
+        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:var(--green);border-radius:2px;display:inline-block"></span>Income</span>
+        <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;background:var(--red);border-radius:2px;display:inline-block"></span>Spending</span>
+      </div>`;
+      resultsWrap.append(el('div',{class:'section-hdr'},'Monthly trend'), trendCard);
+    }
+
+    // Category breakdown
+    if(a.byCategory.length > 0){
+      const catCard = el('div',{class:'card'});
+      catCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Spending by category</div>`;
+      const maxCat = a.byCategory[0][1].total;
+      for(const [cat, data] of a.byCategory){
+        const pct = Math.round(data.total/maxCat*100);
+        const row = el('div',{style:{marginBottom:'10px'}});
+        row.innerHTML=`
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+            <span>${cat}</span>
+            <span style="font-family:'Space Mono',monospace;font-weight:700">${fmt(data.total)}</span>
+          </div>
+          <div style="background:var(--surface2);border-radius:100px;height:5px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:var(--red);border-radius:100px"></div>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${data.count} transactions</div>`;
+        catCard.append(row);
+      }
+      resultsWrap.append(el('div',{class:'section-hdr'},'Categories'), catCard);
+    }
+
+    // Top merchants
+    if(a.byMerchant.length > 0){
+      const mCard = el('div',{class:'card'});
+      mCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">Top merchants</div>`;
+      for(const [merchant, data] of a.byMerchant){
+        const row = el('div',{class:'balance-row'});
+        row.append(
+          el('div',{},
+            el('div',{class:'balance-label'},merchant),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)'}},data.count+' transactions · avg '+fmt(data.total/data.count))
+          ),
+          el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(data.total))
+        );
+        mCard.append(row);
+      }
+      resultsWrap.append(el('div',{class:'section-hdr'},'Merchants'), mCard);
+    }
+
+    // Averages
+    resultsWrap.append(
+      el('div',{class:'section-hdr'},'Averages'),
+      el('div',{class:'card'},
+        el('div',{class:'balance-row'},
+          el('div',{class:'balance-label'},'Avg monthly income'),
+          el('div',{class:'balance-value',style:{color:'var(--green)'}},fmt(a.avgMonthlyIncome))
+        ),
+        el('div',{class:'balance-row',style:{border:'none'}},
+          el('div',{class:'balance-label'},'Avg monthly spending'),
+          el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(a.avgMonthlyExpenses))
+        )
+      )
+    );
+  }
+
+  // Period selector
+  const periodBar = el('div',{style:{display:'flex',gap:'6px',marginBottom:'12px',flexWrap:'wrap'}});
+  const periods = [[1,'1M'],[3,'3M'],[6,'6M'],[12,'12M'],[0,'All']];
+  for(const [months,label] of periods){
+    const btn = el('button',{style:{
+      background:period===months?'var(--green)':'var(--surface2)',
+      color:period===months?'#000':'var(--text2)',
+      border:'none',borderRadius:'100px',padding:'6px 14px',fontSize:'12px',fontWeight:'600'
+    }},label);
+    btn.addEventListener('click',()=>{
+      period=months;
+      periodBar.querySelectorAll('button').forEach((b,i)=>{
+        b.style.background=periods[i][0]===months?'var(--green)':'var(--surface2)';
+        b.style.color=periods[i][0]===months?'#000':'var(--text2)';
+      });
+      render();
+    });
+    periodBar.append(btn);
+  }
+
+  content.append(periodBar, resultsWrap);
+  render();
+  return content;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE F UI — RECURRING DETECTION SCREEN
+// ═══════════════════════════════════════════════════════════════
+
+function recurringScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const resultsWrap = el('div',{});
+  const CONF_LABELS = {1:'High', 0.9:'High', 0.85:'High', 0.8:'Medium', 0.75:'Medium', 0.7:'Low'};
+  const CONF_COLORS = {'High':'var(--green)','Medium':'var(--amber)','Low':'var(--text3)'};
+
+  async function load(){
+    resultsWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:20px 0;text-align:center">Analysing transactions…</div>';
+
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const val = snap.val() || {};
+    const txns = Object.values(val);
+
+    if(!txns.length){
+      resultsWrap.innerHTML = '';
+      resultsWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px',color:'var(--text2)',fontSize:'13px'}},
+        'No transactions yet. Import a statement first.'));
+      return;
+    }
+
+    const patterns = detectRecurring(txns);
+    const savedPatterns = await recurringDB.getAll();
+    const savedIds = new Set(savedPatterns.map(p=>p.merchant));
+
+    resultsWrap.innerHTML = '';
+
+    if(!patterns.length){
+      resultsWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px',color:'var(--text2)',fontSize:'13px'}},
+        'No recurring patterns detected yet. More transaction history will improve detection.'));
+      return;
+    }
+
+    // Confirmed patterns
+    const confirmed = savedPatterns.filter(p=>p.status==='confirmed');
+    if(confirmed.length){
+      resultsWrap.append(el('div',{class:'section-hdr'},'Confirmed recurring'));
+      for(const p of confirmed){
+        const card = el('div',{class:'card',style:{marginBottom:'8px',borderLeft:'3px solid var(--green)'}});
+        card.append(
+          el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+            el('div',{},
+              el('div',{style:{fontWeight:'600',fontSize:'14px'}},p.merchant),
+              el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},p.frequency+' · Next: '+p.nextExpected)
+            ),
+            el('div',{style:{textAlign:'right'}},
+              el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--red)'}},fmt(p.typicalAmount)),
+              el('div',{style:{fontSize:'11px',color:'var(--text3)'}},p.observations+' observed')
+            )
+          )
+        );
+        const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'8px'}},'Remove');
+        delBtn.addEventListener('click',async()=>{ await recurringDB.delete(p.id); load(); });
+        card.append(delBtn);
+        resultsWrap.append(card);
+      }
+    }
+
+    // Detected patterns (not yet confirmed)
+    const unconfirmed = patterns.filter(p=>!savedIds.has(p.merchant));
+    if(unconfirmed.length){
+      resultsWrap.append(el('div',{class:'section-hdr'},'Possible recurring payments'));
+      for(const p of unconfirmed){
+        const confLabel = Object.entries(CONF_LABELS).find(([k])=>parseFloat(k)<=p.confidence)?.[1]||'Low';
+        const confColor = CONF_COLORS[confLabel];
+        const card = el('div',{class:'card',style:{marginBottom:'8px',borderLeft:'3px solid '+confColor}});
+        card.append(
+          el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'10px'}},
+            el('div',{},
+              el('div',{style:{fontWeight:'600',fontSize:'14px'}},p.merchant),
+              el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},
+                p.frequency+' · '+p.observations+' observations')
+            ),
+            el('div',{style:{textAlign:'right'}},
+              el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--red)'}},fmt(p.typicalAmount)),
+              el('div',{style:{fontSize:'11px',color:confColor,marginTop:'2px'}},confLabel+' confidence')
+            )
+          ),
+          el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}},
+            el('span',{},'Last: '+p.lastPayment),
+            el('span',{},'Next expected: '+p.nextExpected)
+          )
+        );
+        const btnRow = el('div',{style:{display:'flex',gap:'8px'}});
+        const confirmBtn = el('button',{style:{flex:'1',background:'var(--green)',color:'#000',border:'none',borderRadius:'10px',padding:'8px',fontWeight:'700',fontSize:'13px'}},'Confirm');
+        const ignoreBtn = el('button',{style:{flex:'1',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)',borderRadius:'10px',padding:'8px',fontSize:'13px'}},'Ignore');
+        confirmBtn.addEventListener('click',async()=>{
+          await recurringDB.save({...p, status:'confirmed'});
+          load();
+        });
+        ignoreBtn.addEventListener('click',async()=>{
+          await recurringDB.save({...p, status:'ignored'});
+          load();
+        });
+        btnRow.append(confirmBtn, ignoreBtn);
+        card.append(btnRow);
+        resultsWrap.append(card);
+      }
+    }
+
+    if(!confirmed.length && !unconfirmed.length){
+      resultsWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'24px',color:'var(--text2)',fontSize:'13px'}},
+        'All recurring patterns have been reviewed.'));
+    }
+  }
+
+  content.append(resultsWrap);
+  load();
+  return content;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PHASE J — MERCHANT LEARNING SCREEN
+// ═══════════════════════════════════════════════════════════════
+
+function merchantRulesScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const rulesWrap = el('div',{});
+
+  async function loadRules(){
+    rulesWrap.innerHTML='';
+    const rules = await merchantRulesDB.getAll();
+    if(!rules.length){
+      rulesWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'24px',color:'var(--text2)',fontSize:'13px'}},
+        'No merchant rules yet. Rules are created when you edit a transaction\'s category or merchant.'));
+      return;
+    }
+    rulesWrap.append(el('div',{class:'section-hdr'},'Your merchant rules'));
+    for(const rule of rules.filter(r=>r.active).sort((a,b)=>b.confirmationCount-a.confirmationCount)){
+      const card = el('div',{class:'card',style:{marginBottom:'8px'}});
+      card.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          el('div',{},
+            el('div',{style:{fontWeight:'600',fontSize:'14px'}},rule.normalisedMerchant),
+            el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},
+              'Pattern: "'+rule.matchPattern+'" → '+rule.preferredCategory+(rule.preferredSubcategory?' / '+rule.preferredSubcategory:'')),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
+              rule.confirmationCount+' confirmation'+(rule.confirmationCount!==1?'s':''))
+          ),
+          el('button',{style:{background:'none',color:'var(--red)',fontSize:'18px',padding:'0',flexShrink:'0'}},'×',
+            'onclick', async()=>{ await merchantRulesDB.delete(rule.id); loadRules(); })
+        )
+      );
+      // fix event
+      card.querySelector('button').addEventListener('click',async()=>{ await merchantRulesDB.delete(rule.id); loadRules(); });
+      rulesWrap.append(card);
+    }
+  }
+
+  // Add rule manually
+  const formCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+  formCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Add merchant rule</div>`;
+  const patternInp = el('input',{placeholder:'Match pattern (e.g. TESCO)',style:{marginBottom:'10px'}});
+  const merchantInp = el('input',{placeholder:'Display name (e.g. Tesco)',style:{marginBottom:'10px'}});
+  const catInp = el('input',{placeholder:'Category (e.g. Groceries)',style:{marginBottom:'10px'}});
+  const subCatInp = el('input',{placeholder:'Subcategory (optional)',style:{marginBottom:'14px'}});
+  const addBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'11px'}},'Add rule');
+  addBtn.addEventListener('click',async()=>{
+    if(!patternInp.value.trim()||!merchantInp.value.trim()) return;
+    const rule = {
+      id:'mr_'+Date.now(),
+      matchPattern:patternInp.value.trim().toUpperCase(),
+      normalisedMerchant:merchantInp.value.trim(),
+      preferredCategory:catInp.value.trim()||'Uncategorised',
+      preferredSubcategory:subCatInp.value.trim()||null,
+      financialType:'EXPENSE',
+      confirmationCount:1,
+      active:true,
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString(),
+    };
+    await merchantRulesDB.save(rule);
+    patternInp.value=''; merchantInp.value=''; catInp.value=''; subCatInp.value='';
+    addBtn.textContent='Added ✓';
+    setTimeout(()=>{addBtn.textContent='Add rule'; loadRules();},1500);
+  });
+  formCard.append(patternInp,merchantInp,catInp,subCatInp,addBtn);
+
+  content.append(
+    el('div',{class:'section-hdr'},'Merchant Rules'),
+    el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'12px',lineHeight:'1.6'}},'Rules are user-specific — your classifications never affect other users. When you edit a transaction, the rule is automatically suggested for future imports.'),
+    formCard,
+    rulesWrap
+  );
+  loadRules();
   return content;
 }
 
@@ -1523,17 +3575,34 @@ function mainScreen(startTab='home'){
   const svgPlus = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
   const svgCal = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>';
+  const svgImport = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+  const svgTxn = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
+  const svgLife = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+  const svgAsk = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
   const homeBtn = el('button',{class:'nav-btn active'});
-  homeBtn.innerHTML = svgHome + '<span>Overview</span>';
+  homeBtn.innerHTML = svgHome + '<span>Home</span>';
   const trendsBtn = el('button',{class:'nav-btn'});
   trendsBtn.innerHTML = svgChart + '<span>Trends</span>';
+  const stmtBtn = el('button',{class:'nav-btn'});
+  stmtBtn.innerHTML = svgImport + '<span>Import</span>';
+  const txnBtn = el('button',{class:'nav-btn'});
+  txnBtn.innerHTML = svgTxn + '<span>Txns</span>';
   const calBtn = el('button',{class:'nav-btn'});
-  calBtn.innerHTML = svgCal + '<span>Calendar</span>';
+  calBtn.innerHTML = svgCal + '<span>Cash Flow</span>';
   const hoursBtn = el('button',{class:'nav-btn'});
   hoursBtn.innerHTML = svgClock + '<span>Hours</span>';
+  const lifeBtn = el('button',{class:'nav-btn'});
+  lifeBtn.innerHTML = svgLife + '<span>Life</span>';
+  const askBtn = el('button',{class:'nav-btn'});
+  askBtn.innerHTML = svgAsk + '<span>Ask</span>';
   const settBtn = el('button',{class:'nav-btn'});
   settBtn.innerHTML = svgGear + '<span>Settings</span>';
-  const payBtn = el('button',{class:'nav-btn',style:{color:'var(--green)'}});
+  const svgAnalytics = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>';
+  const svgRecur = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>';
+  const analyticsBtn = el('button',{class:'nav-btn'});
+  analyticsBtn.innerHTML = svgAnalytics + '<span>Analytics</span>';
+  const recurBtn = el('button',{class:'nav-btn'});
+  recurBtn.innerHTML = svgRecur + '<span>Recurring</span>';
   const payCircle = el('div',{style:{width:'44px',height:'44px',background:'var(--green)',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',marginTop:'-20px',boxShadow:'0 0 20px #00E67640'}});
   payCircle.innerHTML = svgPlus;
   payBtn.append(payCircle, el('span',{style:{marginTop:'4px'}},'Payday'));
@@ -1542,56 +3611,71 @@ function mainScreen(startTab='home'){
     tab=t;
     homeBtn.className='nav-btn'+(t==='home'?' active':'');
     trendsBtn.className='nav-btn'+(t==='trends'?' active':'');
+    stmtBtn.className='nav-btn'+(t==='statements'?' active':'');
+    txnBtn.className='nav-btn'+(t==='transactions'?' active':'');
+    analyticsBtn.className='nav-btn'+(t==='analytics'?' active':'');
+    recurBtn.className='nav-btn'+(t==='recurring'?' active':'');
     calBtn.className='nav-btn'+(t==='calendar'?' active':'');
     hoursBtn.className='nav-btn'+(t==='hours'?' active':'');
+    lifeBtn.className='nav-btn'+(t==='lifestyle'?' active':'');
+    askBtn.className='nav-btn'+(t==='ask'?' active':'');
     settBtn.className='nav-btn'+(t==='settings'?' active':'');
     body.innerHTML='';
     const header = el('div',{style:{padding:'max(20px,env(safe-area-inset-top)) 20px 0',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0'}});
+    const userLabel = (appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'My') + '\'s Account';
+
+    const makeHeader = (title, action) => {
+      header.append(el('div',{},
+        el('div',{style:{fontSize:'11px',color:'var(--green)',letterSpacing:'2px',textTransform:'uppercase',fontWeight:'600'}},userLabel),
+        el('div',{style:{fontSize:'20px',fontWeight:'700',marginTop:'1px'}},title)
+      ));
+      if(action) header.append(action);
+    };
+
     if(t==='home'){
-      header.append(
-        el('div',{},
-          el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Your money'),
-          el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Financial Freedom')
-        ),
-        el('button',{style:{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:'12px',fontWeight:'700',fontSize:'14px'}},'I got paid')
-      );
-      header.querySelector('button').addEventListener('click',()=>render(paydayFlow()));
+      const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'10px 18px',borderRadius:'12px',fontWeight:'700',fontSize:'14px'}},'I got paid');
+      payBtn2.addEventListener('click',()=>render(paydayFlow()));
+      makeHeader('Financial Freedom', payBtn2);
       body.append(header, overviewScreen());
     } else if(t==='trends'){
-      header.append(el('div',{},
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Your progress'),
-        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Trends')
-      ));
-      body.append(header, trendsScreen());
+      makeHeader('Trends'); body.append(header, trendsScreen());
+    } else if(t==='statements'){
+      makeHeader('Import Statement'); body.append(header, statementsScreen());
+    } else if(t==='transactions'){
+      makeHeader('Transactions'); body.append(header, transactionsScreen());
+    } else if(t==='analytics'){
+      makeHeader('Analytics'); body.append(header, analyticsScreen());
+    } else if(t==='recurring'){
+      makeHeader('Recurring'); body.append(header, recurringScreen());
     } else if(t==='calendar'){
-      header.append(el('div',{},
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Planning'),
-        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Calendar')
-      ));
-      body.append(header, calendarScreen());
+      makeHeader('Cash Flow'); body.append(header, calendarScreen());
     } else if(t==='hours'){
-      header.append(el('div',{},
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Work'),
-        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Hours & Pay')
-      ));
-      body.append(header, hoursScreen());
+      makeHeader('Hours & Pay'); body.append(header, hoursScreen());
+    } else if(t==='lifestyle'){
+      makeHeader('Lifestyle'); body.append(header, lifestyleScreen());
+    } else if(t==='ask'){
+      makeHeader('Ask My Finances'); body.append(header, askScreen());
     } else {
-      header.append(el('div',{},
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase'}},'Manage'),
-        el('div',{style:{fontSize:'22px',fontWeight:'700',marginTop:'2px'}},'Settings')
-      ));
-      body.append(header, settingsScreen());
+      makeHeader('Settings'); body.append(header, settingsScreen());
     }
   }
 
+  window._setTab = setTab;
+
   homeBtn.addEventListener('click',()=>setTab('home'));
   trendsBtn.addEventListener('click',()=>setTab('trends'));
+  stmtBtn.addEventListener('click',()=>setTab('statements'));
+  analyticsBtn.addEventListener('click',()=>setTab('analytics'));
+  recurBtn.addEventListener('click',()=>setTab('recurring'));
+  txnBtn.addEventListener('click',()=>setTab('transactions'));
   calBtn.addEventListener('click',()=>setTab('calendar'));
   hoursBtn.addEventListener('click',()=>setTab('hours'));
+  lifeBtn.addEventListener('click',()=>setTab('lifestyle'));
+  askBtn.addEventListener('click',()=>setTab('ask'));
   settBtn.addEventListener('click',()=>setTab('settings'));
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, trendsBtn, payBtn, calBtn, hoursBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, stmtBtn, txnBtn, analyticsBtn, payBtn, recurBtn, calBtn, hoursBtn, settBtn);
   wrap.append(body, nav);
   setTab(startTab);
   render(wrap);
@@ -1608,9 +3692,23 @@ auth.onAuthStateChanged(async user => {
     ...DEFAULT_DATA,
     ...val,
     balances:{...DEFAULT_DATA.balances,...(val.balances||{})},
-    subscriptions:val.subscriptions||DEFAULT_DATA.subscriptions,
-    paychecks: Array.isArray(val.paychecks) ? val.paychecks : [] // BUG FIX 6: Firebase drops empty arrays, guard against null
-  } : DEFAULT_DATA;
+    subscriptions: Array.isArray(val.subscriptions) ? val.subscriptions : [],
+    paychecks: Array.isArray(val.paychecks) ? val.paychecks : [],
+    lifestyleRequirements: Array.isArray(val.lifestyleRequirements) ? val.lifestyleRequirements : [],
+    goals: Array.isArray(val.goals) ? val.goals : [],
+    habits: val.habits || {lastPaycheckLog:null, lastReview:null, streak:0, xp:0, level:1, achievements:[]},
+  } : {
+    ...DEFAULT_DATA,
+    lifestyleRequirements: [],
+    goals: [],
+    habits: {lastPaycheckLog:null, lastReview:null, streak:0, xp:0, level:1, achievements:[]},
+  };
+  // Ensure profile data (display name) is saved if new user
+  if(!val || !val.profile){
+    const displayName = user.displayName || user.email.split('@')[0];
+    await db.ref('users/'+user.uid+'/profile').set({displayName, email:user.email, createdAt: new Date().toISOString()});
+    appData.profile = {displayName, email:user.email};
+  }
   mainScreen();
 });
 </script>
