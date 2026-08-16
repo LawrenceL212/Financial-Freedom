@@ -372,115 +372,298 @@ function paydayFlow(){
 }
 
 function overviewScreen(){
-  const {balances,paychecks,subscriptions} = appData;
-  const habits = appData.habits||{xp:0,level:1,streak:0};
-  const xpToNext = 200 - ((habits.xp||0) % 200);
-  const xpPct = Math.round(((habits.xp||0)%200)/200*100);
+  const {balances, paychecks, subscriptions} = appData;
+  const habits = appData.habits||{xp:0,level:1};
   const subTotal = subscriptions.reduce((s,x)=>s+x.amount,0);
-  const recent = (paychecks||[]).slice(0,5);
-  const totalInc = (paychecks||[]).reduce((s,p)=>s+p.income,0);
-  const pct = Math.min(100,Math.round(balances.florasii/15000*100));
-
+  const pct = Math.min(100,Math.round((balances.florasii||0)/15000*100));
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
-  content.append(
-    el('div',{class:'section-hdr'},'Balances'),
-    el('div',{class:'card'},
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Current Account'),
-        el('div',{class:'balance-value',style:{color:balances.current<0?'var(--red)':'var(--text)'}},fmt(balances.current))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Florasii Fund'),
-        el('div',{class:'balance-value',style:{color:'var(--green)'}},fmt(balances.florasii))
-      ),
-      el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Personal Savings'),
-        el('div',{class:'balance-value'},fmt(balances.personalSavings))
-      ),
-      ...(balances.creditCard>0?[el('div',{class:'balance-row'},
-        el('div',{class:'balance-label'},'Credit Card (owed)'),
-        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(balances.creditCard))
-      )]:[] )
-    ),
-    el('div',{class:'section-hdr'},'Florasii Progress'),
-    el('div',{class:'card'},
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'8px'}},
+  // ── Load transaction data async then render intelligence ──
+  const intelligenceWrap = el('div',{});
+  content.append(intelligenceWrap);
+
+  async function renderIntelligence(){
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const txnVal = snap.val() || {};
+    const txns = Object.values(txnVal);
+
+    const now = new Date();
+    const thisMonthStr = now.toISOString().slice(0,7);
+    const lastMonthDate = new Date(now); lastMonthDate.setMonth(lastMonthDate.getMonth()-1);
+    const lastMonthStr = lastMonthDate.toISOString().slice(0,7);
+    const twoWeeksAgo = new Date(now); twoWeeksAgo.setDate(twoWeeksAgo.getDate()-14);
+
+    // This period's transactions (last 14 days)
+    const recentTxns = txns.filter(t=>new Date(t.postingDate)>=twoWeeksAgo && t.financialType==='EXPENSE');
+    const recentSpend = recentTxns.reduce((s,t)=>s+t.amount,0);
+
+    // This month's income and spending
+    const thisMonthTxns = txns.filter(t=>t.postingDate?.startsWith(thisMonthStr));
+    const thisMonthIncome = thisMonthTxns.filter(t=>t.financialType==='INCOME').reduce((s,t)=>s+t.amount,0);
+    const thisMonthSpend = thisMonthTxns.filter(t=>t.financialType==='EXPENSE').reduce((s,t)=>s+t.amount,0);
+
+    // Last month spending for comparison
+    const lastMonthSpend = txns.filter(t=>t.postingDate?.startsWith(lastMonthStr)&&t.financialType==='EXPENSE').reduce((s,t)=>s+t.amount,0);
+    const spendChange = lastMonthSpend > 0 ? ((thisMonthSpend-lastMonthSpend)/lastMonthSpend*100) : 0;
+
+    // Upcoming commitments (next 30 days)
+    const in30 = new Date(now); in30.setDate(in30.getDate()+30);
+    const cashFlow = appData.cashFlow||[];
+    const upcomingOut = cashFlow.filter(e=>{
+      const d=new Date(e.date);
+      return e.type==='out' && d>=now && d<=in30;
+    }).reduce((s,e)=>s+e.amount,0);
+    const upcomingSubCost = subTotal; // monthly subs
+    const totalCommitted = upcomingOut + upcomingSubCost;
+
+    // Predicted next paycheck from hours
+    const hoursLog = appData.hoursLog||[];
+    const actualPay = appData.actualPay||{};
+    const RATE = appData.hourlyRate||14.50;
+    const parseLabel = l=>{const p=l.split('/');return new Date(`${p[2]}-${p[1]}-${p[0]}`);};
+    const sortedH = [...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
+    const lastPair = sortedH.length>=2?{w1:sortedH[sortedH.length-2],w2:sortedH[sortedH.length-1]}:
+                     sortedH.length===1?{w1:sortedH[0],w2:null}:null;
+    const predictedPay = lastPair ? (lastPair.w1.total+(lastPair.w2?lastPair.w2.total:0))*RATE : 0;
+
+    // Safe to spend = current balance + predicted pay - committed - florasii target
+    const avgFlorasiiPerPay = (()=>{
+      const snaps = (paychecks||[]).filter(p=>p.snapshot).sort((a,b)=>new Date(a.date)-new Date(b.date));
+      if(snaps.length<2) return predictedPay*0.75;
+      const growth = snaps[snaps.length-1].snapshot.florasii - snaps[0].snapshot.florasii;
+      return growth/Math.max(snaps.length-1,1);
+    })();
+    const safeToSpend = Math.max(0, (balances.current||0) + predictedPay - totalCommitted - avgFlorasiiPerPay);
+
+    // Money leaks — top spending categories this month
+    const byCat = {};
+    for(const t of thisMonthTxns.filter(t=>t.financialType==='EXPENSE')){
+      const cat = t.userCategory||t.category||'Other';
+      if(!byCat[cat]) byCat[cat]={total:0,count:0};
+      byCat[cat].total+=t.amount; byCat[cat].count++;
+    }
+    const topCats = Object.entries(byCat).sort((a,b)=>b[1].total-a[1].total).slice(0,4);
+
+    // Top merchants this period
+    const byMerchant = {};
+    for(const t of recentTxns){
+      const m=t.normalisedMerchant||t.rawDescription;
+      if(!byMerchant[m]) byMerchant[m]={total:0,count:0};
+      byMerchant[m].total+=t.amount; byMerchant[m].count++;
+    }
+    const topMerchants = Object.entries(byMerchant).sort((a,b)=>b[1].total-a[1].total).slice(0,4);
+
+    // Why am I broke? — determine the main culprit
+    const reasons = [];
+    if(balances.current<0) reasons.push({severity:'critical',msg:'Your current account is overdrawn by '+fmt(Math.abs(balances.current||0))+'.'});
+    if(balances.creditCard>200) reasons.push({severity:'warning',msg:'£'+Math.round(balances.creditCard)+' on your credit card needs clearing.'});
+    if(subTotal>predictedPay*0.2) reasons.push({severity:'warning',msg:'Subscriptions cost £'+subTotal.toFixed(0)+'/mo — '+Math.round(subTotal/Math.max(predictedPay,1)*100)+'% of your typical paycheck.'});
+    if(thisMonthSpend>thisMonthIncome&&thisMonthIncome>0) reasons.push({severity:'warning',msg:'Spent more than earned this month.'});
+    if(spendChange>20&&lastMonthSpend>0) reasons.push({severity:'info',msg:'Spending is up '+Math.round(spendChange)+'% vs last month.'});
+    if(topCats.length&&topCats[0][1].total>predictedPay*0.3) reasons.push({severity:'info',msg:topCats[0][0]+' is your biggest cost this month at '+fmt(topCats[0][1].total)+'.'});
+
+    intelligenceWrap.innerHTML='';
+
+    // ── HEADER: Net position ──
+    const netPos = (balances.current||0) + (balances.florasii||0) + (balances.personalSavings||0) - (balances.creditCard||0);
+    const posCard = el('div',{style:{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'16px',padding:'20px',marginBottom:'12px'}});
+    posCard.append(
+      el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',marginBottom:'4px'}},'Net worth'),
+      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'36px',fontWeight:'700',color:netPos>=0?'var(--green)':'var(--red)',lineHeight:'1'}},fmt(netPos)),
+      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'6px',display:'flex',gap:'16px',flexWrap:'wrap'}},
+        el('span',{},'Current: '+(balances.current<0?'':'')+fmt(balances.current||0)),
+        el('span',{style:{color:'var(--green)'}}, 'Florasii: '+fmt(balances.florasii||0)),
+        balances.creditCard>0?el('span',{style:{color:'var(--red)'}},'CC: -'+fmt(balances.creditCard)):el('span')
+      )
+    );
+    intelligenceWrap.append(posCard);
+
+    // ── WHY AM I BROKE? ──
+    if(reasons.length){
+      const brokeCard = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid var(--red)'}});
+      brokeCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px',color:'var(--red)'}},'⚡ Why am I broke?'));
+      for(const r of reasons){
+        const color = r.severity==='critical'?'var(--red)':r.severity==='warning'?'var(--amber)':'var(--text2)';
+        const icon = r.severity==='critical'?'🔴':r.severity==='warning'?'🟡':'💡';
+        brokeCard.append(el('div',{style:{fontSize:'13px',color,marginBottom:'8px',display:'flex',gap:'8px',alignItems:'flex-start'}},
+          el('span',{},icon),
+          el('span',{},r.msg)
+        ));
+      }
+      intelligenceWrap.append(brokeCard);
+    }
+
+    // ── SAFE TO SPEND ──
+    const safeCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    safeCard.append(
+      el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}},'Safe to spend'),
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'12px'}},
         el('div',{},
-          el('div',{style:{fontSize:'28px',fontWeight:'700',fontFamily:"'Space Mono',monospace",color:'var(--green)'}},fmt(balances.florasii)),
-          el('div',{style:{fontSize:'13px',color:'var(--text2)',marginTop:'2px'}},'of £15,000 goal')
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',color:safeToSpend>200?'var(--green)':safeToSpend>0?'var(--amber)':'var(--red)',lineHeight:'1'}},fmt(safeToSpend)),
+          el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'4px'}},'before next payday')
         ),
-        el('div',{style:{fontSize:'22px',fontWeight:'700',color:'var(--text2)'}},pct+'%')
+        predictedPay>0?el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'Next paycheck'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)'}},fmt(predictedPay))
+        ):el('span')
       ),
-      el('div',{class:'prog-wrap'}, el('div',{class:'prog-fill',style:{width:pct+'%'}}))
-    ),
-    el('div',{class:'section-hdr'},'Subscriptions · '+fmt(subTotal)+'/mo'),
-    el('div',{class:'card'},
-      ...subscriptions.map(s=>
-        el('div',{class:'sub-item'},
+      el('div',{style:{fontSize:'11px',color:'var(--text3)',lineHeight:'1.6'}},
+        'Current £'+Math.round(balances.current||0)+
+        (predictedPay>0?' + next pay £'+Math.round(predictedPay):'') +
+        ' − subs £'+Math.round(subTotal)+
+        (upcomingOut>0?' − committed £'+Math.round(upcomingOut):'')+
+        ' − Florasii target £'+Math.round(avgFlorasiiPerPay)
+      )
+    );
+    intelligenceWrap.append(safeCard);
+
+    // ── UPCOMING COMMITMENTS ──
+    const commitCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    commitCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'📅 Upcoming commitments'));
+    commitCard.append(
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Subscriptions this month'),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(subTotal))
+      )
+    );
+    if(upcomingOut>0) commitCard.append(
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Planned expenses (30d)'),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(upcomingOut))
+      )
+    );
+    if(balances.creditCard>0) commitCard.append(
+      el('div',{class:'balance-row'},
+        el('div',{class:'balance-label'},'Credit card owed'),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(balances.creditCard))
+      )
+    );
+    commitCard.append(
+      el('div',{class:'balance-row',style:{borderTop:'1px solid var(--border)',paddingTop:'10px',marginTop:'4px',border:'none'}},
+        el('div',{class:'balance-label',style:{fontWeight:'700'}},'Total committed'),
+        el('div',{class:'balance-value',style:{color:'var(--red)',fontWeight:'700'}},fmt(totalCommitted+(balances.creditCard||0)))
+      )
+    );
+    intelligenceWrap.append(commitCard);
+
+    // ── FLORASII GOAL ──
+    const florasiiCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    const r=38, c=2*Math.PI*r;
+    const dialDiv = el('div',{style:{position:'relative',width:'80px',height:'80px',flexShrink:'0'}});
+    dialDiv.innerHTML=`<svg width="80" height="80" viewBox="0 0 80 80" style="transform:rotate(-90deg)">
+      <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--surface2)" stroke-width="7"/>
+      <circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--green)" stroke-width="7"
+        stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c*(1-pct/100)).toFixed(1)}" stroke-linecap="round"/>
+    </svg><div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+      <span style="font-family:'Space Mono',monospace;font-size:16px;font-weight:700;color:var(--green)">${pct}%</span>
+    </div>`;
+    const goalInfo = el('div',{style:{flex:'1'}},
+      el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'4px'}},'Florasii Fund'),
+      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'20px',fontWeight:'700',color:'var(--green)'}},fmt(balances.florasii||0)),
+      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},fmt(15000-(balances.florasii||0))+' to go · £15,000 target'),
+      avgFlorasiiPerPay>0?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'4px'}},
+        '~'+Math.ceil((15000-(balances.florasii||0))/avgFlorasiiPerPay)+' paychecks remaining'):el('span')
+    );
+    florasiiCard.append(el('div',{style:{display:'flex',gap:'16px',alignItems:'center'}},dialDiv,goalInfo));
+    intelligenceWrap.append(florasiiCard);
+
+    // ── MONEY LEAKS ──
+    if(topCats.length||topMerchants.length){
+      const leakCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+      leakCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'💸 Where is your money going?'));
+
+      if(thisMonthSpend>0){
+        leakCard.append(el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}},
+          'This month: '+fmt(thisMonthSpend)+' spent'+(thisMonthIncome>0?' · '+fmt(thisMonthIncome)+' earned':'')+
+          (lastMonthSpend>0?' · '+(spendChange>0?'+':'')+Math.round(spendChange)+'% vs last month':'')));
+      }
+
+      for(const [cat,data] of topCats){
+        const pctOfSpend = thisMonthSpend>0?Math.round(data.total/thisMonthSpend*100):0;
+        const row = el('div',{style:{marginBottom:'10px'}});
+        row.innerHTML=`<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">
+          <span>${cat}</span>
+          <span style="font-family:'Space Mono',monospace;font-weight:700;color:var(--red)">${fmt(data.total)}</span>
+        </div>
+        <div style="background:var(--surface2);border-radius:100px;height:5px;overflow:hidden">
+          <div style="height:100%;width:${pctOfSpend}%;background:var(--red);border-radius:100px"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${data.count} transactions · ${pctOfSpend}% of spending</div>`;
+        leakCard.append(row);
+      }
+
+      if(topMerchants.length&&thisMonthSpend===0){
+        leakCard.append(el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'8px'}},'Last 14 days:'));
+        for(const [merchant,data] of topMerchants){
+          leakCard.append(el('div',{class:'balance-row'},
+            el('div',{},el('div',{class:'balance-label'},merchant),el('div',{style:{fontSize:'11px',color:'var(--text3)'}},data.count+' transactions')),
+            el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(data.total))
+          ));
+        }
+      }
+      intelligenceWrap.append(leakCard);
+    }
+
+    // ── RECOMMENDED ACTIONS ──
+    const actions = [];
+    if(balances.current<0) actions.push({icon:'🚨',text:'Your account is overdrawn — avoid spending until next payday',urgent:true});
+    if(balances.creditCard>0&&balances.personalSavings>balances.creditCard) actions.push({icon:'💳',text:'You have enough in savings to clear your £'+Math.round(balances.creditCard)+' credit card balance',urgent:false});
+    if(subTotal>150) actions.push({icon:'✂️',text:'Review your subscriptions — £'+Math.round(subTotal)+'/mo is significant',urgent:false});
+    if(pct<20) actions.push({icon:'💰',text:'Florasii is at '+pct+'% — try to increase savings this paycheck',urgent:false});
+    if(txns.length===0) actions.push({icon:'📥',text:'Import your bank statement to unlock spending insights',urgent:false});
+
+    if(actions.length){
+      const actCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+      actCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'💡 Recommended actions'));
+      for(const a of actions){
+        actCard.append(el('div',{style:{display:'flex',gap:'10px',alignItems:'flex-start',marginBottom:'10px',fontSize:'13px',
+          color:a.urgent?'var(--red)':'var(--text2)',lineHeight:'1.5'}},
+          el('span',{style:{flexShrink:'0'}},a.icon),
+          el('span',{},a.text)
+        ));
+      }
+      intelligenceWrap.append(actCard);
+    }
+
+    // ── SUBSCRIPTIONS (collapsed summary) ──
+    intelligenceWrap.append(
+      el('div',{class:'section-hdr'},'Subscriptions · '+fmt(subTotal)+'/mo'),
+      el('div',{class:'card'},
+        ...subscriptions.map(s=>el('div',{class:'sub-item'},
           el('div',{style:{fontSize:'14px'}},s.name),
           el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount))
+        )),
+        el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'14px',marginTop:'4px',borderTop:'1px solid var(--border)'}},
+          el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},'Annual cost'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700',color:'var(--amber)'}},fmt(subTotal*12))
         )
-      ),
-      el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'14px',marginTop:'4px'}},
-        el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},'Total / month'),
-        el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700',color:'var(--amber)'}},fmt(subTotal))
-      )
-    )
-  );
-
-  if(recent.length>0){
-    content.append(el('div',{class:'section-hdr'},'Recent Paychecks'));
-    for(const p of recent){
-      content.append(el('div',{class:'history-item'},
-        el('div',{},
-          el('div',{style:{fontWeight:'600'}},fmt(p.income)),
-          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},new Date(p.date).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}))
-        ),
-        el('div',{style:{textAlign:'right'}},
-          el('div',{style:{fontSize:'13px',color:'var(--green)'}},'+'+fmt(p.split.florasii)+' Florasii'),
-          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},'spent '+fmt(p.spent))
-        )
-      ));
-    }
-    content.append(el('div',{style:{textAlign:'center',marginTop:'8px',fontSize:'13px',color:'var(--text3)'}},
-      'Total tracked: '+fmt(totalInc)+' across '+paychecks.length+' paychecks'));
-  }
-
-  // XP / Level card
-  const lifestyle = appData.lifestyleRequirements||[];
-  const topLifestyle = lifestyle.filter(r=>r.active!==false&&r.priority==='Non-negotiable').slice(0,3);
-  content.append(
-    el('div',{class:'section-hdr'},'Financial Progress'),
-    el('div',{class:'card'},
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'10px'}},
-        el('div',{},
-          el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'1px',textTransform:'uppercase'}},'Level'),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',color:'var(--green)',lineHeight:'1'}},String(habits.level||1))
-        ),
-        el('div',{style:{textAlign:'right'}},
-          el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'1px',textTransform:'uppercase'}},'Total XP'),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'20px',fontWeight:'700'}},String(habits.xp||0))
-        )
-      ),
-      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'6px'}},'Next level: '+xpToNext+' XP to go'),
-      el('div',{class:'prog-wrap'},el('div',{class:'prog-fill',style:{width:xpPct+'%',background:'var(--amber)'}})),
-      el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'8px'}},'Earn XP by logging paychecks, reviewing finances, and meeting savings targets.')
-    )
-  );
-
-  if(topLifestyle.length>0){
-    content.append(
-      el('div',{class:'section-hdr'},'Non-negotiables'),
-      el('div',{class:'card'},
-        ...topLifestyle.map(r=>el('div',{class:'balance-row'},
-          el('div',{class:'balance-label'},r.name),
-          r.estimatedCost>0?el('div',{class:'balance-value',style:{color:'var(--amber)'}},fmt(r.estimatedCost)):el('div',{class:'balance-value',style:{color:'var(--text3)'}},r.frequency||'')
-        ))
       )
     );
   }
 
+  // Show balances immediately, load intelligence async
+  content.append(
+    el('div',{class:'card',style:{marginBottom:'12px'}},
+      el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}},
+        ...[
+          ['Current',balances.current||0,balances.current<0?'var(--red)':'var(--text)'],
+          ['Florasii',balances.florasii||0,'var(--green)'],
+          ['Savings',balances.personalSavings||0,'var(--text)'],
+          ...(balances.creditCard>0?[['Credit Card',-(balances.creditCard||0),'var(--red)']]:[] ),
+        ].map(([label,val,color])=>{
+          const b=el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
+          b.append(
+            el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'2px'}},label),
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color}},fmt(val))
+          );
+          return b;
+        })
+      )
+    )
+  );
+
+  intelligenceWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;padding:20px">Analysing your finances…</div>';
+  renderIntelligence();
   return content;
 }
 
