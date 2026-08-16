@@ -1073,19 +1073,23 @@ function settingsScreen(){
 
   function renderSubs(){
     subList.innerHTML='';
+    if(!subs.length){
+      subList.append(el('div',{style:{fontSize:'13px',color:'var(--text3)',padding:'8px 0'}},'No subscriptions yet.'));
+      return;
+    }
     for(const s of subs){
       const sid = s.id;
-      const row = el('div',{class:'sub-item'},
-        el('div',{style:{fontSize:'14px'}},s.name),
-        el('div',{style:{display:'flex',alignItems:'center',gap:'12px'}},
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount)),
-          (() => {
-            const btn = el('button',{style:{background:'none',color:'var(--red)',padding:'0',fontSize:'18px',lineHeight:'1'}},'×');
-            btn.addEventListener('click',()=>{ subs=subs.filter(x=>x.id!==sid); renderSubs(); }); // BUG FIX 2: single listener, no duplicate
-            return btn;
-          })()
-        )
+      const row = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid var(--border)'}});
+      const info = el('div',{style:{flex:'1'}},
+        el('div',{style:{fontSize:'14px',fontWeight:'500'}},s.name),
+        s.billingDay?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},'Bills on day '+s.billingDay+(s.lastPaidDate?' · last paid '+s.lastPaidDate.slice(0,10):'')):el('span')
       );
+      const right = el('div',{style:{display:'flex',alignItems:'center',gap:'14px'}});
+      right.append(el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700'}},fmt(s.amount)));
+      const btn = el('button',{style:{background:'var(--red-dim)',color:'var(--red)',padding:'5px 10px',borderRadius:'8px',fontSize:'12px',fontWeight:'600',border:'1px solid var(--red)',whiteSpace:'nowrap'}},'Remove');
+      btn.addEventListener('click',()=>{ subs=subs.filter(x=>x.id!==sid); renderSubs(); });
+      right.append(btn);
+      row.append(info, right);
       subList.append(row);
     }
   }
@@ -2601,6 +2605,28 @@ function transactionsScreen(){
     const interpSection = el('div',{});
     interpSection.innerHTML = `<div style="font-size:10px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:8px;font-family:'Space Grotesk',sans-serif">Financial Interpretation</div>`;
 
+    // Standard categories
+    const STANDARD_CATS = [
+      ['Groceries',       ['Supermarket','Weekly shop','Food shopping']],
+      ['Eating out',      ['Restaurant','Cafe','Takeaway','Fast food','Coffee']],
+      ['Transport',       ['Taxi','Train','Bus','Parking','Fuel']],
+      ['Shopping',        ['Clothes','Amazon','Online','Retail']],
+      ['Health',          ['Pharmacy','Doctor','Gym','Fitness']],
+      ['Entertainment',   ['Cinema','Games','Streaming','Events']],
+      ['Bars & Nights out',['Pub','Bar','Club','Drinks']],
+      ['Travel',          ['Holiday','Hotel','Flight','Accommodation']],
+      ['Bills',           ['Utilities','Phone','Internet','Council']],
+      ['Subscriptions',   ['Monthly','Annual','Membership']],
+      ['Personal care',   ['Haircut','Toiletries','Beauty']],
+      ['Education',       ['Course','Books','Learning']],
+      ['Gifts',           ['Present','Birthday','Christmas']],
+      ['Income',          ['Wages','Salary','Paycheck']],
+      ['Transfer',        ['Internal transfer','Between accounts']],
+      ['Savings',         ['Savings transfer','Goal']],
+      ['Refund',          ['Return','Cashback']],
+      ['Other',           []],
+    ];
+
     const typeOpts = Object.entries(FINANCIAL_TYPE_LABELS);
     const typeSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 12px',fontSize:'13px',marginBottom:'8px',outline:'none'}});
     for(const [k,v] of typeOpts){
@@ -2609,27 +2635,67 @@ function transactionsScreen(){
       typeSel.append(opt);
     }
 
-    const catInp = el('input',{placeholder:'Category',value:t.userCategory||t.category||'',style:{marginBottom:'8px'}});
-    const notesInp = el('input',{placeholder:'Notes',value:t.notes||'',style:{marginBottom:'12px'}});
+    // Category picker — chips
+    const currentCat = t.userCategory||t.category||'';
+    let selectedCat = currentCat;
+    const catLabel = el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'6px',textTransform:'uppercase',letterSpacing:'1px',fontWeight:'600'}},'Category');
+    const catGrid = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'6px',marginBottom:'10px'}});
 
-    const saveBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'11px'}},'Save interpretation');
+    function renderCatChips(){
+      catGrid.innerHTML='';
+      for(const [cat] of STANDARD_CATS){
+        const chip = el('button',{style:{
+          background: selectedCat===cat ? 'var(--green)' : 'var(--surface2)',
+          color: selectedCat===cat ? '#000' : 'var(--text2)',
+          border: selectedCat===cat ? 'none' : '1px solid var(--border)',
+          borderRadius:'100px', padding:'6px 12px', fontSize:'12px', fontWeight:'600',
+          whiteSpace:'nowrap',
+        }},cat);
+        chip.addEventListener('click',()=>{ selectedCat=cat; renderCatChips(); });
+        catGrid.append(chip);
+      }
+    }
+    renderCatChips();
+
+    const notesInp = el('input',{placeholder:'Notes (optional)',value:t.notes||'',style:{marginBottom:'12px'}});
+
+    const saveBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'11px'}},'Save');
     saveBtn.addEventListener('click',async()=>{
       const updated = {
         ...t,
         financialType: typeSel.value,
-        userCategory: catInp.value.trim()||null,
-        category: catInp.value.trim()||t.category,
+        userCategory: selectedCat||null,
+        category: selectedCat||t.category,
         notes: notesInp.value.trim(),
         userConfirmed: true,
         updatedAt: new Date().toISOString(),
       };
       await txnDB.write(updated);
-      // Update local
+
+      // Save merchant rule so future imports use this category
+      if(selectedCat && t.normalisedMerchant){
+        const ruleId = 'mr_'+t.normalisedMerchant.replace(/\W/g,'').toLowerCase();
+        const existingSnap = await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).once('value');
+        const existing = existingSnap.val();
+        await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).set({
+          id: ruleId,
+          matchPattern: t.normalisedMerchant.toUpperCase(),
+          normalisedMerchant: t.normalisedMerchant,
+          preferredCategory: selectedCat,
+          preferredSubcategory: null,
+          financialType: typeSel.value,
+          confirmationCount: (existing?.confirmationCount||0)+1,
+          active: true,
+          createdAt: existing?.createdAt||new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
       const idx = allTxns.findIndex(x=>x.transactionId===t.transactionId);
       if(idx>=0) allTxns[idx] = updated;
       selectedTxn = updated;
       saveBtn.textContent = 'Saved ✓';
-      setTimeout(()=>{ saveBtn.textContent='Save interpretation'; applyFilter(); },1500);
+      setTimeout(()=>{ saveBtn.textContent='Save'; applyFilter(); },1500);
     });
 
     const closeBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Close');
@@ -2640,7 +2706,7 @@ function transactionsScreen(){
         '✓ Reconciled with '+(t.paycheckId?'paycheck':t.subscriptionId?'subscription':'known transaction')));
     }
 
-    interpSection.append(typeSel, catInp, notesInp, saveBtn, closeBtn);
+    interpSection.append(typeSel, catLabel, catGrid, notesInp, saveBtn, closeBtn);
     panel.append(interpSection);
     detailWrap.append(panel);
     detailWrap.scrollIntoView({behavior:'smooth',block:'start'});
@@ -4883,6 +4949,7 @@ function mainScreen(startTab='home'){
   function moreScreen(){
     const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
     const items = [
+      {icon:'📋', label:'Subscriptions',       sub:'Add, edit or remove subscriptions',     tab:'_settings'},
       {icon:'🔍', label:'Spending Insights',   sub:'Weekly spend, trends, cut suggestions', tab:'_spending'},
       {icon:'📥', label:'Import Statement',   sub:'Import bank CSV files',             tab:'_statements'},
       {icon:'🔄', label:'Recurring',          sub:'Detected recurring payments',        tab:'_recurring'},
