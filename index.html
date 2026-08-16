@@ -297,21 +297,99 @@ function paydayFlow(){
   const prev = {...appData.balances};
   const wrap = el('div',{class:'screen'});
 
+  // ── Calculate smart allocation ──
+  function calcAllocation(inc){
+    const now = new Date();
+    const subs = appData.subscriptions||[];
+    const goals = (appData.goals||[]).filter(g=>g.active!==false&&g.target&&g.deadline);
+    const cashFlow = appData.cashFlow||[];
+    const hoursLog = appData.hoursLog||[];
+    const actualPay = appData.actualPay||{};
+
+    // Avg pay per period from history
+    const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
+    const avgPay = paychecks.length ? paychecks.slice(-6).reduce((s,p)=>s+p.income,0)/Math.min(paychecks.length,6) : inc;
+    const payPeriodsPerMonth = 2.17; // fortnightly
+
+    // 1. Credit card — full balance (priority 1)
+    const accounts = appData.accounts||[];
+    const ccBalance = accounts.find(a=>a.type==='credit_card')?.balance || (prev.creditCard||0);
+    const ccReserve = Math.min(ccBalance, inc); // can't reserve more than we earn
+
+    // 2. Goal savings — calculated from deadlines
+    const savingsAccounts = accounts.filter(a=>a.type==='savings');
+    const currentSavings = savingsAccounts.length
+      ? savingsAccounts.reduce((s,a)=>s+a.balance,0)
+      : (prev.florasii||0);
+    
+    let goalAllocations = [];
+    let totalGoalRequired = 0;
+    for(const g of goals){
+      const deadline = new Date(g.deadline);
+      const daysLeft = Math.max(1,Math.ceil((deadline-now)/86400000));
+      const payPeriodsLeft = Math.max(1,Math.floor(daysLeft/14));
+      const totalGoalTarget = goals.reduce((s,x)=>s+x.target,0);
+      const myShare = totalGoalTarget>0 ? currentSavings*(g.target/totalGoalTarget) : 0;
+      const remaining = Math.max(0, g.target - myShare);
+      const required = remaining/payPeriodsLeft;
+      goalAllocations.push({name:g.name, required:Math.round(required*100)/100, remaining, payPeriodsLeft});
+      totalGoalRequired += required;
+    }
+    totalGoalRequired = Math.round(totalGoalRequired*100)/100;
+
+    // 3. Subscriptions buffer (half monthly, since fortnightly pay)
+    const subTotal = subs.reduce((s,x)=>s+x.amount,0);
+    const subBuffer = Math.round(subTotal/payPeriodsPerMonth*100)/100;
+
+    // 4. Weekly spending — based on actual transaction history
+    // Using £96/week average from real data, £192 per fortnight
+    const weeklySpend = 96; // from transaction analysis
+    const spendingBuffer = weeklySpend * 2; // fortnightly
+
+    // Calculate what's left after priorities
+    const remaining = inc - ccReserve - totalGoalRequired - subBuffer;
+    const canAffordSpending = remaining >= spendingBuffer;
+    const actualSpending = Math.max(0, Math.min(remaining, spendingBuffer));
+    const shortfall = spendingBuffer - remaining;
+    const buffer = remaining - actualSpending;
+
+    // Scale back goals if CC takes everything
+    let adjustedGoalRequired = totalGoalRequired;
+    if(inc - ccReserve < totalGoalRequired){
+      adjustedGoalRequired = Math.max(0, inc - ccReserve);
+    }
+
+    return {
+      income: inc,
+      ccReserve: Math.round(ccReserve*100)/100,
+      ccBalance: Math.round(ccBalance*100)/100,
+      goalAllocations,
+      totalGoalRequired: Math.round(adjustedGoalRequired*100)/100,
+      subBuffer: Math.round(subBuffer*100)/100,
+      spendingBuffer: Math.round(spendingBuffer*100)/100,
+      actualSpending: Math.round(actualSpending*100)/100,
+      buffer: Math.round(buffer*100)/100,
+      shortfall: shortfall > 0 ? Math.round(shortfall*100)/100 : 0,
+      canAffordSpending,
+      remaining: Math.round(remaining*100)/100,
+    };
+  }
+
   function show(){
     wrap.innerHTML='';
-    const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1'}});
+    const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1',paddingBottom:'32px'}});
 
     if(step!==3){
-      const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'20px',right:'16px'}},'✕ Exit');
+      const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',padding:'4px 8px',position:'absolute',top:'20px',right:'16px'}},'✕');
       exitBtn.addEventListener('click',()=>mainScreen());
       wrap.style.position='relative';
       wrap.append(exitBtn);
     }
 
-    // ── Step 0: income ──
+    // ── Step 0: How much did you earn? ──
     if(step===0){
       const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
-      const btn = el('button',{class:'btn-primary'},'Next →');
+      const btn = el('button',{class:'btn-primary'},'See my plan →');
       btn.disabled = true;
       inp.addEventListener('input',()=>{ btn.disabled=!parseFloat(inp.value); });
       btn.addEventListener('click',()=>{ income=parseFloat(inp.value)||0; step=1; show(); });
@@ -324,10 +402,86 @@ function paydayFlow(){
       );
     }
 
-    // ── Step 1: enter current Barclays balances ──
+    // ── Step 1: Smart allocation plan ──
     if(step===1){
+      const alloc = calcAllocation(income);
+      content.style.justifyContent='flex-start';
+
+      // Header
+      content.append(
+        el('div',{class:'step-num'},'Step 2 of 3'),
+        el('div',{class:'step-title'},'Here\'s the plan'),
+        el('div',{class:'step-sub'},'Based on your spending history. Tap More → Spending Insights to review your weekly costs.')
+      );
+
+      // Priority stack
+      const mkRow = (icon, label, amount, color, sub) => {
+        const row = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 16px',background:'var(--surface2)',borderRadius:'14px',marginBottom:'8px',borderLeft:'3px solid '+color}});
+        row.append(
+          el('div',{},
+            el('div',{style:{display:'flex',alignItems:'center',gap:'8px'}},
+              el('span',{},icon),
+              el('div',{style:{fontWeight:'600',fontSize:'14px'}},label)
+            ),
+            sub?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px',paddingLeft:'26px'}},sub):el('span')
+          ),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color}},fmt(amount))
+        );
+        return row;
+      };
+
+      // 1. CC
+      if(alloc.ccReserve > 0){
+        content.append(mkRow('💳','Credit card (full balance)', alloc.ccReserve,'var(--red)',
+          'Move to savings pot — covers DDR on due date'));
+      }
+
+      // 2. Goals
+      for(const g of alloc.goalAllocations){
+        if(g.required > 0){
+          content.append(mkRow('🌸', g.name, g.required, '#64B5F6',
+            g.payPeriodsLeft+' paychecks left · '+fmt(g.remaining)+' to go'));
+        }
+      }
+
+      // 3. Subscriptions buffer
+      content.append(mkRow('📋','Subscription buffer', alloc.subBuffer,'var(--amber)',
+        'Covers your fortnightly sub costs'));
+
+      // 4. Spending
+      if(alloc.actualSpending > 0){
+        content.append(mkRow('💸','Daily spending (Revolut)', alloc.actualSpending,'var(--green)',
+          'Based on your £96/week average · '+Math.round(alloc.actualSpending/2)+'/week'));
+      }
+
+      // Shortfall warning
+      if(alloc.shortfall > 0){
+        content.append(el('div',{style:{background:'var(--red-dim)',border:'1px solid var(--red)',borderRadius:'14px',padding:'14px',marginTop:'4px',marginBottom:'8px'}},
+          el('div',{style:{fontWeight:'700',color:'var(--red)',marginBottom:'4px'}},'⚠️ Shortfall this paycheck'),
+          el('div',{style:{fontSize:'13px',color:'var(--text2)',lineHeight:'1.5'}},
+            fmt(alloc.shortfall)+' short of your usual spending budget. '+
+            (alloc.ccReserve>0?'The credit card payment takes priority — consider spending less this fortnight.':'Consider working more hours or reducing spending.'))
+        ));
+      } else if(alloc.buffer > 0){
+        content.append(el('div',{style:{background:'var(--green-dim)',border:'1px solid var(--green)',borderRadius:'14px',padding:'12px',marginTop:'4px',marginBottom:'8px'}},
+          el('div',{style:{fontSize:'13px',color:'var(--green)'}},'✓ '+fmt(alloc.buffer)+' buffer remaining after all priorities')
+        ));
+      }
+
+      const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
+      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done — enter balances →');
+      backBtn.addEventListener('click',()=>{step=0;show();});
+      nextBtn.addEventListener('click',()=>{step=2;show();});
+      content.append(el('div',{class:'row'},backBtn,nextBtn));
+    }
+
+    // ── Step 2: Enter current Barclays balances ──
+    if(step===2){
       content.style.justifyContent='flex-start';
       const fieldStyle = {width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'16px',outline:'none',fontFamily:'Space Mono,monospace',fontWeight:'700'};
+
+      const savingsAccounts = (appData.accounts||[]).filter(a=>a.type==='savings');
+      const savingsLabel = savingsAccounts.length ? savingsAccounts.map(a=>a.name).join(' + ') : 'Savings Fund';
 
       const curInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.current), style:fieldStyle});
       const florInp = el('input',{inputmode:'decimal',placeholder:fmt(prev.florasii), style:fieldStyle});
@@ -336,64 +490,47 @@ function paydayFlow(){
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
       const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Calculate →');
-      backBtn.addEventListener('click',()=>{step=0;show();});
+      backBtn.addEventListener('click',()=>{step=1;show();});
       nextBtn.addEventListener('click',()=>{
         newBalances = {
-          current:       parseFloat(curInp.value)  ?? prev.current,
-          florasii: (()=>{
-            const val = parseFloat(florInp.value);
-            return isNaN(val) ? prev.florasii : val;
-          })(),
-          creditCard:    parseFloat(ccInp.value)   ?? prev.creditCard,
-          personalSavings: parseFloat(savInp.value) ?? prev.personalSavings,
+          current:       isNaN(parseFloat(curInp.value))  ? prev.current        : parseFloat(curInp.value),
+          florasii:      isNaN(parseFloat(florInp.value)) ? prev.florasii       : parseFloat(florInp.value),
+          creditCard:    isNaN(parseFloat(ccInp.value))   ? prev.creditCard     : parseFloat(ccInp.value),
+          personalSavings: isNaN(parseFloat(savInp.value)) ? prev.personalSavings : parseFloat(savInp.value),
         };
-        // fill blanks with previous
-        if(isNaN(newBalances.current))         newBalances.current = prev.current;
-        if(isNaN(newBalances.florasii))        newBalances.florasii = prev.florasii;
-        if(isNaN(newBalances.creditCard))      newBalances.creditCard = prev.creditCard;
-        if(isNaN(newBalances.personalSavings)) newBalances.personalSavings = prev.personalSavings;
-        step=2; show();
+        step=3; show();
       });
 
-      const mkRow = (label, prevVal, inp) => {
+      const mkRow2 = (label, prevVal, inp) => {
         const row = el('div',{style:{marginBottom:'14px'}});
         row.append(
           el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'6px'}},
             el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},label),
             el('div',{style:{fontSize:'12px',color:'var(--text3)'}},'was '+fmt(prevVal))
-          ),
-          inp
+          ), inp
         );
         return row;
       };
 
       content.append(
-        el('div',{class:'step-num'},'Step 2 of 3'),
+        el('div',{class:'step-num'},'Step 3 of 3'),
         el('div',{class:'step-title'},'Open Barclays'),
         el('div',{class:'step-sub'},'Enter what each account shows right now.'),
-        mkRow('Current Account (after income landed)', prev.current, curInp),
-        mkRow((()=>{ const sa=(appData.accounts||[]).filter(a=>a.type==='savings'); return sa.length?sa.map(a=>a.name).join(' + '):'Savings Fund'; })(), prev.florasii, florInp),
-        mkRow('Credit Card (owed)', prev.creditCard, ccInp),
-        mkRow('Personal Savings', prev.personalSavings, savInp),
-        el('div',{class:'row',style:{marginTop:'8px'}}, backBtn, nextBtn)
+        mkRow2('Current Account (after income landed)', prev.current, curInp),
+        mkRow2(savingsLabel, prev.florasii, florInp),
+        mkRow2('Credit Card (owed)', prev.creditCard, ccInp),
+        mkRow2('Personal Savings', prev.personalSavings, savInp),
+        el('div',{class:'row'}, backBtn, nextBtn)
       );
     }
 
-    // ── Step 2: show calculated breakdown ──
-    if(step===2){
+    // ── Step 3: What actually happened ──
+    if(step===3){
       content.style.justifyContent='flex-start';
-
       const florasiiChange = newBalances.florasii - prev.florasii;
       const ccChange = newBalances.creditCard - prev.creditCard;
       const savingsChange = newBalances.personalSavings - prev.personalSavings;
       const currentChange = newBalances.current - prev.current;
-      const ccPaid = Math.max(0, -ccChange);
-
-      // Income lands in current first, then you transfer to Florasii + Savings
-      // Whatever remains in current vs before (minus income) is what you kept
-      // Spending = income - what you moved to Florasii - what you moved to Savings - net current increase
-      // If Florasii went DOWN, you withdrew from it (adds to what you had available)
-      // CC growing means you spent on it (adds to spending)
       const spent = income - florasiiChange - savingsChange - currentChange + Math.max(0, ccChange);
 
       const changeRow = (label, value, invert) => {
@@ -406,54 +543,42 @@ function paydayFlow(){
         );
       };
 
-      const confirmBtn = el('button',{class:'btn-primary',style:{marginTop:'16px'}},'Save & update balances →');
+      const confirmBtn = el('button',{class:'btn-primary',style:{marginTop:'16px'}},'Save & update ✓');
       const backBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'← Back');
-      backBtn.addEventListener('click',()=>{step=1;show();});
+      backBtn.addEventListener('click',()=>{step=2;show();});
 
       confirmBtn.addEventListener('click',async()=>{
-        const hasCC = prev.creditCard > 0 || newBalances.creditCard > 0;
-        const split = {
-          florasii: florasiiChange,
-          spending: income * 0.25,
-          creditCard: ccPaid,
-        };
-        const newPay = {
-          id: uid(),
-          date: new Date().toISOString(),
-          income, spent, split,
-          snapshot: {
-            florasii: newBalances.florasii,
-            current: newBalances.current,
-            creditCard: newBalances.creditCard,
-            personalSavings: newBalances.personalSavings,
-          }
-        };
-        // Award XP only for genuinely new paychecks (idempotency via paycheck ID)
         const habits = appData.habits||{streak:0,xp:0,level:1,achievements:[],rewardedPaychecks:[]};
         const rewardedIds = Array.isArray(habits.rewardedPaychecks) ? habits.rewardedPaychecks : [];
+        const newPay = {
+          id:uid(), date:new Date().toISOString(), income, spent,
+          split:{florasii:florasiiChange, savings:savingsChange},
+          snapshot:{florasii:newBalances.florasii, current:newBalances.current,
+                    creditCard:newBalances.creditCard, personalSavings:newBalances.personalSavings,
+                    accountSnapshot:(appData.accounts||[]).map(a=>({id:a.id,name:a.name,type:a.type,balance:a.balance}))}
+        };
         const alreadyRewarded = rewardedIds.includes(newPay.id);
-        const newXP = alreadyRewarded ? (habits.xp||0) : (habits.xp||0) + 50;
-        const newLevel = Math.floor(newXP/200)+1;
-        const newRewardedIds = alreadyRewarded ? rewardedIds : [...rewardedIds, newPay.id];
-        const newHabits = {...habits, xp:newXP, level:newLevel, lastPaycheckLog:new Date().toISOString(), rewardedPaychecks:newRewardedIds};
-        // Update user-defined accounts if they exist (in addition to legacy balances)
-        let updatedAccounts = appData.accounts||[];
-        if(updatedAccounts.length){
-          updatedAccounts = updatedAccounts.map(a=>{
+        const newXP = alreadyRewarded?(habits.xp||0):(habits.xp||0)+50;
+        const newHabits = {...habits,xp:newXP,level:Math.floor(newXP/200)+1,
+                          lastPaycheckLog:new Date().toISOString(),
+                          rewardedPaychecks:alreadyRewarded?rewardedIds:[...rewardedIds,newPay.id]};
+        let updAccts = appData.accounts||[];
+        if(updAccts.length){
+          updAccts = updAccts.map(a=>{
             if(a.type==='current'||a.legacyKey==='current') return {...a,balance:newBalances.current,updatedAt:new Date().toISOString()};
             if(a.type==='savings'||a.legacyKey==='florasii') return {...a,balance:newBalances.florasii,updatedAt:new Date().toISOString()};
             if(a.type==='credit_card'||a.legacyKey==='creditCard') return {...a,balance:newBalances.creditCard,updatedAt:new Date().toISOString()};
             return a;
           });
         }
-        await save({...appData, balances:newBalances, accounts:updatedAccounts, paychecks:[newPay,...(appData.paychecks||[])], habits:newHabits});
-        step=3; show();
+        await save({...appData,balances:newBalances,accounts:updAccts,
+                    paychecks:[newPay,...(appData.paychecks||[])],habits:newHabits});
+        step=4; show();
       });
 
       content.append(
-        el('div',{class:'step-num'},'Step 3 of 3'),
-        el('div',{class:'step-title'},'Here\'s what happened'),
-        el('div',{class:'step-sub'},'Calculated from your Barclays balances.'),
+        el('div',{class:'step-num'},'Summary'),
+        el('div',{class:'step-title'},'What happened'),
         el('div',{class:'card',style:{padding:'4px 16px'}},
           changeRow('Savings', florasiiChange, false),
           changeRow('Current account', currentChange, false),
@@ -464,20 +589,12 @@ function paydayFlow(){
             el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--amber)'}},fmt(spent))
           )
         ),
-        el('div',{class:'info-box',style:{background:'var(--surface2)',color:'var(--text2)',margin:'12px 0',fontSize:'12px',lineHeight:'1.6'}},
-          'Income: '+fmt(income)
-          +(florasiiChange>0?' · Savings +'+fmt(florasiiChange):'')
-          +(florasiiChange<0?' · Savings withdrawn: '+fmt(Math.abs(florasiiChange)):'')
-          +(ccPaid>0?' · CC paid: '+fmt(ccPaid):'')
-          +(ccChange>0?' · CC grew: '+fmt(ccChange):'')
-        ),
-        confirmBtn,
-        backBtn
+        confirmBtn, backBtn
       );
     }
 
-    // ── Step 3: done ──
-    if(step===3){
+    // ── Step 4: Done ──
+    if(step===4){
       content.style.textAlign='center';
       const doneBtn = el('button',{class:'btn-primary'},'Back to overview');
       doneBtn.addEventListener('click',()=>mainScreen());
@@ -488,8 +605,7 @@ function paydayFlow(){
           )
         ),
         el('div',{style:{fontSize:'26px',fontWeight:'700',marginBottom:'8px'}},'All sorted 🎉'),
-        el('div',{style:{fontSize:'14px',color:'var(--text2)',marginBottom:'12px',lineHeight:'1.6'}},
-          'Balances updated from your Barclays figures.'),
+        el('div',{style:{fontSize:'14px',color:'var(--text2)',marginBottom:'24px',lineHeight:'1.6'}},'Balances updated. Your priorities are handled.'),
         doneBtn
       );
     }
@@ -4474,6 +4590,242 @@ function goalsScreen(){
   return content;
 }
 
+// ── Spending Intelligence ──
+async function buildSpendingInsights(){
+  const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+  const val = snap.val()||{};
+  const allTxns = Object.values(val);
+
+  const SKIP_TYPES = ['INCOME','SAVINGS_TRANSFER','TRANSFER_OUT','TRANSFER_IN','REFUND'];
+  const expenses = allTxns.filter(t=>!SKIP_TYPES.includes(t.financialType) && t.direction==='debit');
+
+  if(expenses.length < 20) return null;
+
+  const now = new Date();
+
+  // Group into 4-week periods
+  function periodKey(dateStr){
+    const d = new Date(dateStr);
+    const msAgo = now - d;
+    const weeksAgo = Math.floor(msAgo / (7*86400000));
+    const period = Math.floor(weeksAgo / 4);
+    return period; // 0=most recent 4 weeks, 1=4-8 weeks ago, etc
+  }
+
+  // Only use last 6 months of data
+  const sixMonthsAgo = new Date(now); sixMonthsAgo.setMonth(sixMonthsAgo.getMonth()-6);
+  const recentExp = expenses.filter(t=>new Date(t.postingDate)>=sixMonthsAgo);
+
+  // Weekly spend calculation
+  const weeklyTotals = {};
+  for(const t of recentExp){
+    const d = new Date(t.postingDate);
+    const dow = d.getDay();
+    const monDay = new Date(d); monDay.setDate(d.getDate() - (dow===0?6:dow-1));
+    const wk = monDay.toISOString().slice(0,10);
+    weeklyTotals[wk] = (weeklyTotals[wk]||0) + t.amount;
+  }
+  const weeks = Object.entries(weeklyTotals).sort((a,b)=>a[0].localeCompare(b[0]));
+  const avgWeekly = weeks.length ? weeks.reduce((s,[,v])=>s+v,0)/weeks.length : 0;
+
+  // Recent 4 weeks vs previous 4 weeks
+  const recent4 = weeks.slice(-4);
+  const prev4   = weeks.slice(-8,-4);
+  const recentAvg = recent4.length ? recent4.reduce((s,[,v])=>s+v,0)/recent4.length : 0;
+  const prevAvg   = prev4.length   ? prev4.reduce((s,[,v])=>s+v,0)/prev4.length     : recentAvg;
+  const weeklyTrend = prevAvg > 0 ? ((recentAvg-prevAvg)/prevAvg*100) : 0;
+
+  // Category breakdown — recent 4 weeks vs previous 4 weeks
+  const recentCutoff = new Date(now); recentCutoff.setDate(recentCutoff.getDate()-28);
+  const prevCutoff   = new Date(now); prevCutoff.setDate(prevCutoff.getDate()-56);
+
+  const recentBycat = {}, prevBycat = {};
+  for(const t of recentExp){
+    const d = new Date(t.postingDate);
+    const cat = t.userCategory||t.category||'Other';
+    if(d >= recentCutoff){ recentBycat[cat]=(recentBycat[cat]||0)+t.amount; }
+    else if(d >= prevCutoff){ prevBycat[cat]=(prevBycat[cat]||0)+t.amount; }
+  }
+
+  // Build category insights
+  const allCats = new Set([...Object.keys(recentBycat),...Object.keys(prevBycat)]);
+  const catInsights = [];
+  for(const cat of allCats){
+    if(cat==='Transfer'||cat==='Savings') continue;
+    const r = recentBycat[cat]||0;
+    const p = prevBycat[cat]||0;
+    const change = p>0 ? ((r-p)/p*100) : 0;
+    catInsights.push({cat, recent:r, prev:p, change, weekly:r/4});
+  }
+  catInsights.sort((a,b)=>b.recent-a.recent);
+
+  // Top merchants this month
+  const merchantTotals = {};
+  for(const t of recentExp.filter(t=>new Date(t.postingDate)>=recentCutoff)){
+    const m = t.normalisedMerchant||t.rawDescription;
+    if(!merchantTotals[m]) merchantTotals[m]={total:0,count:0};
+    merchantTotals[m].total+=t.amount; merchantTotals[m].count++;
+  }
+  const topMerchants = Object.entries(merchantTotals).sort((a,b)=>b[1].total-a[1].total).slice(0,6);
+
+  // Recommendations
+  const recs = [];
+  const risingCats = catInsights.filter(c=>c.change>30&&c.recent>20);
+  for(const c of risingCats.slice(0,3)){
+    recs.push({
+      icon:'📈', severity:'warning',
+      msg:`${c.cat} up ${Math.round(c.change)}% vs last month (£${c.recent.toFixed(0)} vs £${c.prev.toFixed(0)})`,
+      saving: c.recent-c.prev,
+    });
+  }
+  if(weeklyTrend > 15) recs.push({
+    icon:'⚠️', severity:'warning',
+    msg:`Weekly spend is up ${Math.round(weeklyTrend)}% recently — possible lifestyle inflation`,
+    saving: recentAvg-prevAvg,
+  });
+
+  // Find merchant-specific cuts
+  for(const [m, data] of topMerchants){
+    if(m.toLowerCase().includes('uber')||m.toLowerCase().includes('bolt')){
+      recs.push({icon:'🚕',severity:'tip',msg:`Taxis (${m}): £${data.total.toFixed(0)} this month, ${data.count} trips — could you bus/cycle some of these?`,saving:data.total*0.5});
+    }
+    if((m.toLowerCase().includes('deliveroo')||m.toLowerCase().includes('uber eats')||m.toLowerCase().includes('just eat'))&&data.total>20){
+      recs.push({icon:'🍔',severity:'tip',msg:`Food delivery (${m}): £${data.total.toFixed(0)} this month — cooking saves 60-70% per meal`,saving:data.total*0.6});
+    }
+  }
+
+  return {avgWeekly, recentAvg, prevAvg, weeklyTrend, weeks, catInsights, topMerchants, recs};
+}
+
+function spendingInsightsScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const wrap = el('div',{});
+  wrap.innerHTML='<div style="color:var(--text3);font-size:13px;text-align:center;padding:30px">Analysing your spending…</div>';
+  content.append(wrap);
+
+  buildSpendingInsights().then(data=>{
+    wrap.innerHTML='';
+    if(!data){
+      wrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px',color:'var(--text2)',fontSize:'13px'}},
+        'Import your bank statement to unlock spending insights.'));
+      return;
+    }
+
+    const {avgWeekly,recentAvg,prevAvg,weeklyTrend,weeks,catInsights,topMerchants,recs} = data;
+    const trendColor = weeklyTrend > 15 ? 'var(--red)' : weeklyTrend < -10 ? 'var(--green)' : 'var(--amber)';
+    const trendIcon = weeklyTrend > 15 ? '📈' : weeklyTrend < -10 ? '📉' : '➡️';
+
+    // Weekly spend summary
+    const summaryCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    summaryCard.append(
+      el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}},
+        el('div',{},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'1px'}},'Avg weekly spend'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'24px'}},fmt(avgWeekly))
+        ),
+        el('div',{},
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'4px',textTransform:'uppercase',letterSpacing:'1px'}},'Trend'),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'24px',color:trendColor}},
+            trendIcon+' '+(weeklyTrend>0?'+':'')+Math.round(weeklyTrend)+'%')
+        )
+      ),
+      el('div',{style:{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+        `Last 4 weeks: ${fmt(recentAvg)}/wk vs ${fmt(prevAvg)}/wk prior. `+
+        (weeklyTrend>15?'Your spending is rising — check the breakdown below.':
+         weeklyTrend<-10?'Good — your spending is trending down.':
+         'Spending is relatively stable.')
+      )
+    );
+
+    // Mini bar chart of weekly spend
+    const W = Math.min(window.innerWidth-72, 420);
+    const H = 80;
+    const showWeeks = weeks.slice(-12);
+    const maxAmt = Math.max(...showWeeks.map(([,v])=>v),1);
+    const barW = Math.max(4, iW => iW/showWeeks.length*0.7);
+    const iW2 = W-8;
+    const gap2 = iW2/showWeeks.length;
+    const bars = showWeeks.map(([wk,amt],i)=>{
+      const x = 4+i*gap2+(gap2-Math.max(4,gap2*0.7))/2;
+      const bw = Math.max(4,gap2*0.7);
+      const bh = (amt/maxAmt)*(H-10);
+      const isRecent = i>=showWeeks.length-4;
+      return `<rect x="${x}" y="${H-bh}" width="${bw}" height="${bh}" fill="${isRecent?'var(--green)':'var(--surface3)'}" rx="3"/>`;
+    }).join('');
+    const chartSvg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="overflow:visible;margin:10px 0">${bars}
+      <text x="4" y="${H+14}" fill="#555" font-size="9" font-family="Space Grotesk">12 weeks ago</text>
+      <text x="${W}" y="${H+14}" text-anchor="end" fill="var(--green)" font-size="9" font-family="Space Grotesk">recent (green)</text>
+    </svg>`;
+    summaryCard.innerHTML += chartSvg;
+    wrap.append(el('div',{class:'section-hdr'},'Weekly spending'), summaryCard);
+
+    // Recommendations
+    if(recs.length){
+      const recCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+      recCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'💡 Where you can cut'));
+      for(const r of recs){
+        const row = el('div',{style:{display:'flex',gap:'10px',alignItems:'flex-start',marginBottom:'12px',paddingBottom:'12px',borderBottom:'1px solid var(--border)'}});
+        row.append(
+          el('div',{style:{fontSize:'20px',flexShrink:'0'}},r.icon),
+          el('div',{style:{flex:'1'}},
+            el('div',{style:{fontSize:'13px',lineHeight:'1.5',color:'var(--text)'}},r.msg),
+            r.saving>0?el('div',{style:{fontSize:'11px',color:'var(--green)',marginTop:'3px',fontWeight:'600'}},'Potential saving: '+fmt(r.saving)+'/mo'):el('span')
+          )
+        );
+        recCard.append(row);
+      }
+      const totalSaving = recs.reduce((s,r)=>s+(r.saving||0),0);
+      if(totalSaving>0) recCard.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'4px',fontWeight:'700',fontSize:'14px'}},
+          el('span',{style:{color:'var(--text2)'}},'Total potential monthly saving'),
+          el('span',{style:{color:'var(--green)'}},fmt(totalSaving))
+        )
+      );
+      wrap.append(el('div',{class:'section-hdr'},'Recommendations'), recCard);
+    }
+
+    // Category breakdown
+    const catCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    catCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'Spending by category (last 4 weeks)'));
+    const maxCat = Math.max(...catInsights.map(c=>c.recent),1);
+    for(const c of catInsights.filter(ci=>ci.recent>0).slice(0,8)){
+      const pct = Math.round(c.recent/maxCat*100);
+      const chgColor = c.change>30?'var(--red)':c.change>10?'var(--amber)':'var(--text3)';
+      const row = el('div',{style:{marginBottom:'12px'}});
+      row.innerHTML=`
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:13px">
+          <span style="font-weight:500">${c.cat}</span>
+          <div style="text-align:right">
+            <span style="font-family:'Space Mono',monospace;font-weight:700">${fmt(c.recent)}</span>
+            ${c.prev>0?`<span style="font-size:11px;color:${chgColor};margin-left:6px">${c.change>0?'+':''}${Math.round(c.change)}%</span>`:''}
+          </div>
+        </div>
+        <div style="background:var(--surface2);border-radius:100px;height:5px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${c.change>30?'var(--red)':'var(--green)'};border-radius:100px"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${fmt(c.weekly)}/week</div>`;
+      catCard.append(row);
+    }
+    wrap.append(el('div',{class:'section-hdr'},'By category'), catCard);
+
+    // Top merchants
+    const mCard = el('div',{class:'card'});
+    mCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},'Top merchants (last 4 weeks)'));
+    for(const [m,data2] of topMerchants){
+      mCard.append(el('div',{class:'balance-row'},
+        el('div',{},
+          el('div',{class:'balance-label'},m),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)'}},data2.count+' transactions · avg '+fmt(data2.total/data2.count))
+        ),
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(data2.total))
+      ));
+    }
+    wrap.append(el('div',{class:'section-hdr'},'Top merchants'), mCard);
+  });
+
+  return content;
+}
+
 function mainScreen(startTab='home'){
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
@@ -4531,6 +4883,7 @@ function mainScreen(startTab='home'){
   function moreScreen(){
     const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
     const items = [
+      {icon:'🔍', label:'Spending Insights',   sub:'Weekly spend, trends, cut suggestions', tab:'_spending'},
       {icon:'📥', label:'Import Statement',   sub:'Import bank CSV files',             tab:'_statements'},
       {icon:'🔄', label:'Recurring',          sub:'Detected recurring payments',        tab:'_recurring'},
       {icon:'🏪', label:'Merchant Rules',     sub:'Your category learning rules',       tab:'_merchants'},
@@ -4610,6 +4963,7 @@ function mainScreen(startTab='home'){
       body.append(header, moreScreen());
 
     // ── More sub-screens ──
+    } else if(t==='_spending'){     makeHeader('Spending Insights'); body.append(header, spendingInsightsScreen());
     } else if(t==='_statements'){ makeHeader('Import Statement'); body.append(header, statementsScreen());
     } else if(t==='_recurring'){  makeHeader('Recurring');        body.append(header, recurringScreen());
     } else if(t==='_merchants'){  makeHeader('Merchant Rules');   body.append(header, merchantRulesScreen());
