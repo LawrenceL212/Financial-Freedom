@@ -3334,232 +3334,348 @@ function hoursScreen(){
 function calendarScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const now = new Date();
-  const events = appData.cashFlow || [];
-  let horizonMonths = 6;
+  let viewYear = now.getFullYear();
+  let viewMonth = now.getMonth();
+  let selectedDate = null;
 
-  // ── helpers ──
-  function saveEvents(ev){ save({...appData, cashFlow:ev}); }
+  // ── Load all events for the calendar ──
+  async function loadCalendarData(){
+    // 1. Manual cash flow events
+    const cashFlow = appData.cashFlow || [];
+    const paychecks = (appData.paychecks || []).filter(p=>p.income>0);
+    const subs = appData.subscriptions || [];
 
-  function runningBalance(evList){
-    const sorted = [...evList].sort((a,b)=>new Date(a.date)-new Date(b.date));
-    const startBal = appData.balances?.current || 0;
-    let bal = startBal;
-    return sorted.map(e=>{
-      bal += e.type==='in' ? e.amount : -e.amount;
-      return {...e, runningBal:bal};
-    });
+    // 2. Actual transactions from Firebase
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const txnVal = snap.val() || {};
+    const txns = Object.values(txnVal);
+
+    // 3. Recurring patterns (confirmed)
+    const recSnap = await db.ref('users/'+currentUser.uid+'/recurringPatterns').once('value');
+    const recVal = recSnap.val() || {};
+    const confirmed = Object.values(recVal).filter(p=>p.status==='confirmed');
+
+    return {cashFlow, paychecks, subs, txns, confirmed};
   }
 
-  // ── Add event form ──
-  const formCard = el('div',{class:'card'});
-  formCard.innerHTML=`<div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:14px;font-family:'Space Grotesk',sans-serif">Add money event</div>`;
+  function buildDayEvents(data, year, month){
+    const {cashFlow, paychecks, subs, txns, confirmed} = data;
+    const days = {};
 
-  const nameInp = el('input',{placeholder:'Label (e.g. Payday, Rent, Spotify)',style:{marginBottom:'10px'}});
+    const addEvent = (dateStr, event) => {
+      if(!days[dateStr]) days[dateStr] = [];
+      days[dateStr].push(event);
+    };
+
+    // ── ACTUAL: transactions from statement import ──
+    for(const t of txns){
+      const d = t.postingDate || t.transactionDate;
+      if(!d) continue;
+      const [y,m] = d.split('-').map(Number);
+      if(y !== year || m-1 !== month) continue;
+      if(t.financialType.includes('TRANSFER') || t.financialType === 'SAVINGS_TRANSFER') continue;
+      addEvent(d, {
+        type: 'actual',
+        label: t.normalisedMerchant || t.rawDescription,
+        amount: t.amount,
+        direction: t.direction,
+        financialType: t.financialType,
+        source: 'transaction',
+        transactionId: t.transactionId,
+      });
+    }
+
+    // ── ACTUAL: logged paychecks ──
+    for(const p of paychecks){
+      const d = p.date ? p.date.slice(0,10) : null;
+      if(!d) continue;
+      const [y,m] = d.split('-').map(Number);
+      if(y !== year || m-1 !== month) continue;
+      addEvent(d, {
+        type: 'actual',
+        label: 'Payday',
+        amount: p.income,
+        direction: 'credit',
+        financialType: 'INCOME',
+        source: 'paycheck',
+        paycheckId: p.id,
+      });
+    }
+
+    // ── EXPECTED: future subscriptions ──
+    const futureStart = new Date(year, month, 1);
+    const futureEnd = new Date(year, month+1, 0);
+
+    for(const sub of subs){
+      // Find last actual payment for this subscription in txns
+      const matchingTxns = txns.filter(t=>
+        t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
+        sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0])
+      ).sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+
+      const lastPayment = matchingTxns[0];
+      let expectedDay = 15; // default mid-month
+
+      if(lastPayment){
+        // Use same day as last actual payment
+        expectedDay = parseInt(lastPayment.postingDate.split('-')[2]);
+        const lastDate = new Date(lastPayment.postingDate);
+        const lastY = lastDate.getFullYear();
+        const lastM = lastDate.getMonth();
+
+        // Check if actual payment exists this month
+        const hasActual = txns.some(t=>
+          t.postingDate.startsWith(`${year}-${String(month+1).padStart(2,'0')}`) &&
+          (t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
+           sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0]))
+        );
+        if(hasActual) continue; // already showing as actual
+      }
+
+      const expectedDate = `${year}-${String(month+1).padStart(2,'0')}-${String(expectedDay).padStart(2,'0')}`;
+      const d = new Date(expectedDate);
+      if(d >= futureStart && d <= futureEnd){
+        addEvent(expectedDate, {
+          type: 'expected',
+          label: sub.name,
+          amount: sub.amount,
+          direction: 'debit',
+          financialType: 'EXPENSE',
+          source: 'subscription',
+          subscriptionId: sub.id,
+        });
+      }
+    }
+
+    // ── EXPECTED: confirmed recurring patterns ──
+    for(const p of confirmed){
+      const next = p.nextExpected;
+      if(!next) continue;
+      const [y,m] = next.split('-').map(Number);
+      if(y !== year || m-1 !== month) continue;
+      // Don't double-show if subscription already covers it
+      const alreadyCovered = subs.some(s=>s.name.toLowerCase().includes(p.merchant.toLowerCase().split(' ')[0]));
+      if(alreadyCovered) continue;
+      addEvent(next, {
+        type: 'expected',
+        label: p.merchant,
+        amount: p.typicalAmount,
+        direction: 'debit',
+        financialType: 'EXPENSE',
+        source: 'recurring',
+      });
+    }
+
+    // ── EXPECTED: future cash flow events ──
+    for(const e of cashFlow){
+      const d = e.date;
+      if(!d) continue;
+      const [y,m] = d.split('-').map(Number);
+      if(y !== year || m-1 !== month) continue;
+      addEvent(d, {
+        type: new Date(d) < now ? 'actual' : 'expected',
+        label: e.label,
+        amount: e.amount,
+        direction: e.type === 'in' ? 'credit' : 'debit',
+        financialType: e.type === 'in' ? 'INCOME' : 'EXPENSE',
+        source: 'cashflow',
+      });
+    }
+
+    return days;
+  }
+
+  const calWrap = el('div',{});
+  const dayDetailWrap = el('div',{});
+  const legendWrap = el('div',{style:{display:'flex',gap:'16px',marginBottom:'12px',fontSize:'11px',color:'var(--text2)',flexWrap:'wrap'}});
+  legendWrap.innerHTML = `
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block"></span>Income actual</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block"></span>Expense actual</span>
+    <span style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:var(--amber);border:1.5px dashed var(--amber);display:inline-block"></span>Expected</span>`;
+
+  let cachedData = null;
+
+  async function renderCalendar(){
+    calWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;padding:20px">Loading…</div>';
+    if(!cachedData) cachedData = await loadCalendarData();
+    const dayEvents = buildDayEvents(cachedData, viewYear, viewMonth);
+
+    calWrap.innerHTML = '';
+    const firstDay = new Date(viewYear, viewMonth, 1);
+    const lastDay = new Date(viewYear, viewMonth+1, 0);
+    const startDow = (firstDay.getDay()+6)%7; // Mon=0
+    const totalDays = lastDay.getDate();
+    const monthName = firstDay.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+
+    // Nav header
+    const hdr = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}});
+    const prevBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text)',border:'none',borderRadius:'10px',padding:'8px 14px',fontSize:'18px'}},'‹');
+    const nextBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text)',border:'none',borderRadius:'10px',padding:'8px 14px',fontSize:'18px'}},'›');
+    prevBtn.addEventListener('click',()=>{ viewMonth--; if(viewMonth<0){viewMonth=11;viewYear--;} cachedData=null; renderCalendar(); });
+    nextBtn.addEventListener('click',()=>{ viewMonth++; if(viewMonth>11){viewMonth=0;viewYear++;} cachedData=null; renderCalendar(); });
+    hdr.append(prevBtn, el('div',{style:{fontWeight:'700',fontSize:'16px'}},monthName), nextBtn);
+    calWrap.append(hdr);
+
+    // Day-of-week labels
+    const dayNames = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'2px',marginBottom:'4px'}});
+    for(const d of ['M','T','W','T','F','S','S'])
+      dayNames.append(el('div',{style:{textAlign:'center',fontSize:'10px',color:'var(--text3)',fontWeight:'600',padding:'4px 0'}},d));
+    calWrap.append(dayNames);
+
+    // Calendar grid
+    const grid = el('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:'2px'}});
+    for(let i=0;i<startDow;i++) grid.append(el('div',{}));
+
+    for(let d=1;d<=totalDays;d++){
+      const dateStr = `${viewYear}-${String(viewMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      const events = dayEvents[dateStr] || [];
+      const isToday = dateStr === now.toISOString().slice(0,10);
+      const isSelected = selectedDate === dateStr;
+      const isPast = new Date(dateStr) < new Date(now.toISOString().slice(0,10));
+
+      const hasIncome = events.some(e=>e.direction==='credit');
+      const hasExpense = events.some(e=>e.direction==='debit' && e.type==='actual');
+      const hasExpected = events.some(e=>e.type==='expected');
+
+      const cell = el('div',{style:{
+        borderRadius:'8px',
+        padding:'4px 2px',
+        minHeight:'52px',
+        cursor: events.length ? 'pointer':'default',
+        background: isSelected ? 'var(--surface)' : isToday ? 'var(--surface2)' : 'transparent',
+        border: isToday ? '1px solid var(--green)' : isSelected ? '1px solid var(--text2)' : '1px solid transparent',
+        opacity: isPast && !events.length ? '0.35' : '1',
+      }});
+
+      cell.append(el('div',{style:{
+        textAlign:'center',
+        fontSize:'12px',
+        fontWeight: isToday ? '700':'400',
+        color: isToday ? 'var(--green)' : 'var(--text)',
+        marginBottom:'3px',
+      }},String(d)));
+
+      // Event dots
+      const dots = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'2px',justifyContent:'center',minHeight:'14px'}});
+      if(hasIncome) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',background:'var(--green)',flexShrink:'0'}}));
+      if(hasExpense) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',background:'var(--red)',flexShrink:'0'}}));
+      if(hasExpected && !hasExpense) dots.append(el('div',{style:{width:'6px',height:'6px',borderRadius:'50%',border:'1.5px dashed var(--amber)',flexShrink:'0'}}));
+
+      // Amount preview for days with events
+      if(events.length === 1){
+        const e = events[0];
+        const amtEl = el('div',{style:{fontSize:'9px',textAlign:'center',fontFamily:"'Space Mono',monospace",color:e.direction==='credit'?'var(--green)':e.type==='expected'?'var(--amber)':'var(--red)',marginTop:'2px',lineHeight:'1.1'}},
+          (e.direction==='credit'?'+':'-')+'£'+e.amount.toFixed(0));
+        cell.append(amtEl);
+      } else if(events.length > 1){
+        cell.append(el('div',{style:{fontSize:'9px',textAlign:'center',color:'var(--text3)',marginTop:'2px'}},events.length+'×'));
+      }
+
+      cell.append(dots);
+
+      if(events.length){
+        cell.addEventListener('click',()=>{ selectedDate=dateStr; renderDayDetail(dateStr, events); renderCalendar(); });
+      }
+      grid.append(cell);
+    }
+    calWrap.append(grid);
+
+    // Monthly summary bar
+    const allEvents = Object.values(dayEvents).flat();
+    const monthIn = allEvents.filter(e=>e.direction==='credit'&&e.type==='actual').reduce((s,e)=>s+e.amount,0);
+    const monthOut = allEvents.filter(e=>e.direction==='debit'&&e.type==='actual').reduce((s,e)=>s+e.amount,0);
+    const monthExpected = allEvents.filter(e=>e.type==='expected'&&e.direction==='debit').reduce((s,e)=>s+e.amount,0);
+
+    const summaryBar = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'6px',marginTop:'12px'}});
+    const mstat = (label,val,color)=>{
+      const c=el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'8px',textAlign:'center'}});
+      c.append(
+        el('div',{style:{fontSize:'10px',color:'var(--text3)',marginBottom:'2px'}},label),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px',color}},val)
+      );
+      return c;
+    };
+    summaryBar.append(
+      mstat('In (actual)', '+£'+Math.round(monthIn), 'var(--green)'),
+      mstat('Out (actual)', '-£'+Math.round(monthOut), 'var(--red)'),
+      mstat('Expected out', '~£'+Math.round(monthExpected), 'var(--amber)')
+    );
+    calWrap.append(summaryBar);
+  }
+
+  function renderDayDetail(dateStr, events){
+    dayDetailWrap.innerHTML = '';
+    const d = new Date(dateStr);
+    const dayLabel = d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+
+    const panel = el('div',{class:'card',style:{marginTop:'12px'}});
+    panel.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px'}},dayLabel));
+
+    for(const e of events){
+      const row = el('div',{style:{
+        display:'flex',justifyContent:'space-between',alignItems:'center',
+        padding:'10px 0',borderBottom:'1px solid var(--border)'
+      }});
+      const statusDot = e.type==='actual'?
+        el('div',{style:{width:'8px',height:'8px',borderRadius:'50%',background:e.direction==='credit'?'var(--green)':'var(--red)',flexShrink:'0',marginRight:'10px'}}):
+        el('div',{style:{width:'8px',height:'8px',borderRadius:'50%',border:'1.5px dashed var(--amber)',flexShrink:'0',marginRight:'10px'}});
+      const info = el('div',{style:{flex:'1'}},
+        el('div',{style:{fontSize:'13px',fontWeight:'500'}},e.label),
+        el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},
+          (e.type==='actual'?'✓ Actual':'Expected')+(e.source?' · '+e.source:''))
+      );
+      const amt = el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',
+        color:e.direction==='credit'?'var(--green)':e.type==='expected'?'var(--amber)':'var(--red)'}},
+        (e.direction==='credit'?'+':'-')+'£'+e.amount.toFixed(2));
+      row.append(statusDot, info, amt);
+      panel.append(row);
+    }
+
+    const closeBtn = el('button',{class:'btn-ghost',style:{marginTop:'10px'}},'Close');
+    closeBtn.addEventListener('click',()=>{ selectedDate=null; dayDetailWrap.innerHTML=''; });
+    panel.append(closeBtn);
+    dayDetailWrap.append(panel);
+    dayDetailWrap.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
+
+  // ── Add event form (kept for manual entries) ──
+  const addToggle = el('button',{class:'btn-ghost',style:{width:'100%',marginBottom:'8px'}},'+ Add custom event');
+  const formCard = el('div',{class:'card',style:{display:'none',marginBottom:'12px'}});
+  addToggle.addEventListener('click',()=>{
+    formCard.style.display = formCard.style.display==='none'?'block':'none';
+    addToggle.textContent = formCard.style.display==='none'?'+ Add custom event':'− Hide form';
+  });
+
+  const nameInp = el('input',{placeholder:'Label (e.g. Rent, Payday)',style:{marginBottom:'10px'}});
   const amtInp  = el('input',{inputmode:'decimal',placeholder:'Amount (£)',style:{marginBottom:'10px'}});
   const dateInp = el('input',{type:'date',style:{marginBottom:'10px'}});
-  const recurSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'10px'}});
-  for(const opt of ['Once','Weekly','Every 2 weeks','Monthly']){
-    recurSel.append(el('option',{value:opt},opt));
-  }
-
-  // Set default date to today
   dateInp.value = now.toISOString().slice(0,10);
+  const recurSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'10px'}});
+  for(const opt of ['Once','Weekly','Every 2 weeks','Monthly']) recurSel.append(el('option',{value:opt},opt));
 
-  const typeRow = el('div',{style:{display:'flex',gap:'8px',marginBottom:'14px'}});
   let selectedType = 'in';
-  const inBtn  = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--green)',color:'#000',border:'none'}},'💰 Money in');
-  const outBtn = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)'}},'💸 Money out');
-
-  inBtn.addEventListener('click',()=>{
-    selectedType='in';
-    inBtn.style.background='var(--green)'; inBtn.style.color='#000'; inBtn.style.border='none';
-    outBtn.style.background='var(--surface2)'; outBtn.style.color='var(--text2)'; outBtn.style.border='1px solid var(--border)';
-  });
-  outBtn.addEventListener('click',()=>{
-    selectedType='out';
-    outBtn.style.background='var(--red)'; outBtn.style.color='#fff'; outBtn.style.border='none';
-    inBtn.style.background='var(--surface2)'; inBtn.style.color='var(--text2)'; inBtn.style.border='1px solid var(--border)';
-  });
+  const typeRow = el('div',{style:{display:'flex',gap:'8px',marginBottom:'14px'}});
+  const inBtn  = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--green)',color:'#000',border:'none'}},'💰 In');
+  const outBtn = el('button',{style:{flex:'1',padding:'10px',borderRadius:'12px',fontWeight:'700',fontSize:'14px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)'}},'💸 Out');
+  inBtn.addEventListener('click',()=>{ selectedType='in'; inBtn.style.background='var(--green)'; inBtn.style.color='#000'; outBtn.style.background='var(--surface2)'; outBtn.style.color='var(--text2)'; });
+  outBtn.addEventListener('click',()=>{ selectedType='out'; outBtn.style.background='var(--red)'; outBtn.style.color='#fff'; inBtn.style.background='var(--surface2)'; inBtn.style.color='var(--text2)'; });
   typeRow.append(inBtn, outBtn);
 
-  const addBtn = el('button',{class:'btn-primary'},'Add to plan');
+  const addBtn = el('button',{class:'btn-primary'},'Add event');
   addBtn.addEventListener('click',()=>{
     if(!nameInp.value||!amtInp.value||!dateInp.value) return;
-    const newEvent = {
-      id: uid(),
-      label: nameInp.value.trim(),
-      amount: parseFloat(amtInp.value)||0,
-      date: dateInp.value,
-      type: selectedType,
-      recur: recurSel.value,
-    };
-    const updated = [...events, newEvent];
-    saveEvents(updated);
+    const newEvent = {id:uid(), label:nameInp.value.trim(), amount:parseFloat(amtInp.value)||0, date:dateInp.value, type:selectedType, recur:recurSel.value};
+    const updated = [...(appData.cashFlow||[]), newEvent];
+    save({...appData, cashFlow:updated});
     nameInp.value=''; amtInp.value='';
-    dateInp.value=now.toISOString().slice(0,10);
-    renderTimeline();
+    cachedData=null;
+    addBtn.textContent='Added ✓';
+    setTimeout(()=>{ addBtn.textContent='Add event'; renderCalendar(); },1000);
   });
+  formCard.append(nameInp,amtInp,dateInp,recurSel,typeRow,addBtn);
 
-  formCard.append(nameInp, amtInp, dateInp, recurSel, typeRow, addBtn);
-
-  // ── Timeline ──
-  const timelineWrap = el('div',{});
-
-  function expandRecurring(evList){
-    const expanded = [];
-    const horizon = new Date(now);
-    horizon.setMonth(horizon.getMonth()+horizonMonths);
-
-    for(const e of evList){
-      const base = new Date(e.date);
-      if(e.recur==='Once'){
-        expanded.push(e);
-      } else {
-        let cur = new Date(base);
-        while(cur <= horizon){
-          expanded.push({...e, id:e.id+'_'+cur.getTime(), date:cur.toISOString().slice(0,10), _original:e.id});
-          if(e.recur==='Weekly') cur.setDate(cur.getDate()+7);
-          else if(e.recur==='Every 2 weeks') cur.setDate(cur.getDate()+14);
-          else if(e.recur==='Monthly') cur.setMonth(cur.getMonth()+1);
-          else break;
-        }
-      }
-    }
-    return expanded.filter(e=>new Date(e.date)>=new Date(now.toISOString().slice(0,10)));
-  }
-
-  function renderTimeline(){
-    timelineWrap.innerHTML='';
-    if(events.length===0){
-      timelineWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px'}},
-        el('div',{style:{fontSize:'13px',color:'var(--text2)'}},'No events yet. Add paychecks and bills above to see your cash flow.')
-      ));
-      return;
-    }
-
-    const expanded = expandRecurring(events);
-    const withBal = runningBalance(expanded);
-    const startBal = appData.balances?.current||0;
-
-    // Balance bar at top
-    const minBal = Math.min(startBal, ...withBal.map(e=>e.runningBal));
-    const maxBal = Math.max(startBal, ...withBal.map(e=>e.runningBal));
-    const isEverNegative = minBal < 0;
-
-    // Summary card
-    const summaryCard = el('div',{class:'card',style:{marginBottom:'12px'}});
-    summaryCard.innerHTML = `
-      <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);margin-bottom:12px;font-family:'Space Grotesk',sans-serif">3-month outlook</div>
-      <div class="balance-row">
-        <span class="balance-label">Current balance</span>
-        <span class="balance-value" style="color:${startBal>=0?'var(--green)':'var(--red)'}">${fmt(startBal)}</span>
-      </div>
-      <div class="balance-row">
-        <span class="balance-label">Lowest point</span>
-        <span class="balance-value" style="color:${minBal>=0?'var(--text)':'var(--red)'}">${fmt(minBal)}</span>
-      </div>
-      <div class="balance-row" style="border:none">
-        <span class="balance-label">Highest point</span>
-        <span class="balance-value" style="color:var(--green)">${fmt(maxBal)}</span>
-      </div>
-      ${isEverNegative?'<div style="margin-top:10px;padding:10px 12px;background:var(--red-dim);border-radius:10px;font-size:12px;color:var(--red)">⚠️ Your balance goes negative at some point in this plan.</div>':''}
-    `;
-    timelineWrap.append(summaryCard);
-
-    // Group by month
-    const byMonth = {};
-    for(const e of withBal){
-      const d = new Date(e.date);
-      const key = d.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
-      if(!byMonth[key]) byMonth[key]=[];
-      byMonth[key].push(e);
-    }
-
-    for(const [month, monthEvents] of Object.entries(byMonth)){
-      const monthCard = el('div',{class:'card',style:{marginBottom:'12px'}});
-      monthCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px',color:'var(--text2)'}},month));
-
-      for(const e of monthEvents){
-        const isIn = e.type==='in';
-        const d = new Date(e.date);
-        const dayStr = d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric'});
-        const isPast = d < now;
-        const isOriginal = !e._original;
-
-        const row = el('div',{style:{display:'flex',alignItems:'center',gap:'12px',padding:'10px 0',borderBottom:'1px solid var(--border)',opacity:isPast?'0.5':'1'}});
-
-        // date pill
-        row.append(el('div',{style:{minWidth:'44px',fontSize:'11px',color:'var(--text3)',textAlign:'center',lineHeight:'1.3'}},dayStr));
-
-        // dot
-        row.append(el('div',{style:{width:'8px',height:'8px',borderRadius:'50%',background:isIn?'var(--green)':'var(--red)',flexShrink:'0'}}));
-
-        // label + recur
-        const labelDiv = el('div',{style:{flex:'1',minWidth:'0'}});
-        labelDiv.append(el('div',{style:{fontSize:'14px',fontWeight:'500',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},e.label));
-        if(e.recur!=='Once') labelDiv.append(el('div',{style:{fontSize:'11px',color:'var(--text3)'}},e.recur));
-        row.append(labelDiv);
-
-        // amount + running bal
-        const amtDiv = el('div',{style:{textAlign:'right',flexShrink:'0'}});
-        amtDiv.append(
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:isIn?'var(--green)':'var(--red)',fontSize:'14px'}},(isIn?'+':'-')+fmt(e.amount)),
-          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},fmt(e.runningBal))
-        );
-        row.append(amtDiv);
-
-        // delete (only for originals)
-        if(isOriginal){
-          const del = el('button',{style:{background:'none',color:'var(--text3)',padding:'0',fontSize:'16px',flexShrink:'0'}},'×');
-          del.addEventListener('click',()=>{
-            const updated = events.filter(ev=>ev.id!==e.id);
-            saveEvents(updated);
-            renderTimeline();
-          });
-          row.append(del);
-        }
-
-        monthCard.append(row);
-      }
-      timelineWrap.append(monthCard);
-    }
-  }
-
-  renderTimeline();
-
-  // Pre-fill subscriptions button
-  const subFillBtn = el('button',{class:'btn-ghost',style:{marginBottom:'12px',width:'100%'}},'Import subscriptions as recurring events');
-  subFillBtn.addEventListener('click',()=>{
-    const subs = appData.subscriptions||[];
-    const existing = events.map(e=>e.label);
-    const toAdd = subs
-      .filter(s=>!existing.includes(s.name))
-      .map(s=>({id:uid(),label:s.name,amount:s.amount,date:new Date(now.getFullYear(),now.getMonth(),15).toISOString().slice(0,10),type:'out',recur:'Monthly'}));
-    if(toAdd.length===0){ return; }
-    const updated = [...events,...toAdd];
-    saveEvents(updated);
-    renderTimeline();
-    subFillBtn.textContent='✓ Subscriptions added';
-    setTimeout(()=>subFillBtn.textContent='Import subscriptions as recurring events',2000);
-  });
-
-  // Horizon selector
-  const horizonSel = el('select',{style:{width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px',outline:'none',marginBottom:'12px'}});
-  for(const [label,val] of [['3 months','3'],['6 months','6'],['12 months','12'],['24 months','24']]){
-    const opt = el('option',{value:val},label);
-    if(val==='6') opt.selected=true;
-    horizonSel.append(opt);
-  }
-  horizonSel.addEventListener('change',()=>{ horizonMonths=parseInt(horizonSel.value); renderTimeline(); });
-
-  content.append(
-    el('div',{class:'section-hdr'},'Cash flow plan'),
-    subFillBtn,
-    formCard,
-    el('div',{class:'section-hdr'},'Your timeline'),
-    horizonSel,
-    timelineWrap
-  );
+  content.append(legendWrap, calWrap, dayDetailWrap, addToggle, formCard);
+  renderCalendar();
   return content;
 }
 
