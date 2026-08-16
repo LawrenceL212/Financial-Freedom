@@ -79,13 +79,12 @@ button:active{transform:scale(.96);opacity:.8}
 
 /* ── Nav ── */
 .nav{
-  display:flex;padding:6px 6px max(12px,env(safe-area-inset-bottom));
+  display:flex;justify-content:space-around;
+  padding:6px 0 max(12px,env(safe-area-inset-bottom));
   background:rgba(10,10,10,.97);border-top:1px solid var(--border);
-  position:sticky;bottom:0;overflow-x:auto;overflow-y:visible;
-  -webkit-overflow-scrolling:touch;scrollbar-width:none;gap:2px;
+  position:sticky;bottom:0;
   backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
 }
-.nav::-webkit-scrollbar{display:none}
 .nav-btn{
   display:flex;flex-direction:column;align-items:center;gap:3px;
   padding:7px 11px;background:none;color:var(--text3);font-size:9.5px;
@@ -341,7 +340,10 @@ function paydayFlow(){
       nextBtn.addEventListener('click',()=>{
         newBalances = {
           current:       parseFloat(curInp.value)  ?? prev.current,
-          florasii:      parseFloat(florInp.value) ?? prev.florasii,
+          florasii: (()=>{
+            const val = parseFloat(florInp.value);
+            return isNaN(val) ? prev.florasii : val;
+          })(),
           creditCard:    parseFloat(ccInp.value)   ?? prev.creditCard,
           personalSavings: parseFloat(savInp.value) ?? prev.personalSavings,
         };
@@ -370,7 +372,7 @@ function paydayFlow(){
         el('div',{class:'step-title'},'Open Barclays'),
         el('div',{class:'step-sub'},'Enter what each account shows right now.'),
         mkRow('Current Account (after income landed)', prev.current, curInp),
-        mkRow('Florasii Fund', prev.florasii, florInp),
+        mkRow((()=>{ const sa=(appData.accounts||[]).filter(a=>a.type==='savings'); return sa.length?sa.map(a=>a.name).join(' + '):'Savings Fund'; })(), prev.florasii, florInp),
         mkRow('Credit Card (owed)', prev.creditCard, ccInp),
         mkRow('Personal Savings', prev.personalSavings, savInp),
         el('div',{class:'row',style:{marginTop:'8px'}}, backBtn, nextBtn)
@@ -434,7 +436,17 @@ function paydayFlow(){
         const newLevel = Math.floor(newXP/200)+1;
         const newRewardedIds = alreadyRewarded ? rewardedIds : [...rewardedIds, newPay.id];
         const newHabits = {...habits, xp:newXP, level:newLevel, lastPaycheckLog:new Date().toISOString(), rewardedPaychecks:newRewardedIds};
-        await save({...appData, balances:newBalances, paychecks:[newPay,...(appData.paychecks||[])], habits:newHabits});
+        // Update user-defined accounts if they exist (in addition to legacy balances)
+        let updatedAccounts = appData.accounts||[];
+        if(updatedAccounts.length){
+          updatedAccounts = updatedAccounts.map(a=>{
+            if(a.type==='current'||a.legacyKey==='current') return {...a,balance:newBalances.current,updatedAt:new Date().toISOString()};
+            if(a.type==='savings'||a.legacyKey==='florasii') return {...a,balance:newBalances.florasii,updatedAt:new Date().toISOString()};
+            if(a.type==='credit_card'||a.legacyKey==='creditCard') return {...a,balance:newBalances.creditCard,updatedAt:new Date().toISOString()};
+            return a;
+          });
+        }
+        await save({...appData, balances:newBalances, accounts:updatedAccounts, paychecks:[newPay,...(appData.paychecks||[])], habits:newHabits});
         step=3; show();
       });
 
@@ -443,7 +455,7 @@ function paydayFlow(){
         el('div',{class:'step-title'},'Here\'s what happened'),
         el('div',{class:'step-sub'},'Calculated from your Barclays balances.'),
         el('div',{class:'card',style:{padding:'4px 16px'}},
-          changeRow('Florasii', florasiiChange, false),
+          changeRow('Savings', florasiiChange, false),
           changeRow('Current account', currentChange, false),
           changeRow('Credit card', ccChange, true),
           changeRow('Personal savings', savingsChange, false),
@@ -454,8 +466,8 @@ function paydayFlow(){
         ),
         el('div',{class:'info-box',style:{background:'var(--surface2)',color:'var(--text2)',margin:'12px 0',fontSize:'12px',lineHeight:'1.6'}},
           'Income: '+fmt(income)
-          +(florasiiChange>0?' · Florasii +'+fmt(florasiiChange):'')
-          +(florasiiChange<0?' · Florasii withdrawn: '+fmt(Math.abs(florasiiChange)):'')
+          +(florasiiChange>0?' · Savings +'+fmt(florasiiChange):'')
+          +(florasiiChange<0?' · Savings withdrawn: '+fmt(Math.abs(florasiiChange)):'')
           +(ccPaid>0?' · CC paid: '+fmt(ccPaid):'')
           +(ccChange>0?' · CC grew: '+fmt(ccChange):'')
         ),
@@ -492,7 +504,7 @@ function overviewScreen(){
   const {balances, paychecks, subscriptions} = appData;
   const habits = appData.habits||{xp:0,level:1};
   const subTotal = subscriptions.reduce((s,x)=>s+x.amount,0);
-  const pct = Math.min(100,Math.round((balances.florasii||0)/15000*100));
+  // pct removed - goals now user-defined
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
   // ── Load transaction data async then render intelligence ──
@@ -562,17 +574,22 @@ function overviewScreen(){
                      sortedH.length===1?{w1:sortedH[0],w2:null}:null;
     const predictedPay = lastPair ? (lastPair.w1.total+(lastPair.w2?lastPair.w2.total:0))*RATE : 0;
 
-    // Avg florasii per pay (for reference)
+    // Avg savings per pay (from snapshot history)
     const avgFlorasiiPerPay = (()=>{
       const snaps = (paychecks||[]).filter(p=>p.snapshot).sort((a,b)=>new Date(a.date)-new Date(b.date));
-      if(snaps.length<2) return predictedPay*0.75;
-      const growth = snaps[snaps.length-1].snapshot.florasii - snaps[0].snapshot.florasii;
-      return growth/Math.max(snaps.length-1,1);
+      if(snaps.length<2) return predictedPay*0.25;
+      // Use florasii snapshot for now (historical data), accounts system is additive
+      const growth = (snaps[snaps.length-1].snapshot.florasii||0) - (snaps[0].snapshot.florasii||0);
+      return Math.max(0, growth/Math.max(snaps.length-1,1));
     })();
 
     // User-specific goals from Firebase (not hardcoded)
     const GOALS = (appData.goals || []).filter(g=>g.active!==false&&g.target&&g.deadline);
-    const florasiiNow = balances.florasii||0;
+    // Get savings total from user accounts (savings type) or fall back to legacy florasii
+    const savingsAccounts = (appData.accounts||[]).filter(a=>a.type==='savings');
+    const florasiiNow = savingsAccounts.length 
+      ? savingsAccounts.reduce((s,a)=>s+a.balance,0)
+      : (balances.florasii||0);
     const now2 = new Date();
 
     let totalRequiredPerPaycheck = 0;
@@ -640,7 +657,9 @@ function overviewScreen(){
             a.name+': '+(a.type==='credit_card'?'-':'')+fmt(a.balance))
         ) : [
           el('span',{},'Current: '+fmt(balances.current||0)),
-          el('span',{style:{color:'var(--green)'}},'Florasii: '+fmt(balances.florasii||0)),
+          ...((appData.accounts||[]).length ? [] : [
+          el('span',{style:{color:'var(--green)'}},'Florasii: '+fmt(balances.florasii||0))
+        ]),
           balances.creditCard>0?el('span',{style:{color:'var(--red)'}},'CC: -'+fmt(balances.creditCard)):el('span')
         ])
       )
@@ -693,12 +712,11 @@ function overviewScreen(){
         el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'10px',fontSize:'13px'}},
           el('span',{style:{color:'var(--text2)'}},'Hidden monthly cost'),
           el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--amber)'}},fmt(hiddenMonthly)+'/mo')
-        ),
-        el('button',{style:{width:'100%',marginTop:'10px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)',borderRadius:'10px',padding:'8px',fontSize:'12px'}},'Review in Recurring tab',
-          'onclick', ()=>{ if(window._setTab) window._setTab('recurring'); })
+        )
       );
-      // fix event
-      hiddenCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('recurring'); });
+      const reviewBtn = el('button',{style:{width:'100%',marginTop:'10px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)',borderRadius:'10px',padding:'8px',fontSize:'12px'}},'Review in Recurring tab');
+      reviewBtn.addEventListener('click',()=>{ if(window._setTab) window._setTab('_recurring'); });
+      hiddenCard.append(reviewBtn);
       intelligenceWrap.append(hiddenCard);
     }
 
@@ -771,7 +789,7 @@ function overviewScreen(){
           el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'10px',padding:'8px 16px',fontWeight:'700',fontSize:'13px'}},'Add a goal')
         )
       );
-      florasiiCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('lifestyle'); });
+      florasiiCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('_goals'); });
     } else {
       for(const g of goalDetails){
         const STATUS = g.onTrack ? '✓ On track' : '⚠ Behind';
@@ -910,7 +928,7 @@ function overviewScreen(){
             el('div',{style:{fontSize:'11px',color:'var(--text3)',marginBottom:'2px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},label),
             el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'15px',color}},fmt(val))
           );
-          b.addEventListener('click',()=>{ if(window._setTab) window._setTab('accounts'); });
+          b.addEventListener('click',()=>{ if(window._setTab) window._setTab('_accounts'); });
           return b;
         })
       ),
@@ -949,7 +967,8 @@ function settingsScreen(){
   }
 
   const curInput = el('input',{inputmode:'decimal',value:String(appData.balances.current)});
-  const florInput = el('input',{inputmode:'decimal',value:String(appData.balances.florasii)});
+  const savingsAcc = (appData.accounts||[]).find(a=>a.type==='savings'||a.legacyKey==='florasii');
+  const florInput = el('input',{inputmode:'decimal',value:String(savingsAcc?savingsAcc.balance:(appData.balances.florasii||0))});
   const savInput = el('input',{inputmode:'decimal',value:String(appData.balances.personalSavings)});
   const ccInput = el('input',{inputmode:'decimal',value:String(appData.balances.creditCard)});
   const saveBalBtn = el('button',{class:'btn-primary',style:{marginTop:'8px'}},'Save balances');
@@ -960,7 +979,17 @@ function settingsScreen(){
       personalSavings:parseFloat(savInput.value)||0,
       creditCard:parseFloat(ccInput.value)||0,
     };
-    await save({...appData, balances:nb, subscriptions:subs}); // BUG FIX 3: always include latest subs
+    // Update user accounts if they exist
+    let updAccts = appData.accounts||[];
+    if(updAccts.length){
+      updAccts = updAccts.map(a=>{
+        if(a.type==='current'||a.legacyKey==='current') return {...a,balance:nb.current,updatedAt:new Date().toISOString()};
+        if(a.type==='savings'||a.legacyKey==='florasii') return {...a,balance:nb.florasii,updatedAt:new Date().toISOString()};
+        if(a.type==='credit_card'||a.legacyKey==='creditCard') return {...a,balance:nb.creditCard,updatedAt:new Date().toISOString()};
+        return a;
+      });
+    }
+    await save({...appData, balances:nb, accounts:updAccts, subscriptions:subs}); // BUG FIX 3: always include latest subs
     saveBalBtn.textContent='Saved ✓';
     setTimeout(()=>saveBalBtn.textContent='Save balances',2000);
   });
@@ -1010,7 +1039,7 @@ function settingsScreen(){
     el('div',{class:'section-hdr'},'Update Balances'),
     el('div',{class:'card'},
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Current Account (£)'), curInput),
-      el('div',{style:{marginBottom:'12px'}}, mkLabel('Florasii Fund (£)'), florInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel((()=>{ const sa=(appData.accounts||[]).filter(a=>a.type==='savings'); return sa.length?sa[0].name+' (£)':'Savings Fund (£)'; })()), florInput),
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Personal Savings (£)'), savInput),
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Credit Card Owed (£)'), ccInput),
       saveBalBtn
@@ -1200,7 +1229,7 @@ function askScreen(){
       currentDate: now.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'}),
       balances: {
         currentAccount: balances.current||0,
-        florasii: balances.florasii||0,
+        savings: (()=>{ const sa=(appData.accounts||[]).filter(a=>a.type==='savings'); return sa.length?sa.reduce((s,a)=>s+a.balance,0):(balances.florasii||0); })(),
         personalSavings: balances.personalSavings||0,
         creditCard: balances.creditCard||0,
       },
@@ -2260,7 +2289,7 @@ function statementsScreen(){
       const newImportBtn = el('button',{class:'btn-primary'},'Import another statement');
       newImportBtn.addEventListener('click',()=>{ importState='idle'; renderImportUI(); });
       const viewTxnsBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'View transactions');
-      viewTxnsBtn.addEventListener('click',()=>{ /* switch to transactions tab - set via global */ if(window._setTab) window._setTab('transactions'); });
+      viewTxnsBtn.addEventListener('click',()=>{ /* switch to transactions tab - set via global */ if(window._setTab) window._setTab('_transactions'); });
       doneCard.append(newImportBtn, viewTxnsBtn);
       importWrap.append(doneCard);
     }
@@ -3020,11 +3049,9 @@ function merchantRulesScreen(){
             el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
               rule.confirmationCount+' confirmation'+(rule.confirmationCount!==1?'s':''))
           ),
-          el('button',{style:{background:'none',color:'var(--red)',fontSize:'18px',padding:'0',flexShrink:'0'}},'×',
-            'onclick', async()=>{ await merchantRulesDB.delete(rule.id); loadRules(); })
+          el('button',{style:{background:'none',color:'var(--red)',fontSize:'18px',padding:'0',flexShrink:'0'}},'×')
         )
       );
-      // fix event
       card.querySelector('button').addEventListener('click',async()=>{ await merchantRulesDB.delete(rule.id); loadRules(); });
       rulesWrap.append(card);
     }
