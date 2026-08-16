@@ -4455,52 +4455,82 @@ function mainScreen(startTab='home'){
   const svgTxn = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>';
   const svgLife = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
   const svgAsk = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>';
-  const svgAccounts = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>';
-  const svgGoals = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>';
-  const svgAnalytics = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="18" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="2" y="13" width="4" height="8"/></svg>';
-  const svgRecur = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>';
-  const makeNavBtn = (svg, label, tab) => {
-    const btn = el('button',{class:'nav-btn'});
-    btn.innerHTML = svg + `<span>${label}</span><div class="nav-btn-dot"></div>`;
-    return btn;
-  };
+  // ── 5-tab nav structure ──
+  const svgHome2    = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 01-1 1H4a1 1 0 01-1-1V9.5z"/><path d="M9 21V12h6v9"/></svg>';
+  const svgMoney    = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20M12 15a1 1 0 100-2 1 1 0 000 2z"/></svg>';
+  const svgPlan     = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>';
+  const svgWork     = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>';
+  const svgMore     = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
+  const svgPlus2    = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 
-  const homeBtn   = makeNavBtn(svgHome,      'Home',      'home');
-  const stmtBtn   = makeNavBtn(svgImport,    'Import',    'statements');
-  const txnBtn    = makeNavBtn(svgTxn,       'Txns',      'transactions');
-  const analyticsBtn = makeNavBtn(svgAnalytics,'Analytics','analytics');
-  const recurBtn  = makeNavBtn(svgRecur,     'Recurring', 'recurring');
-  const calBtn    = makeNavBtn(svgCal,       'Calendar',  'calendar');
-  const hoursBtn  = makeNavBtn(svgClock,     'Hours',     'hours');
-  const lifeBtn   = makeNavBtn(svgLife,      'Life',      'lifestyle');
-  const trendsBtn = makeNavBtn(svgChart,     'Trends',    'trends');
-  const askBtn    = makeNavBtn(svgAsk,       'Ask',       'ask');
-  const settBtn   = makeNavBtn(svgGear,      'Settings',  'settings');
-  homeBtn.className = 'nav-btn active';
+  const homeBtn  = el('button',{class:'nav-btn active'}); homeBtn.innerHTML  = svgHome2  + '<span>Home</span>';
+  const moneyBtn = el('button',{class:'nav-btn'});         moneyBtn.innerHTML = svgMoney  + '<span>Money</span>';
+  const planBtn  = el('button',{class:'nav-btn'});         planBtn.innerHTML  = svgPlan   + '<span>Plan</span>';
+  const workBtn  = el('button',{class:'nav-btn'});         workBtn.innerHTML  = svgWork   + '<span>Work</span>';
+  const moreBtn  = el('button',{class:'nav-btn'});         moreBtn.innerHTML  = svgMore   + '<span>More</span>';
+
   const payBtn = el('button',{class:'nav-pay-wrap',style:{background:'none',border:'none',cursor:'pointer'}});
   const payCircle = el('div',{class:'nav-pay-circle'});
-  payCircle.innerHTML = svgPlus;
+  payCircle.innerHTML = svgPlus2;
   payBtn.append(payCircle, el('span',{class:'nav-pay-label'},'Payday'));
+
+  // Sub-tabs state for Money and Plan tabs
+  let moneySubTab = 'accounts'; // accounts | transactions | analytics
+  let planSubTab  = 'calendar'; // calendar | goals
+
+  function makeSubTabs(tabs, active, onSelect){
+    const bar = el('div',{style:{display:'flex',gap:'6px',padding:'0 16px 12px',maxWidth:'480px',margin:'0 auto',width:'100%',overflowX:'auto'}});
+    for(const [id,label] of tabs){
+      const btn = el('button',{style:{
+        background: id===active ? 'var(--green)' : 'var(--surface2)',
+        color: id===active ? '#000' : 'var(--text2)',
+        border: 'none', borderRadius:'100px', padding:'7px 16px',
+        fontSize:'13px', fontWeight:'600', flexShrink:'0', whiteSpace:'nowrap',
+      }},label);
+      btn.addEventListener('click',()=>onSelect(id));
+      bar.append(btn);
+    }
+    return bar;
+  }
+
+  function moreScreen(){
+    const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+    const items = [
+      {icon:'📥', label:'Import Statement',   sub:'Import bank CSV files',             tab:'_statements'},
+      {icon:'🔄', label:'Recurring',          sub:'Detected recurring payments',        tab:'_recurring'},
+      {icon:'🏪', label:'Merchant Rules',     sub:'Your category learning rules',       tab:'_merchants'},
+      {icon:'🛡️', label:'Lifestyle',          sub:'Your priorities and commitments',    tab:'_lifestyle'},
+      {icon:'💬', label:'Ask My Finances',    sub:'AI financial assistant',             tab:'_ask'},
+      {icon:'📊', label:'Trends',             sub:'Historical charts and graphs',       tab:'_trends'},
+      {icon:'⚙️', label:'Settings',           sub:'Subscriptions, profile, sign out',  tab:'_settings'},
+    ];
+    for(const item of items){
+      const row = el('div',{style:{display:'flex',alignItems:'center',gap:'14px',padding:'14px',background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'14px',marginBottom:'8px',cursor:'pointer'}});
+      row.append(
+        el('div',{style:{fontSize:'22px',width:'36px',textAlign:'center',flexShrink:'0'}},item.icon),
+        el('div',{style:{flex:'1'}},
+          el('div',{style:{fontWeight:'600',fontSize:'14px'}},item.label),
+          el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'2px'}},item.sub)
+        ),
+        el('div',{style:{color:'var(--text3)',fontSize:'18px'}},'›')
+      );
+      row.addEventListener('click',()=>setTab(item.tab));
+      content.append(row);
+    }
+    return content;
+  }
 
   function setTab(t){
     tab=t;
-    homeBtn.className='nav-btn'+(t==='home'?' active':'');
-    trendsBtn.className='nav-btn'+(t==='trends'?' active':'');
-    stmtBtn.className='nav-btn'+(t==='statements'?' active':'');
-    goalsBtn.className='nav-btn'+(t==='goals'?' active':'');
-    accountsBtn.className='nav-btn'+(t==='accounts'?' active':'');
-    txnBtn.className='nav-btn'+(t==='transactions'?' active':'');
-    analyticsBtn.className='nav-btn'+(t==='analytics'?' active':'');
-    recurBtn.className='nav-btn'+(t==='recurring'?' active':'');
-    calBtn.className='nav-btn'+(t==='calendar'?' active':'');
-    hoursBtn.className='nav-btn'+(t==='hours'?' active':'');
-    lifeBtn.className='nav-btn'+(t==='lifestyle'?' active':'');
-    askBtn.className='nav-btn'+(t==='ask'?' active':'');
-    settBtn.className='nav-btn'+(t==='settings'?' active':'');
-    body.innerHTML='';
-    const header = el('div',{class:'page-header'});
-    const userLabel = (appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'My') + '\'s Account';
+    homeBtn.className ='nav-btn'+(t==='home'?' active':'');
+    moneyBtn.className='nav-btn'+(['money','_accounts','_transactions','_analytics'].includes(t)?' active':'');
+    planBtn.className ='nav-btn'+(['plan','_calendar','_goals'].includes(t)?' active':'');
+    workBtn.className ='nav-btn'+(t==='work'?' active':'');
+    moreBtn.className ='nav-btn'+(['more','_statements','_recurring','_merchants','_lifestyle','_ask','_trends','_settings'].includes(t)?' active':'');
 
+    body.innerHTML='';
+    const userLabel = (appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'My') + '\'s Account';
+    const header = el('div',{class:'page-header'});
     const makeHeader = (title, action) => {
       header.append(el('div',{style:{flex:'1'}},
         el('div',{class:'page-eyebrow'},userLabel),
@@ -4510,66 +4540,72 @@ function mainScreen(startTab='home'){
     };
 
     if(t==='home'){
-      const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'9px 16px',borderRadius:'10px',fontWeight:'700',fontSize:'13px',letterSpacing:'.2px'}},'I got paid');
+      const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'9px 16px',borderRadius:'10px',fontWeight:'700',fontSize:'13px'}},'I got paid');
       payBtn2.addEventListener('click',()=>render(paydayFlow()));
       makeHeader('Financial Freedom', payBtn2);
       body.append(header, overviewScreen());
-    } else if(t==='trends'){
-      makeHeader('Trends'); body.append(header, trendsScreen());
-    } else if(t==='statements'){
-      makeHeader('Import Statement'); body.append(header, statementsScreen());
-    } else if(t==='transactions'){
-      makeHeader('Transactions'); body.append(header, transactionsScreen());
-    } else if(t==='goals'){
-      makeHeader('Goals'); body.append(header, goalsScreen());
-    } else if(t==='accounts'){
-      makeHeader('Accounts'); body.append(header, accountsScreen());
-    } else if(t==='analytics'){
-      makeHeader('Analytics'); body.append(header, analyticsScreen());
-    } else if(t==='recurring'){
-      makeHeader('Recurring'); body.append(header, recurringScreen());
-    } else if(t==='calendar'){
-      makeHeader('Cash Flow'); body.append(header, calendarScreen());
-    } else if(t==='hours'){
-      makeHeader('Hours & Pay'); body.append(header, hoursScreen());
-    } else if(t==='lifestyle'){
-      makeHeader('Lifestyle'); body.append(header, lifestyleScreen());
-    } else if(t==='ask'){
-      makeHeader('Ask My Finances'); body.append(header, askScreen());
-    } else {
-      makeHeader('Settings'); body.append(header, settingsScreen());
+
+    } else if(t==='money'||t==='_accounts'||t==='_transactions'||t==='_analytics'){
+      if(t!=='money') moneySubTab = t.slice(1);
+      makeHeader('Money');
+      const subBar = makeSubTabs([['accounts','Accounts'],['transactions','Transactions'],['analytics','Analytics']], moneySubTab, id=>{
+        moneySubTab=id; setTab('_'+id);
+      });
+      body.append(header, subBar);
+      if(moneySubTab==='accounts')     body.append(accountsScreen());
+      else if(moneySubTab==='transactions') body.append(transactionsScreen());
+      else body.append(analyticsScreen());
+
+    } else if(t==='plan'||t==='_calendar'||t==='_goals'){
+      if(t!=='plan') planSubTab = t.slice(1);
+      makeHeader('Plan');
+      const subBar = makeSubTabs([['calendar','Calendar'],['goals','Goals']], planSubTab, id=>{
+        planSubTab=id; setTab('_'+id);
+      });
+      body.append(header, subBar);
+      if(planSubTab==='calendar') body.append(calendarScreen());
+      else body.append(goalsScreen());
+
+    } else if(t==='work'){
+      makeHeader('Hours & Pay');
+      body.append(header, hoursScreen());
+
+    } else if(t==='more'){
+      makeHeader('More');
+      body.append(header, moreScreen());
+
+    // ── More sub-screens ──
+    } else if(t==='_statements'){ makeHeader('Import Statement'); body.append(header, statementsScreen());
+    } else if(t==='_recurring'){  makeHeader('Recurring');        body.append(header, recurringScreen());
+    } else if(t==='_merchants'){  makeHeader('Merchant Rules');   body.append(header, merchantRulesScreen());
+    } else if(t==='_lifestyle'){  makeHeader('Lifestyle');        body.append(header, lifestyleScreen());
+    } else if(t==='_ask'){        makeHeader('Ask My Finances');  body.append(header, askScreen());
+    } else if(t==='_trends'){     makeHeader('Trends');           body.append(header, trendsScreen());
+    } else if(t==='_settings'){   makeHeader('Settings');         body.append(header, settingsScreen());
     }
   }
 
   window._setTab = setTab;
 
-  // Auto-scroll active tab into view
   function scrollActiveTab(){
     const activeBtn = nav.querySelector('.nav-btn.active');
     if(activeBtn) activeBtn.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
   }
 
-  homeBtn.addEventListener('click',()=>{ setTab('home'); setTimeout(scrollActiveTab,50); });
-  trendsBtn.addEventListener('click',()=>{ setTab('trends'); setTimeout(scrollActiveTab,50); });
-  stmtBtn.addEventListener('click',()=>{ setTab('statements'); setTimeout(scrollActiveTab,50); });
-  goalsBtn.addEventListener('click',()=>{ setTab('goals'); setTimeout(scrollActiveTab,50); });
-  accountsBtn.addEventListener('click',()=>{ setTab('accounts'); setTimeout(scrollActiveTab,50); });
-  analyticsBtn.addEventListener('click',()=>{ setTab('analytics'); setTimeout(scrollActiveTab,50); });
-  recurBtn.addEventListener('click',()=>{ setTab('recurring'); setTimeout(scrollActiveTab,50); });
-  txnBtn.addEventListener('click',()=>{ setTab('transactions'); setTimeout(scrollActiveTab,50); });
-  calBtn.addEventListener('click',()=>{ setTab('calendar'); setTimeout(scrollActiveTab,50); });
-  hoursBtn.addEventListener('click',()=>{ setTab('hours'); setTimeout(scrollActiveTab,50); });
-  lifeBtn.addEventListener('click',()=>{ setTab('lifestyle'); setTimeout(scrollActiveTab,50); });
-  askBtn.addEventListener('click',()=>{ setTab('ask'); setTimeout(scrollActiveTab,50); });
-  settBtn.addEventListener('click',()=>{ setTab('settings'); setTimeout(scrollActiveTab,50); });
+  homeBtn.addEventListener('click',()=>{  setTab('home');  setTimeout(scrollActiveTab,50); });
+  moneyBtn.addEventListener('click',()=>{ setTab('money'); setTimeout(scrollActiveTab,50); });
+  planBtn.addEventListener('click',()=>{  setTab('plan');  setTimeout(scrollActiveTab,50); });
+  workBtn.addEventListener('click',()=>{  setTab('work');  setTimeout(scrollActiveTab,50); });
+  moreBtn.addEventListener('click',()=>{  setTab('more');  setTimeout(scrollActiveTab,50); });
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, stmtBtn, txnBtn, analyticsBtn, payBtn, recurBtn, calBtn, hoursBtn, lifeBtn, trendsBtn, askBtn, settBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, moneyBtn, payBtn, planBtn, workBtn, moreBtn);
   wrap.append(body, nav);
   setTab(startTab);
   setTimeout(scrollActiveTab, 100);
   render(wrap);
 }
+
 
 // ── boot ──
 auth.onAuthStateChanged(async user => {
