@@ -5159,7 +5159,8 @@ function accountsScreen(){
       const balanceInp = el('input',{inputmode:'decimal',value:a.balance.toFixed(2),style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',background:'none',border:'none',color:a.type==='credit_card'?'var(--red)':'var(--green)',padding:'0',width:'120px',textAlign:'right',outline:'none'}});
       balanceInp.addEventListener('change',async()=>{
         const val = parseFloat(balanceInp.value)||0;
-        accounts = accounts.map(x=>x.id===a.id?{...x,balance:val,updatedAt:new Date().toISOString()}:x);
+        const stamp = new Date().toISOString();
+        accounts = accounts.map(x=>x.id===a.id?{...x,balance:val,balanceAsOf:stamp,updatedAt:stamp}:x);
         appData.accounts=accounts;
         await save({...appData,accounts});
         renderAccounts();
@@ -5178,6 +5179,51 @@ function accountsScreen(){
           balanceInp
         )
       );
+      // How current is this figure, and can it self-update?
+      const stampStr = a.balanceAsOf || a.updatedAt;
+      const stampDate = stampStr ? new Date(stampStr) : null;
+      const daysOld = stampDate && !isNaN(stampDate)
+        ? Math.floor((Date.now()-stampDate)/86400000) : null;
+      const isCard = inferRole(a)==='card';
+      const freshness = el('div',{style:{fontSize:'11px',marginTop:'6px',
+        color: daysOld!=null && daysOld>14 ? 'var(--amber)' : 'var(--text3)'}},
+        isCard
+          ? 'Syncs from your latest imported card statement'
+          : (daysOld==null ? 'Enter your balance from the Barclays app'
+             : daysOld===0 ? 'Updated today'
+             : 'Last updated '+daysOld+' day'+(daysOld===1?'':'s')+' ago — statements do not carry a balance, so this one is yours to keep current'));
+      card.append(freshness);
+
+      if(isCard){
+        const syncBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',
+          border:'1px solid var(--border)',borderRadius:'10px',padding:'7px 12px',
+          fontSize:'12px',fontWeight:'600',marginTop:'8px'}},'Update from latest statement');
+        syncBtn.addEventListener('click',async()=>{
+          syncBtn.textContent='Checking…'; syncBtn.disabled=true;
+          try{
+            const snap=await db.ref('users/'+currentUser.uid+'/statements').once('value');
+            const cardStmts=Object.values(snap.val()||{})
+              .filter(s=>s.statementKind==='credit_card' && s.statementBalance!=null)
+              .sort((a2,b2)=>(b2.periodEnd||'').localeCompare(a2.periodEnd||''));
+            if(!cardStmts.length){ syncBtn.textContent='No card statements imported'; return; }
+            const latest=cardStmts[0];
+            const stamp=new Date().toISOString();
+            accounts=accounts.map(x=>x.id===a.id
+              ? {...x,balance:latest.statementBalance,
+                 creditLimit:latest.creditLimit!=null?latest.creditLimit:x.creditLimit,
+                 balanceAsOf:latest.periodEnd||stamp,updatedAt:stamp}:x);
+            appData.accounts=accounts;
+            await save({...appData,accounts,balances:{...appData.balances,creditCard:latest.statementBalance}});
+            renderAccounts();
+          }catch(err){
+            syncBtn.textContent='Could not sync'; syncBtn.disabled=false;
+          }
+        });
+        card.append(syncBtn);
+        card.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'6px',lineHeight:'1.5'}},
+          'Your statement balance is only correct up to the statement date. Anything you have spent since will not show until the next statement — check the Barclaycard app for the live figure.'));
+      }
+
       // What is this account FOR? Drives the pots view on Home.
       const ROLES=[['spending','💷 Day-to-day spending'],['card_pot','🏦 Money to clear the card'],
                    ['goals','🌸 Savings goals'],['card','💳 Credit card debt']];
@@ -5267,7 +5313,14 @@ function accountsScreen(){
     content.append(migrCard);
   }
 
-  content.append(listWrap, el('div',{class:'section-hdr'},'Add Account'), formCard);
+  // Explain plainly which balances maintain themselves and which do not
+  const explain = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid var(--border)'}});
+  explain.append(
+    el('div',{style:{fontSize:'13px',fontWeight:'600',marginBottom:'6px'}},'Why some balances need updating by hand'),
+    el('div',{style:{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+      'Bank CSV exports list movements only — there is no balance in the file — so your current and savings balances are yours to keep current. Credit card PDFs do print a balance, so the card updates itself from your latest statement.')
+  );
+  content.append(explain, listWrap, el('div',{class:'section-hdr'},'Add Account'), formCard);
   return content;
 }
 
