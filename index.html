@@ -2111,9 +2111,17 @@ const CATEGORY_RULES = [
 ];
 
 function suggestCategory(merchant, financialType){
+  // What the money IS takes precedence over which merchant it involved
   if(financialType === 'INCOME') return ['Income', 'Employment'];
   if(financialType.includes('TRANSFER') || financialType === 'SAVINGS_TRANSFER') return ['Transfer', null];
   if(financialType === 'REFUND') return ['Refund', null];
+  // Then the detailed merchant rules
+  if(typeof AUTO_RULES!=='undefined'){
+    const hay = String(merchant||'').toUpperCase();
+    for(const [pat, category] of AUTO_RULES){
+      if(pat.test(hay)) return [category, null];
+    }
+  }
   for(const [m, cat, sub] of CATEGORY_RULES){
     if(merchant === m) return [cat, sub];
   }
@@ -3784,6 +3792,103 @@ function recurringScreen(){
 // PHASE J — MERCHANT LEARNING SCREEN
 // ═══════════════════════════════════════════════════════════════
 
+// ── Auto-categorisation rules, built from real statement merchants ──
+// Ordered: the first pattern that matches wins, so put specific before general.
+const AUTO_RULES = [
+  // Transfers between your own accounts — never spending or income
+  [/REVOLUT|^WISE\b|TRADING 212|TRADING TWOONETWO/i,            'Transfer',            'TRANSFER_OUT'],
+  [/B\/CARD FORWARD|BARCLAYCARD/i,                              'Transfer',            'TRANSFER_OUT'],
+  [/MR LAWRENCE LECHUG|SIU WOO LAWRENCE|LAWRENCE LECHUGA/i,     'Transfer',            'TRANSFER_OUT'],
+  [/\b201139\s*\d{8}\b|\b2011 ?39 ?\d{8}\b/i,                   'Transfer',            null],
+
+  // Rent and housing
+  [/FRESH PROPERTY|FPG (TY NANT|THE OLDWAY)|FPG /i,             'Bills',               'EXPENSE'],
+  [/VEYGO|INSURANCE/i,                                          'Bills',               'EXPENSE'],
+  [/BCP ?COUNCIL(?! CAR)/i,                                     'Bills',               'EXPENSE'],
+
+  // Subscriptions
+  [/APPLE\.COM|APPLE STORE|ITUNES/i,                            'Subscriptions',       'EXPENSE'],
+  [/ANTHROPIC|OPENAI|CLAUDE/i,                                  'Subscriptions',       'EXPENSE'],
+  [/DISCORD|NITRO/i,                                            'Subscriptions',       'EXPENSE'],
+  [/EMMA APP|UBER ?\*?ONE|PRIMEV|AD FREE FOR PRIME/i,           'Subscriptions',       'EXPENSE'],
+  [/SPOTIFY|NETFLIX|CRUNCHYROLL|YOUTUBE|RUNNA|ICLOUD|ALOHA/i,   'Subscriptions',       'EXPENSE'],
+  [/^GOOGLE|GOOGLE ?\*/i,                                       'Subscriptions',       'EXPENSE'],
+
+  // Health and fitness
+  [/BH ?LIVE|NYX\*BHLIVE|PURE ?GYM|THE GYM/i,                   'Health',              'EXPENSE'],
+  [/BOOTS|SUPERDRUG|PHARMACY|CHEMIST/i,                         'Health',              'EXPENSE'],
+
+  // Transport
+  [/BERYL/i,                                                    'Transport',           'EXPENSE'],
+  [/GO SOUTH COAST|STAGECOACH|FIRST BUS|ARRIVA|NATIONAL EXPRESS/i,'Transport',         'EXPENSE'],
+  [/\bTFL\b|LUL TICKET|OYSTER/i,                                'Transport',           'EXPENSE'],
+  [/TRAINLINE|NATIONAL RAIL|SOUTH WESTERN|GREAT WESTERN|AVANTI|CROSS COUNTRY/i,'Transport','EXPENSE'],
+  [/UBER ?\*?(TRIP|PENDING|HELP)|^UBER\b|BOLT\b/i,              'Transport',           'EXPENSE'],
+  [/RINGGO|JUSTPARK|CAR ?PARK|PARKING|BCPCOUNCIL CAR/i,         'Transport',           'EXPENSE'],
+  [/CIRCUIT ?GO|CIRCUIT UK/i,                                   'Transport',           'EXPENSE'],
+  [/SHELL |ESSO|BP |TEXACO|CHERWELL/i,                          'Transport',           'EXPENSE'],
+
+  // Groceries and convenience shops
+  [/TESCO|SAINSBURY|ASDA|LIDL|ALDI|MORRISON|CO.?OP|WAITROSE|ICELAND|MARKS ?& ?SPENCER/i,'Groceries','EXPENSE'],
+  [/SEAFRONT MINI|CHARMINSTER SUPERM|DRACULA MINI|SPRINGBOURNE|CK FOODSTORE/i,'Groceries','EXPENSE'],
+  [/SA1 GROCERY|MARINA STORES|MEDINA FOOD|MEDITERRANEAN FOOD|ONE STOP|CORNER SHOP/i,'Groceries','EXPENSE'],
+  [/BOOZE ?(&|AND) ?NEWS|PPOINT_\*BOOZE|WESTOVER EXPRESS|SUSU TRADING/i,'Groceries','EXPENSE'],
+  [/JAPAN CENTRE|SEOUL PLAZA|ORIENTAL EXPRESS/i,                'Groceries',           'EXPENSE'],
+
+  // Eating out
+  [/GREGGS|COSTA|STARBUCKS|RITAZZA|CAFFE|PRET/i,                'Eating out',          'EXPENSE'],
+  [/MCDONALD|KFC|SUBWAY|BURGER KING|DOMINO|NANDO|PIZZA|FIVE GUYS/i,'Eating out',       'EXPENSE'],
+  [/UBER ?\*?EATS|DELIVEROO|JUST ?EAT/i,                        'Eating out',          'EXPENSE'],
+  [/DOSILAK|MAZZA TREATZ|ICHIBAN|KASPAS|WOK WAY|THAI TASTE|ASAGA|TSUJIRI/i,'Eating out','EXPENSE'],
+  [/JOES ICE|AMYS ICE|PICNIC|CHARTWELLS|BIG DADDY|STUDT|SUMUP ?\*|ZETTLE_?\*/i,'Eating out','EXPENSE'],
+  [/TWOVEND|OAKA ?VENDING|NYA\*|VENDING/i,                      'Eating out',          'EXPENSE'],
+
+  // Bars and nights out
+  [/WETHERSPOON|J ?D ?WETHERSPOON/i,                            'Bars & Nights out',   'EXPENSE'],
+  [/COYOTE UGLY|WIND STREET|HIPPOS|JACK MURPHYS|LOUNGERS|MAB RETAIL/i,'Bars & Nights out','EXPENSE'],
+  [/FATSOMA|FIXR|MUSIC GLUE|BOURNEMOUTH ?-/i,                   'Bars & Nights out',   'EXPENSE'],
+
+  // Entertainment
+  [/STEAM ?(GAMES|PURCHASE)|STEAMGAMES|UBISOFT|RIOT ?\*|CDKEYS|PLAYSTATION|XBOX|NINTENDO/i,'Entertainment','EXPENSE'],
+  [/TENPIN|DELTA FORCE|SEGA AMUSEMENT|ESCAPE|GRAVITY|SQ ?\*ESCAPE/i,'Entertainment',   'EXPENSE'],
+  [/NATIONAL TRUST|CANONTEIGN|CINEMA|VUE |ODEON|CINEWORLD/i,     'Entertainment',      'EXPENSE'],
+
+  // Shopping
+  [/AMAZON|AMZN/i,                                              'Shopping',            'EXPENSE'],
+  [/SPORTS ?DIRECT|FGTL TA SPORTS|PRIMARK|NEXT RETAIL|H ?& ?M|ZARA|ASOS/i,'Shopping',  'EXPENSE'],
+  [/HMV|WATERSTONES|MUJI|FLYING ?TIGER|IKEA|B&M|WH ?SMITH|DECATHLON/i,'Shopping',      'EXPENSE'],
+  [/URBAN SPACEMAN|FULTON OUTFITTERS|GOWER ENTERPRISES|KLARNA/i,'Shopping',            'EXPENSE'],
+
+  // Cash
+  [/NOTEMACHINE|CARDTRONICS|LINK ?POST OFFICE|CASH ?WITHDRAWAL/i,'Other',              'EXPENSE'],
+
+  // Remaining merchants seen in your own statements
+  [/WAGAMAMA/i,                                                 'Income',              'INCOME'],
+  [/MARY MALLETE|MALLETE NACIO|RAYMARK DOMINGO|AKSHAY BOBY|ANDRE MIGUEL/i,'Transfer',   null],
+  [/AA\/BSM|DRIVING SCH|BSM /i,                                 'Education',           'EXPENSE'],
+  [/NOVELMATES|HONG KONG|AGODA|CATHAY|BOOKING\.COM|AIRBNB|EASYJET|RYANAIR/i,'Travel',   'EXPENSE'],
+  [/UBR ?\*/i,                                                  'Transport',           'EXPENSE'],
+  [/DISPUTE SERVIC|TDSEW|DEPOSIT SCHEME/i,                      'Bills',               'EXPENSE'],
+  [/ENSBURY FOOD|FOOD ?& ?WIN|GROCERY|SUPERMARKET|MINI ?MARKET/i,'Groceries',           'EXPENSE'],
+  [/CHRISTMAS|XMAS MARKET|BOURNEMOUTHCHR/i,                     'Entertainment',       'EXPENSE'],
+  [/AIRWALLET|LAUNDR/i,                                         'Bills',               'EXPENSE'],
+  [/SNOOP VAPE|VAPE/i,                                          'Other',               'EXPENSE'],
+  [/STORYTELLER|TENPIN|BOWLING/i,                               'Entertainment',       'EXPENSE'],
+];
+
+function autoCategorise(txn){
+  // Never reclassify income as spending on the strength of a merchant match
+  if(txn.financialType === 'INCOME') return {category:'Income', financialType:'INCOME'};
+  if(txn.financialType === 'REFUND') return {category:'Refund', financialType:'REFUND'};
+  const hay = ((txn.normalisedMerchant||'')+' '+(txn.rawDescription||'')+' '+(txn.rawMemo||'')).toUpperCase();
+  for(const [pat, category, ftype] of AUTO_RULES){
+    if(pat.test(hay)){
+      return {category, financialType: ftype || txn.financialType};
+    }
+  }
+  return null;
+}
+
 // ── Bulk categorisation ──
 // Categorise a merchant once and apply it to every matching transaction,
 // past and future. Turns hundreds of individual edits into a handful.
@@ -3852,6 +3957,11 @@ function bulkCategoriseScreen(){
     const remaining = groups.reduce((s,g)=>s+g.txns.length,0);
 
     const head = el('div',{class:'card',style:{marginBottom:'12px'}});
+
+    // How many can be sorted without any input from you?
+    let autoable = 0;
+    for(const g of groups) if(autoCategorise(g.txns[0])) autoable += g.txns.length;
+
     if(remaining===0){
       head.append(
         el('div',{style:{fontSize:'28px',textAlign:'center',marginBottom:'8px'}},'✅'),
@@ -3870,6 +3980,53 @@ function bulkCategoriseScreen(){
         (doneCount?' '+doneCount+' done so far.':''))
     );
     wrap.append(head);
+
+    // One tap handles every merchant the app already recognises
+    if(autoable>0){
+      const autoCard = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid var(--green)'}});
+      autoCard.append(
+        el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'4px'}},'Sort '+autoable+' automatically'),
+        el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'10px',lineHeight:'1.6'}},
+          'Beryl, buses, Tesco, Apple, Uber and the other merchants the app recognises can be filed without your input. You can change any of them afterwards.')
+      );
+      const autoBtn = el('button',{class:'btn-primary'},'Auto-sort '+autoable+' transactions');
+      const autoStatus = el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'8px',minHeight:'14px'}});
+      autoBtn.addEventListener('click',async()=>{
+        autoBtn.disabled=true;
+        let done=0;
+        try{
+          for(const g of [...groups]){
+            const guess = autoCategorise(g.txns[0]);
+            if(!guess) continue;
+            autoStatus.textContent='Filing '+g.merchant+'…';
+            const now=new Date().toISOString();
+            const updates={};
+            for(const t of g.txns){
+              updates['users/'+currentUser.uid+'/transactions/'+t.transactionId]={
+                ...t, userCategory:guess.category, category:guess.category,
+                financialType:guess.financialType||t.financialType,
+                userConfirmed:true, updatedAt:now,
+              };
+            }
+            const keys=Object.keys(updates);
+            for(let i=0;i<keys.length;i+=100){
+              const slice={}; for(const k of keys.slice(i,i+100)) slice[k]=updates[k];
+              await db.ref().update(slice);
+            }
+            done+=g.txns.length;
+            groups=groups.filter(x=>x.merchant!==g.merchant);
+          }
+          doneCount+=done;
+          render();
+        }catch(err){
+          autoStatus.textContent='Stopped after '+done+' — '+(err.message||'try again');
+          autoStatus.style.color='var(--red)';
+          autoBtn.disabled=false;
+        }
+      });
+      autoCard.append(autoBtn, autoStatus);
+      wrap.append(autoCard);
+    }
 
     for(const g of groups.slice(0,25)){
       const card = el('div',{class:'card',style:{marginBottom:'8px'}});
