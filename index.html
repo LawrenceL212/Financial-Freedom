@@ -226,6 +226,42 @@ function getNetWorth(){
   }
   return getAccounts().reduce((s,a)=>a.type==='credit_card'?s-a.balance:s+a.balance,0);
 }
+// ── Pot model: every account has a JOB ──
+// spending  → day-to-day money
+// card_pot  → money set aside to clear the credit card
+// goals     → money for savings goals
+// card      → the credit card debt itself
+function inferRole(a){
+  if(a.role) return a.role;
+  if(a.type==='current') return 'spending';
+  if(a.type==='credit_card') return 'card';
+  if(a.type==='savings'){
+    if(a.legacyKey==='florasii' || /flora|saver|goal|holiday/i.test(a.name||'')) return 'goals';
+    return 'card_pot';
+  }
+  if(a.type==='cash') return 'spending';
+  return 'other';
+}
+
+function getPots(){
+  const accs = appData.accounts||[];
+  const b = appData.balances||{};
+  const mk = (label,accounts,fallback)=>({
+    label,
+    accounts,
+    balance: accounts.length ? accounts.reduce((s,a)=>s+(a.balance||0),0) : fallback,
+    names: accounts.length ? accounts.map(a=>a.name).join(' + ') : label,
+    exists: accounts.length>0,
+  });
+  const of = r => accs.filter(a=>inferRole(a)===r);
+  return {
+    spending: mk('Spending',  of('spending'),  b.current||0),
+    cardPot:  mk('Card pot',  of('card_pot'),  b.personalSavings||0),
+    goals:    mk('Goals',     of('goals'),     b.florasii||0),
+    card:     mk('Card owed', of('card'),      b.creditCard||0),
+  };
+}
+
 async function saveAccountBalance(accountId, newBalance){
   const accounts = getAccounts().map(a=>a.id===accountId?{...a,balance:newBalance,updatedAt:new Date().toISOString()}:a);
   appData.accounts=accounts;
@@ -433,25 +469,25 @@ function paydayFlow(){
       // 1. CC
       if(alloc.ccReserve > 0){
         content.append(mkRow('💳','Credit card (full balance)', alloc.ccReserve,'var(--red)',
-          'Move to savings pot — covers DDR on due date'));
+          'Move to '+(getPots().cardPot.exists?getPots().cardPot.names:'your card pot')+' — clears the card, no interest'));
       }
 
       // 2. Goals
       for(const g of alloc.goalAllocations){
         if(g.required > 0){
           content.append(mkRow('🌸', g.name, g.required, '#64B5F6',
-            g.payPeriodsLeft+' paychecks left · '+fmt(g.remaining)+' to go'));
+            'Move to '+(getPots().goals.exists?getPots().goals.names:'your goals pot')+' · '+g.payPeriodsLeft+' paychecks left'));
         }
       }
 
       // 3. Subscriptions buffer
-      content.append(mkRow('📋','Subscription buffer', alloc.subBuffer,'var(--amber)',
-        'Covers your fortnightly sub costs'));
+      content.append(mkRow('📋','Subscriptions', alloc.subBuffer,'var(--amber)',
+        'Leave in '+(getPots().spending.exists?getPots().spending.names:'your current account')+' — do not spend this'));
 
       // 4. Spending
       if(alloc.actualSpending > 0){
-        content.append(mkRow('💸','Daily spending (Revolut)', alloc.actualSpending,'var(--green)',
-          'Based on your £96/week average · '+Math.round(alloc.actualSpending/2)+'/week'));
+        content.append(mkRow('💸','Yours to spend', alloc.actualSpending,'var(--green)',
+          'Stays in '+(getPots().spending.exists?getPots().spending.names:'your current account')+' · about £'+Math.round(alloc.actualSpending/2)+'/week'));
       }
 
       // Shortfall warning
@@ -632,6 +668,24 @@ function overviewScreen(){
     const txnVal = snap.val() || {};
     const txns = Object.values(txnVal);
 
+    // Latest credit-card statement tells us what is actually due, and when
+    const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+    const cardStmts = Object.values(stmtSnap.val()||{})
+      .filter(s=>s.statementKind==='credit_card')
+      .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+    const latestStmt = cardStmts[0]||null;
+    const pots = getPots();
+
+    // Card commitment — needed by goals, safe-to-spend and the pots view
+    const cardOwed = pots.card.balance;
+    const dueAmount = latestStmt && latestStmt.statementBalance!=null ? latestStmt.statementBalance : cardOwed;
+    const dueDateStr = latestStmt && latestStmt.paymentDue ? latestStmt.paymentDue : null;
+    // dueGap = missing for the NEXT payment; uncoveredCard = total debt not backed by the pot
+    const dueGap = Math.max(0, dueAmount - pots.cardPot.balance);
+    const uncoveredCard = Math.max(0, cardOwed - pots.cardPot.balance);
+    // What is genuinely available for goals once card debt is honoured
+    const trueGoals = Math.max(0, pots.goals.balance - uncoveredCard);
+
     const now = new Date();
     const thisMonthStr = now.toISOString().slice(0,7);
     const lastMonthDate = new Date(now); lastMonthDate.setMonth(lastMonthDate.getMonth()-1);
@@ -710,30 +764,42 @@ function overviewScreen(){
     // User-specific goals from Firebase (not hardcoded)
     const GOALS = (appData.goals || []).filter(g=>g.active!==false&&g.target&&g.deadline);
     // Get savings total from user accounts (savings type) or fall back to legacy florasii
-    const savingsAccounts = (appData.accounts||[]).filter(a=>a.type==='savings');
-    const florasiiNow = savingsAccounts.length 
-      ? savingsAccounts.reduce((s,a)=>s+a.balance,0)
-      : (balances.florasii||0);
+    // Only the goals pot counts toward goals — and only what is not propping up the card
+    const florasiiNow = trueGoals;
     const now2 = new Date();
 
+    // Goals fill in deadline order — the soonest deadline is funded first,
+    // rather than splitting the pot proportionally across goals you need later.
     let totalRequiredPerPaycheck = 0;
-    const goalDetails = GOALS.map(g=>{
+    const sortedGoals = [...GOALS].sort((a,b)=>String(a.deadline).localeCompare(String(b.deadline)));
+    let poolLeft = florasiiNow;
+    const goalDetails = sortedGoals.map(g=>{
       const deadline = new Date(g.deadline);
-      const daysLeft = Math.max(1, Math.ceil((deadline-now2)/86400000));
-      const payPeriodsLeft = Math.max(1, Math.floor(daysLeft/14));
-      const share = g.target / Math.max(GOALS.reduce((s,x)=>s+x.target,0),1);
-      const myShare = florasiiNow * share;
+      const msLeft = deadline - now2;
+      const daysLeft = Math.ceil(msLeft/86400000);
+      const overdue = daysLeft < 0;
+
+      // Waterfall: this goal takes what it needs from the pot before later goals
+      const myShare = Math.min(poolLeft, g.target);
+      poolLeft = Math.max(0, poolLeft - myShare);
       const remaining = Math.max(0, g.target - myShare);
-      const requiredPerPeriod = remaining / payPeriodsLeft;
-      totalRequiredPerPaycheck += requiredPerPeriod;
-      const pctDone = Math.min(100, Math.round(myShare/g.target*100));
-      const onTrack = avgFlorasiiPerPay * share >= requiredPerPeriod * 0.9;
-      return {...g, remaining, requiredPerPeriod, payPeriodsLeft, pctDone, myShare, onTrack, daysLeft, color:g.color||'var(--green)'};
+      const met = remaining <= 0;
+
+      // Only future deadlines generate a per-paycheck requirement
+      const payPeriodsLeft = overdue ? 0 : Math.max(1, Math.floor(daysLeft/14));
+      const requiredPerPeriod = (overdue || met) ? 0 : remaining/payPeriodsLeft;
+      if(!overdue && !met) totalRequiredPerPaycheck += requiredPerPeriod;
+
+      const pctDone = g.target>0 ? Math.min(100, Math.round(myShare/g.target*100)) : 0;
+      const onTrack = met ? true : (overdue ? false : avgFlorasiiPerPay >= requiredPerPeriod*0.9);
+
+      return {...g, remaining, requiredPerPeriod, payPeriodsLeft, pctDone, myShare,
+              onTrack, daysLeft, overdue, met, color:g.color||'var(--green)'};
     });
 
     // Safe to spend using goal-required savings (not just historical avg)
     const safeToSpend = Math.max(0,
-      (balances.current||0) + predictedPay - totalCommitted - totalRequiredPerPaycheck
+      pots.spending.balance + predictedPay - totalCommitted - totalRequiredPerPaycheck
     );
 
     // Money leaks — top spending categories this month
@@ -760,8 +826,19 @@ function overviewScreen(){
       const hiddenTotal = hiddenSubs.reduce((s,p)=>s+(p.frequency==='Weekly'?p.typicalAmount*4.33:p.frequency==='Fortnightly'?p.typicalAmount*2:p.typicalAmount),0);
       reasons.push({severity:'warning', msg:hiddenSubs.length+' possible unknown subscription'+(hiddenSubs.length>1?'s':'')+' detected — ~'+fmt(hiddenTotal)+'/mo you might not know about.'});
     }
-    if(balances.current<0) reasons.push({severity:'critical',msg:'Your current account is overdrawn by '+fmt(Math.abs(balances.current||0))+'.'});
-    if(balances.creditCard>200) reasons.push({severity:'warning',msg:'£'+Math.round(balances.creditCard)+' on your credit card needs clearing.'});
+    if(pots.spending.balance<0) reasons.push({severity:'critical',msg:'Your spending account is overdrawn by '+fmt(Math.abs(pots.spending.balance))+'.'});
+
+    // The card is the lever: every pound on it is a pound not going to your goals
+    if(dueGap>0){
+      reasons.push({severity:'critical',
+        msg:'Your card pot is '+fmt(dueGap)+' short of the '+fmt(dueAmount)+' due'+(dueDateStr?' on '+dueDateStr:'')+
+            '. Paying less than the full amount starts interest on everything.'});
+    }
+    if(uncoveredCard>0){
+      reasons.push({severity:'warning',
+        msg:fmt(uncoveredCard)+' of card debt is being propped up by your goals pot — so '+fmt(pots.goals.balance)+
+            ' is really '+fmt(trueGoals)+'.'});
+    }
     if(subTotal>predictedPay*0.2) reasons.push({severity:'warning',msg:'Subscriptions cost £'+subTotal.toFixed(0)+'/mo — '+Math.round(subTotal/Math.max(predictedPay,1)*100)+'% of your typical paycheck.'});
     if(thisMonthSpend>thisMonthIncome&&thisMonthIncome>0) reasons.push({severity:'warning',msg:'Spent more than earned this month.'});
     if(spendChange>20&&lastMonthSpend>0) reasons.push({severity:'info',msg:'Spending is up '+Math.round(spendChange)+'% vs last month.'});
@@ -769,26 +846,85 @@ function overviewScreen(){
 
     intelligenceWrap.innerHTML='';
 
-    // ── HEADER: Net position ──
+    // ── YOUR POTS ──
+    // Each account has a job. Show whether each one can actually do its job.
     const netPos = getNetWorth();
-    const posCard = el('div',{style:{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'16px',padding:'20px',marginBottom:'12px'}});
-    posCard.append(
-      el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',marginBottom:'4px'}},'Net worth'),
-      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'36px',fontWeight:'700',color:netPos>=0?'var(--green)':'var(--red)',lineHeight:'1'}},fmt(netPos)),
-      el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'6px',display:'flex',gap:'12px',flexWrap:'wrap'}},
-        ...((appData.accounts||[]).length ? (appData.accounts||[]).map(a=>
-          el('span',{style:{color:a.type==='credit_card'?'var(--red)':a.type==='savings'?'var(--green)':'var(--text)'}},
-            a.name+': '+(a.type==='credit_card'?'-':'')+fmt(a.balance))
-        ) : [
-          el('span',{},'Current: '+fmt(balances.current||0)),
-          ...((appData.accounts||[]).length ? [] : [
-          el('span',{style:{color:'var(--green)'}},'Florasii: '+fmt(balances.florasii||0))
-        ]),
-          balances.creditCard>0?el('span',{style:{color:'var(--red)'}},'CC: -'+fmt(balances.creditCard)):el('span')
-        ])
-      )
+    const dueDate = dueDateStr ? new Date(dueDateStr) : null;
+    const daysToDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate-now)/86400000) : null;
+    const cardGap = dueGap;
+    const weeksOfSpending = pots.spending.balance/96;
+
+    const potsCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    potsCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'4px'}},
+        el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',fontWeight:'700'}},'Net worth'),
+        el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'Your pots')
+      ),
+      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',
+        color:netPos>=0?'var(--green)':'var(--red)',lineHeight:'1',marginBottom:'16px'}},fmt(netPos))
     );
-    intelligenceWrap.append(posCard);
+
+    const potRow = (icon,title,job,amount,amountColor,statusText,statusColor,barPct,barColor)=>{
+      const row = el('div',{style:{padding:'12px 0',borderBottom:'1px solid var(--border)',cursor:'pointer'}});
+      row.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'3px'}},
+          el('div',{style:{display:'flex',gap:'8px',alignItems:'baseline',minWidth:'0'}},
+            el('span',{style:{flexShrink:'0'}},icon),
+            el('div',{style:{minWidth:'0'}},
+              el('div',{style:{fontSize:'13px',fontWeight:'600',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},title),
+              el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},job)
+            )
+          ),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'15px',color:amountColor,flexShrink:'0'}},amount)
+        )
+      );
+      if(barPct!=null){
+        row.append(el('div',{class:'prog-wrap',style:{margin:'6px 0 4px'}},
+          el('div',{class:'prog-fill',style:{width:Math.min(100,Math.max(0,barPct))+'%',background:barColor}})));
+      }
+      if(statusText) row.append(el('div',{style:{fontSize:'11px',color:statusColor,marginTop:'2px'}},statusText));
+      row.addEventListener('click',()=>{ if(window._setTab) window._setTab('_accounts'); });
+      return row;
+    };
+
+    // 1. The card — the thing that frees everything else up
+    if(cardOwed>0 || dueAmount>0){
+      const covered = dueAmount>0 ? (pots.cardPot.balance/dueAmount*100) : 100;
+      const dueLine = dueDateStr
+        ? (cardGap>0
+            ? fmt(cardGap)+' short of the '+fmt(dueAmount)+' due '+dueDateStr+(daysToDue!=null&&daysToDue>=0?' · '+daysToDue+' days':'')
+            : '✓ Covered — '+fmt(dueAmount)+' due '+dueDateStr)
+        : (cardGap>0 ? fmt(cardGap)+' not yet set aside' : '✓ Covered by your card pot');
+      potsCard.append(potRow('💳','Card to clear','Keep this low — it frees up everything else',
+        fmt(cardOwed),'var(--red)', dueLine, cardGap>0?'var(--amber)':'var(--green)',
+        covered, cardGap>0?'var(--amber)':'var(--green)'));
+    }
+
+    // 2. Card pot — money whose only job is clearing the card
+    potsCard.append(potRow('🏦', pots.cardPot.exists?pots.cardPot.names:'Card pot',
+      'Set aside to clear the card',
+      fmt(pots.cardPot.balance), pots.cardPot.balance>0?'var(--text)':'var(--text3)',
+      cardGap>0 ? 'Needs '+fmt(cardGap)+' more to cover the next payment' : 'Fully funded',
+      cardGap>0?'var(--amber)':'var(--green)', null, null));
+
+    // 3. Spending — day to day
+    potsCard.append(potRow('💷', pots.spending.exists?pots.spending.names:'Spending',
+      'Day-to-day money',
+      fmt(pots.spending.balance), pots.spending.balance<0?'var(--red)':'var(--text)',
+      weeksOfSpending>=1 ? '≈'+weeksOfSpending.toFixed(1)+' weeks at your usual £96/week'
+                         : 'Under a week at your usual £96/week',
+      weeksOfSpending>=1?'var(--text3)':'var(--amber)', null, null));
+
+    // 4. Goals — with the honest number after the card is accounted for
+    const goalsRow = potRow('🌸', pots.goals.exists?pots.goals.names:'Goals',
+      'Flora and your savings goals',
+      fmt(pots.goals.balance),'var(--green)',
+      uncoveredCard>0 ? 'Really '+fmt(trueGoals)+' once the '+fmt(uncoveredCard)+' card debt is covered' : 'All of this is yours',
+      uncoveredCard>0?'var(--amber)':'var(--green)', null, null);
+    goalsRow.style.borderBottom='none';
+    potsCard.append(goalsRow);
+
+    intelligenceWrap.append(potsCard);
 
     // ── WHY AM I BROKE? ──
     if(reasons.length){
@@ -859,13 +995,30 @@ function overviewScreen(){
         ):el('span')
       ),
       el('div',{style:{fontSize:'11px',color:'var(--text3)',lineHeight:'1.6'}},
-        'Current £'+Math.round(balances.current||0)+
+        'Spending pot £'+Math.round(pots.spending.balance)+
         (predictedPay>0?' + next pay £'+Math.round(predictedPay):'') +
         ' − subs £'+Math.round(subTotal)+
         (upcomingOut>0?' − committed £'+Math.round(upcomingOut):'')+
         ' − goal savings £'+Math.round(totalRequiredPerPaycheck)
       )
     );
+
+    // If the goals simply cannot be met at this income, say so plainly
+    // rather than silently showing £0 and leaving you to guess why.
+    if(predictedPay>0 && totalRequiredPerPaycheck > predictedPay){
+      const gapPerPay = totalRequiredPerPaycheck - predictedPay;
+      const soonest = goalDetails.filter(g=>!g.met&&!g.overdue)
+        .sort((a,b)=>a.daysLeft-b.daysLeft)[0];
+      safeCard.append(el('div',{style:{background:'var(--red-dim)',border:'1px solid var(--red)',
+        borderRadius:'12px',padding:'12px',marginTop:'12px',fontSize:'12px',lineHeight:'1.6',color:'var(--text2)'}},
+        el('div',{style:{fontWeight:'700',color:'var(--red)',marginBottom:'4px'}},'These goals need more than you earn'),
+        el('span',{},'Hitting every deadline needs '+fmt(totalRequiredPerPaycheck)+' a paycheck, but you take home about '+
+          fmt(predictedPay)+' — a gap of '+fmt(gapPerPay)+'.'+
+          (soonest?' '+soonest.name+' alone needs '+fmt(soonest.requiredPerPeriod)+' over '+soonest.payPeriodsLeft+' paychecks.':'')+
+          ' Either move the deadline, lower the target, or earn more — the app cannot make this one work.')
+      ));
+    }
+
     intelligenceWrap.append(safeCard);
 
     // ── UPCOMING COMMITMENTS ──
@@ -883,16 +1036,16 @@ function overviewScreen(){
         el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(upcomingOut))
       )
     );
-    if(balances.creditCard>0) commitCard.append(
+    if(cardOwed>0) commitCard.append(
       el('div',{class:'balance-row'},
         el('div',{class:'balance-label'},'Credit card owed'),
-        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(balances.creditCard))
+        el('div',{class:'balance-value',style:{color:'var(--red)'}},fmt(cardOwed))
       )
     );
     commitCard.append(
       el('div',{class:'balance-row',style:{borderTop:'1px solid var(--border)',paddingTop:'10px',marginTop:'4px',border:'none'}},
         el('div',{class:'balance-label',style:{fontWeight:'700'}},'Total committed'),
-        el('div',{class:'balance-value',style:{color:'var(--red)',fontWeight:'700'}},fmt(totalCommitted+(balances.creditCard||0)))
+        el('div',{class:'balance-value',style:{color:'var(--red)',fontWeight:'700'}},fmt(totalCommitted+cardOwed))
       )
     );
     intelligenceWrap.append(commitCard);
@@ -916,8 +1069,8 @@ function overviewScreen(){
       florasiiCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('_goals'); });
     } else {
       for(const g of goalDetails){
-        const STATUS = g.onTrack ? '✓ On track' : '⚠ Behind';
-        const statusColor = g.onTrack ? 'var(--green)' : 'var(--amber)';
+        const STATUS = g.met ? '✓ Funded' : g.overdue ? '⏰ Deadline passed' : g.onTrack ? '✓ On track' : '⚠ Behind';
+        const statusColor = g.met ? 'var(--green)' : g.overdue ? 'var(--red)' : g.onTrack ? 'var(--green)' : 'var(--amber)';
         const deadlineStr = new Date(g.deadline).toLocaleDateString('en-GB',{month:'short',year:'numeric'});
         const goalBlock = el('div',{style:{marginBottom:'14px',paddingBottom:'14px',borderBottom:'1px solid var(--border)'}});
         goalBlock.append(
@@ -934,9 +1087,12 @@ function overviewScreen(){
           el('div',{style:{background:'var(--surface2)',borderRadius:'100px',height:'6px',overflow:'hidden',marginBottom:'6px'}},
             el('div',{style:{height:'100%',width:g.pctDone+'%',background:g.color||'var(--green)',borderRadius:'100px'}})
           ),
-          el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',color:'var(--text3)'}},
+          el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',color:'var(--text3)',gap:'8px'}},
             el('span',{},g.pctDone+'% · '+fmt(g.remaining)+' to go'),
-            el('span',{},g.daysLeft+'d · need '+fmt(g.requiredPerPeriod)+'/paycheck')
+            el('span',{style:{textAlign:'right'}},
+              g.met ? 'Target reached'
+                    : g.overdue ? 'Deadline was '+Math.abs(g.daysLeft)+'d ago — update it in Goals'
+                    : g.daysLeft+'d · need '+fmt(g.requiredPerPeriod)+'/paycheck')
           )
         );
         florasiiCard.append(goalBlock);
@@ -1102,6 +1258,10 @@ function overviewScreen(){
       actions.push({icon:'🤝',text:fmt(totalDebtsOwed)+' still owed to you'+
         (earmarkedForSavings>0?' · '+fmt(earmarkedForSavings)+' earmarked for Florasii (would reach '+fmt(florasiiWithDebt)+')':''),urgent:false});
     }
+    const unsorted = txns.filter(t=>t.direction==='debit' && !t.userConfirmed &&
+      (!t.category || t.category==='Uncategorised' || t.category==='Other')).length;
+    if(unsorted>20) actions.push({icon:'🏷️',
+      text:unsorted+' transactions still need a category — sort them by merchant in More → Sort Transactions',urgent:false});
     if(txns.length===0) actions.push({icon:'📥',text:'Import your bank statement to unlock spending insights',urgent:false});
 
     if(actions.length){
@@ -3597,6 +3757,146 @@ function recurringScreen(){
 // PHASE J — MERCHANT LEARNING SCREEN
 // ═══════════════════════════════════════════════════════════════
 
+// ── Bulk categorisation ──
+// Categorise a merchant once and apply it to every matching transaction,
+// past and future. Turns hundreds of individual edits into a handful.
+const STANDARD_CATEGORIES = ['Groceries','Eating out','Transport','Shopping','Health',
+  'Entertainment','Bars & Nights out','Travel','Bills','Subscriptions',
+  'Personal care','Education','Gifts','Other'];
+
+async function applyCategoryToMerchant(merchant, category, txnsForMerchant){
+  const now = new Date().toISOString();
+  // Update every matching transaction, in batches
+  const updates = {};
+  for(const t of txnsForMerchant){
+    updates['users/'+currentUser.uid+'/transactions/'+t.transactionId] = {
+      ...t, userCategory:category, category, userConfirmed:true, updatedAt:now,
+    };
+  }
+  const keys = Object.keys(updates);
+  for(let i=0;i<keys.length;i+=100){
+    const slice = {};
+    for(const k of keys.slice(i,i+100)) slice[k]=updates[k];
+    await db.ref().update(slice);
+  }
+  // Remember the decision for future imports
+  const ruleId = 'mr_'+merchant.replace(/\W/g,'').toLowerCase();
+  const ex = await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).once('value');
+  await db.ref('users/'+currentUser.uid+'/merchantRules/'+ruleId).set({
+    id:ruleId, matchPattern:merchant.toUpperCase(), normalisedMerchant:merchant,
+    preferredCategory:category, preferredSubcategory:null, financialType:'EXPENSE',
+    confirmationCount:(ex.val()&&ex.val().confirmationCount||0)+1, active:true,
+    createdAt:(ex.val()&&ex.val().createdAt)||now, updatedAt:now,
+  });
+  return txnsForMerchant.length;
+}
+
+function bulkCategoriseScreen(){
+  const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const wrap = el('div',{});
+  content.append(wrap);
+  wrap.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;padding:30px">Grouping your uncategorised transactions…</div>';
+
+  let groups = [];
+  let doneCount = 0;
+
+  async function load(){
+    const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const all = Object.values(snap.val()||{});
+    const pending = all.filter(t=>
+      t.direction==='debit' &&
+      !t.userConfirmed &&
+      (!t.category || t.category==='Uncategorised' || t.category==='Other')
+    );
+
+    const byMerchant = {};
+    for(const t of pending){
+      const m = t.normalisedMerchant || t.rawDescription || 'Unknown';
+      if(!byMerchant[m]) byMerchant[m]={merchant:m, txns:[], total:0};
+      byMerchant[m].txns.push(t);
+      byMerchant[m].total += t.amount;
+    }
+    groups = Object.values(byMerchant).sort((a,b)=>b.txns.length-a.txns.length || b.total-a.total);
+    render();
+  }
+
+  function render(){
+    wrap.innerHTML='';
+    const remaining = groups.reduce((s,g)=>s+g.txns.length,0);
+
+    const head = el('div',{class:'card',style:{marginBottom:'12px'}});
+    if(remaining===0){
+      head.append(
+        el('div',{style:{fontSize:'28px',textAlign:'center',marginBottom:'8px'}},'✅'),
+        el('div',{style:{fontWeight:'700',fontSize:'16px',textAlign:'center',marginBottom:'6px'}},'Everything is categorised'),
+        el('div',{style:{fontSize:'13px',color:'var(--text2)',textAlign:'center'}},
+          doneCount?doneCount+' transactions sorted this session.':'Nothing left to review.')
+      );
+      wrap.append(head);
+      return;
+    }
+
+    head.append(
+      el('div',{style:{fontWeight:'700',fontSize:'16px',marginBottom:'4px'}},remaining+' transactions to sort'),
+      el('div',{style:{fontSize:'13px',color:'var(--text2)',lineHeight:'1.6'}},
+        'Grouped by merchant, biggest first. Choosing a category files every transaction from that merchant at once and remembers it for future imports.'+
+        (doneCount?' '+doneCount+' done so far.':''))
+    );
+    wrap.append(head);
+
+    for(const g of groups.slice(0,25)){
+      const card = el('div',{class:'card',style:{marginBottom:'8px'}});
+      card.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'10px',gap:'10px'}},
+          el('div',{style:{minWidth:'0'}},
+            el('div',{style:{fontWeight:'600',fontSize:'14px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},g.merchant),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
+              g.txns.length+' transaction'+(g.txns.length===1?'':'s')+' · avg '+fmt(g.total/g.txns.length))
+          ),
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'15px',color:'var(--red)',flexShrink:'0'}},fmt(g.total))
+        )
+      );
+
+      const status = el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'6px',minHeight:'14px'}});
+      const chips = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'5px'}});
+      for(const c of STANDARD_CATEGORIES){
+        const chip = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',
+          border:'1px solid var(--border)',borderRadius:'100px',padding:'5px 11px',
+          fontSize:'11px',fontWeight:'600'}},c);
+        chip.addEventListener('click',async()=>{
+          chips.querySelectorAll('button').forEach(b=>b.disabled=true);
+          chip.style.background='var(--green)'; chip.style.color='#000'; chip.style.border='none';
+          status.textContent='Filing '+g.txns.length+' transactions…';
+          try{
+            const n = await applyCategoryToMerchant(g.merchant, c, g.txns);
+            doneCount += n;
+            groups = groups.filter(x=>x.merchant!==g.merchant);
+            render();
+          }catch(err){
+            status.textContent='Could not save — '+(err.message||'try again');
+            status.style.color='var(--red)';
+            chips.querySelectorAll('button').forEach(b=>b.disabled=false);
+          }
+        });
+        chips.append(chip);
+      }
+      card.append(chips, status);
+      wrap.append(card);
+    }
+
+    if(groups.length>25){
+      wrap.append(el('div',{style:{fontSize:'12px',color:'var(--text3)',textAlign:'center',padding:'12px'}},
+        '+'+(groups.length-25)+' more merchants — sort these first and reopen.'));
+    }
+  }
+
+  load().catch(err=>{
+    wrap.innerHTML='';
+    wrap.append(el('div',{class:'card',style:{color:'var(--red)'}},'Could not load transactions: '+err.message));
+  });
+  return content;
+}
+
 function merchantRulesScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const rulesWrap = el('div',{});
@@ -4878,7 +5178,30 @@ function accountsScreen(){
           balanceInp
         )
       );
-      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'8px'}},'Remove account');
+      // What is this account FOR? Drives the pots view on Home.
+      const ROLES=[['spending','💷 Day-to-day spending'],['card_pot','🏦 Money to clear the card'],
+                   ['goals','🌸 Savings goals'],['card','💳 Credit card debt']];
+      const currentRole = inferRole(a);
+      const roleWrap = el('div',{style:{marginTop:'10px'}});
+      roleWrap.append(el('div',{style:{fontSize:'10px',color:'var(--text3)',textTransform:'uppercase',letterSpacing:'1px',fontWeight:'700',marginBottom:'5px'}},'What is it for?'));
+      const roleChips = el('div',{style:{display:'flex',flexWrap:'wrap',gap:'5px'}});
+      for(const [key,label] of ROLES){
+        const on = currentRole===key;
+        const chip = el('button',{style:{
+          background:on?'var(--green)':'var(--surface2)', color:on?'#000':'var(--text2)',
+          border:on?'none':'1px solid var(--border)', borderRadius:'100px',
+          padding:'4px 10px', fontSize:'11px', fontWeight:'600'}},label);
+        chip.addEventListener('click',async()=>{
+          accounts = accounts.map(x=>x.id===a.id?{...x,role:key,updatedAt:new Date().toISOString()}:x);
+          appData.accounts=accounts;
+          await save({...appData,accounts});
+          renderAccounts();
+        });
+        roleChips.append(chip);
+      }
+      roleWrap.append(roleChips);
+
+      const delBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'12px',padding:'4px 0',marginTop:'10px'}},'Remove account');
       delBtn.addEventListener('click',async()=>{
         if(!confirm('Remove '+a.name+'?')) return;
         accounts = accounts.filter(x=>x.id!==a.id);
@@ -4886,7 +5209,7 @@ function accountsScreen(){
         await save({...appData,accounts});
         renderAccounts();
       });
-      card.append(row, delBtn);
+      card.append(row, roleWrap, delBtn);
       listWrap.append(card);
     }
   }
@@ -5513,6 +5836,7 @@ function mainScreen(startTab='home'){
   function moreScreen(){
     const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
     const items = [
+      {icon:'🏷️', label:'Sort Transactions',  sub:'Categorise by merchant, all at once',    tab:'_bulkcat'},
       {icon:'🤝', label:'Money Owed to Me',  sub:'Track debts from family and friends',   tab:'_debts'},
       {icon:'📋', label:'Subscriptions',       sub:'Add, edit or remove subscriptions',     tab:'_settings'},
       {icon:'🔍', label:'Spending Insights',   sub:'Weekly spend, trends, cut suggestions', tab:'_spending'},
@@ -5546,7 +5870,7 @@ function mainScreen(startTab='home'){
     moneyBtn.className='nav-btn'+(['money','_accounts','_transactions','_analytics'].includes(t)?' active':'');
     planBtn.className ='nav-btn'+(['plan','_calendar','_goals'].includes(t)?' active':'');
     workBtn.className ='nav-btn'+(t==='work'?' active':'');
-    moreBtn.className ='nav-btn'+(['more','_statements','_recurring','_merchants','_lifestyle','_ask','_trends','_settings'].includes(t)?' active':'');
+    moreBtn.className ='nav-btn'+(['more','_statements','_recurring','_merchants','_lifestyle','_ask','_trends','_settings','_bulkcat','_debts','_spending'].includes(t)?' active':'');
 
     body.innerHTML='';
     const userLabel = (appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'My') + '\'s Account';
@@ -5595,6 +5919,7 @@ function mainScreen(startTab='home'){
       body.append(header, moreScreen());
 
     // ── More sub-screens ──
+    } else if(t==='_bulkcat'){    makeHeader('Sort Transactions'); body.append(header, bulkCategoriseScreen());
     } else if(t==='_debts'){       makeHeader('Money Owed to Me'); body.append(header, debtScreen());
     } else if(t==='_spending'){     makeHeader('Spending Insights'); body.append(header, spendingInsightsScreen());
     } else if(t==='_statements'){ makeHeader('Import Statement'); body.append(header, statementsScreen());
