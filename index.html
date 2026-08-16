@@ -416,6 +416,25 @@ function overviewScreen(){
     const upcomingSubCost = subTotal; // monthly subs
     const totalCommitted = upcomingOut + upcomingSubCost;
 
+    // ── HIDDEN SUBSCRIPTION DETECTION ──
+    // Find recurring patterns in transactions that aren't in the subscriptions list
+    const hiddenSubs = [];
+    if(txns.length > 10){
+      const patterns = detectRecurring(txns);
+      const knownSubNames = subscriptions.map(s=>s.name.toLowerCase().split(' ')[0]);
+      for(const p of patterns){
+        if(p.frequency !== 'Monthly' && p.frequency !== 'Weekly' && p.frequency !== 'Fortnightly') continue;
+        if(p.confidence < 0.75) continue;
+        if(p.observations < 2) continue;
+        // Check if already in subscriptions list
+        const alreadyKnown = knownSubNames.some(n=>
+          p.merchant.toLowerCase().includes(n) || n.includes(p.merchant.toLowerCase().split(' ')[0])
+        );
+        if(alreadyKnown) continue;
+        hiddenSubs.push(p);
+      }
+    }
+
     // Predicted next paycheck from hours
     const hoursLog = appData.hoursLog||[];
     const actualPay = appData.actualPay||{};
@@ -484,6 +503,10 @@ function overviewScreen(){
 
     // Why am I broke? — determine the main culprit
     const reasons = [];
+    if(hiddenSubs.length > 0){
+      const hiddenTotal = hiddenSubs.reduce((s,p)=>s+(p.frequency==='Weekly'?p.typicalAmount*4.33:p.frequency==='Fortnightly'?p.typicalAmount*2:p.typicalAmount),0);
+      reasons.push({severity:'warning', msg:hiddenSubs.length+' possible unknown subscription'+(hiddenSubs.length>1?'s':'')+' detected — ~'+fmt(hiddenTotal)+'/mo you might not know about.'});
+    }
     if(balances.current<0) reasons.push({severity:'critical',msg:'Your current account is overdrawn by '+fmt(Math.abs(balances.current||0))+'.'});
     if(balances.creditCard>200) reasons.push({severity:'warning',msg:'£'+Math.round(balances.creditCard)+' on your credit card needs clearing.'});
     if(subTotal>predictedPay*0.2) reasons.push({severity:'warning',msg:'Subscriptions cost £'+subTotal.toFixed(0)+'/mo — '+Math.round(subTotal/Math.max(predictedPay,1)*100)+'% of your typical paycheck.'});
@@ -520,6 +543,46 @@ function overviewScreen(){
         ));
       }
       intelligenceWrap.append(brokeCard);
+    }
+
+    // ── HIDDEN SUBSCRIPTIONS ──
+    if(hiddenSubs.length > 0){
+      const hiddenCard = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid var(--amber)'}});
+      hiddenCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'4px',color:'var(--amber)'}},'👀 Possible unknown subscriptions'));
+      hiddenCard.append(el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'12px'}},'These recurring payments were found in your transactions but aren\'t in your subscriptions list. Did you know about these?'));
+
+      const hiddenMonthly = hiddenSubs.reduce((s,p)=>{
+        const m = p.frequency==='Weekly'?p.typicalAmount*4.33:p.frequency==='Fortnightly'?p.typicalAmount*2:p.typicalAmount;
+        return s+m;
+      },0);
+
+      for(const p of hiddenSubs.slice(0,5)){
+        const monthlyEq = p.frequency==='Weekly'?p.typicalAmount*4.33:p.frequency==='Fortnightly'?p.typicalAmount*2:p.typicalAmount;
+        const row = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--border)'}});
+        row.append(
+          el('div',{},
+            el('div',{style:{fontSize:'13px',fontWeight:'500'}},p.merchant),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},p.frequency+' · '+p.observations+' payments detected')
+          ),
+          el('div',{style:{textAlign:'right'}},
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--red)'}},fmt(p.typicalAmount)),
+            el('div',{style:{fontSize:'10px',color:'var(--text3)',marginTop:'1px'}},'~'+fmt(monthlyEq)+'/mo')
+          )
+        );
+        hiddenCard.append(row);
+      }
+
+      hiddenCard.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'10px',fontSize:'13px'}},
+          el('span',{style:{color:'var(--text2)'}},'Hidden monthly cost'),
+          el('span',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--amber)'}},fmt(hiddenMonthly)+'/mo')
+        ),
+        el('button',{style:{width:'100%',marginTop:'10px',background:'var(--surface2)',color:'var(--text2)',border:'1px solid var(--border)',borderRadius:'10px',padding:'8px',fontSize:'12px'}},'Review in Recurring tab',
+          'onclick', ()=>{ if(window._setTab) window._setTab('recurring'); })
+      );
+      // fix event
+      hiddenCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('recurring'); });
+      intelligenceWrap.append(hiddenCard);
     }
 
     // ── SAFE TO SPEND ──
@@ -1985,6 +2048,47 @@ function statementsScreen(){
             fileFingerprint: a.fingerprint,
           };
           await txnDB.writeStatement(stmt);
+
+          // ── Auto-update subscription billing dates from matched transactions ──
+          // Use the most flexible merchant matching to find real payment dates
+          const allTxns = finalTxns;
+          const updatedSubs = appData.subscriptions.map(sub => {
+            // Find all transactions that match this subscription
+            const subName = sub.name.toLowerCase();
+            const firstWord = subName.split(' ')[0];
+            const matchingTxns = allTxns
+              .filter(t =>
+                t.direction === 'debit' &&
+                (t.normalisedMerchant.toLowerCase().includes(firstWord) ||
+                 firstWord.includes(t.normalisedMerchant.toLowerCase().split(' ')[0]) ||
+                 t.rawDescription.toLowerCase().includes(firstWord) ||
+                 t.rawMemo?.toLowerCase().includes(firstWord))
+              )
+              .sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+
+            if(!matchingTxns.length) return sub;
+
+            // Get the most common billing day from payment history
+            const billingDays = matchingTxns.map(t=>parseInt(t.postingDate.split('-')[2]));
+            const dayCount = {};
+            for(const d of billingDays){ dayCount[d]=(dayCount[d]||0)+1; }
+            const billingDay = parseInt(Object.entries(dayCount).sort((a,b)=>b[1]-a[1])[0][0]);
+
+            // Get the last actual amount paid
+            const lastAmount = matchingTxns[0].amount;
+            const amountChanged = Math.abs(lastAmount - sub.amount) > 0.5;
+
+            return {
+              ...sub,
+              billingDay,
+              lastPaidDate: matchingTxns[0].postingDate,
+              lastPaidAmount: lastAmount,
+              amountChangedFromStatement: amountChanged,
+            };
+          });
+
+          // Save updated subscriptions with billing dates
+          await save({...appData, subscriptions: updatedSubs});
 
           importState = 'complete';
           parsedTxns = []; analysisResult = null;
@@ -3708,32 +3812,36 @@ function calendarScreen(){
     const futureEnd = new Date(year, month+1, 0);
 
     for(const sub of subs){
-      // Find last actual payment for this subscription in txns
-      const matchingTxns = txns.filter(t=>
-        t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
-        sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0])
-      ).sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+      // Use stored billing day from statement analysis, fallback to last txn, then day 1
+      let billingDay = sub.billingDay || null;
 
-      const lastPayment = matchingTxns[0];
-      let expectedDay = 15; // default mid-month
-
-      if(lastPayment){
-        // Use same day as last actual payment
-        expectedDay = parseInt(lastPayment.postingDate.split('-')[2]);
-        const lastDate = new Date(lastPayment.postingDate);
-        const lastY = lastDate.getFullYear();
-        const lastM = lastDate.getMonth();
-
-        // Check if actual payment exists this month
-        const hasActual = txns.some(t=>
-          t.postingDate.startsWith(`${year}-${String(month+1).padStart(2,'0')}`) &&
-          (t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
-           sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0]))
-        );
-        if(hasActual) continue; // already showing as actual
+      if(!billingDay){
+        // Try to find from transactions
+        const matchingTxns = txns.filter(t=>
+          t.direction==='debit' && (
+            t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
+            sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0])
+          )
+        ).sort((a,b)=>b.postingDate.localeCompare(a.postingDate));
+        billingDay = matchingTxns.length ? parseInt(matchingTxns[0].postingDate.split('-')[2]) : null;
       }
 
-      const expectedDate = `${year}-${String(month+1).padStart(2,'0')}-${String(expectedDay).padStart(2,'0')}`;
+      if(!billingDay) continue; // skip if we have no idea when it comes out
+
+      // Cap to days in this month
+      const daysInMonth = new Date(year, month+1, 0).getDate();
+      const day = Math.min(billingDay, daysInMonth);
+      const expectedDate = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+
+      // Check if actual payment already exists this month
+      const hasActual = txns.some(t=>
+        t.postingDate.startsWith(`${year}-${String(month+1).padStart(2,'0')}`) &&
+        t.direction==='debit' &&
+        (t.normalisedMerchant.toLowerCase().includes(sub.name.toLowerCase().split(' ')[0]) ||
+         sub.name.toLowerCase().includes(t.normalisedMerchant.toLowerCase().split(' ')[0]))
+      );
+      if(hasActual) continue;
+
       const d = new Date(expectedDate);
       if(d >= futureStart && d <= futureEnd){
         addEvent(expectedDate, {
@@ -3744,6 +3852,7 @@ function calendarScreen(){
           financialType: 'EXPENSE',
           source: 'subscription',
           subscriptionId: sub.id,
+          detail: sub.billingDay ? 'billing day '+sub.billingDay : 'estimated',
         });
       }
     }
