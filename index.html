@@ -14,150 +14,254 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+
 :root{
-  --bg:#080808;
-  --surface:#111;
-  --surface2:#181818;
-  --surface3:#202020;
-  --border:#252525;
-  --border2:#2e2e2e;
-  --green:#00E676;--green-dim:#00E67614;--green-glow:#00E67628;
-  --red:#FF4444;--red-dim:#FF444414;
-  --amber:#F59E0B;--amber-dim:#F59E0B14;
-  --blue:#60A5FA;--blue-dim:#60A5FA14;
-  --purple:#A78BFA;
-  --text:#F2F2F3;--text2:#6B6B75;--text3:#38383F;
-  --radius:14px;--radius-sm:10px;--radius-lg:20px;--radius-xl:28px;
-  --shadow:0 2px 12px rgba(0,0,0,.4);
+  /* ── Surfaces: four steps, no more ── */
+  --bg:#0A0A0B;
+  --surface:#131315;
+  --surface-2:#1B1B1E;
+  --surface-3:#242428;
+  --line:#26262B;
+  --line-soft:#1E1E22;
+
+  /* ── Semantic colour. Meaning only, never decoration ── */
+  --accent:#00E676;              /* identity + healthy */
+  --accent-ink:#00110A;
+  --accent-wash:rgba(0,230,118,.10);
+  --accent-edge:rgba(0,230,118,.28);
+  --warn:#F5A524;                /* attention */
+  --warn-wash:rgba(245,165,36,.10);
+  --danger:#FF5A5A;              /* problem */
+  --danger-wash:rgba(255,90,90,.10);
+  --info:#5B9DFF;                /* committed / neutral emphasis */
+  --info-wash:rgba(91,157,255,.10);
+
+  /* ── Text: four weights of emphasis ── */
+  --ink:#F5F5F7;
+  --ink-2:#A0A0AB;
+  --ink-3:#6C6C78;
+  --ink-4:#43434D;
+
+  /* ── Spacing: 4px base ── */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px;
+  --s6:24px; --s7:32px; --s8:40px; --s9:56px;
+
+  /* ── Radii ── */
+  --r-sm:8px; --r:12px; --r-lg:16px; --r-pill:999px;
+
+  --maxw:520px;
+  --ease:cubic-bezier(.2,.6,.2,1);
 }
+
 html{-webkit-text-size-adjust:100%}
-body{font-family:'Space Grotesk',sans-serif;background:var(--bg);color:var(--text);min-height:100dvh;overscroll-behavior:none;-webkit-font-smoothing:antialiased}
+body{
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  background:var(--bg); color:var(--ink);
+  min-height:100dvh; overscroll-behavior:none;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  font-size:15px; line-height:1.45;
+}
 ::-webkit-scrollbar{width:0;height:0}
 input,button,select,textarea{font-family:inherit}
 
-/* ── Inputs ── */
-input,select{
-  background:var(--surface2);border:1px solid var(--border);
-  color:var(--text);border-radius:var(--radius-sm);
-  padding:13px 15px;font-size:15px;width:100%;outline:none;
-  transition:border-color .15s,box-shadow .15s;-webkit-appearance:none;
+/* Money must align in columns. Tabular figures are non-negotiable here. */
+.num,.balance-value,.stat-chip-value,.big-input,.hero-figure,
+.instruction-amount,.prog-num{
+  font-family:'Space Mono',ui-monospace,monospace;
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1;
+  letter-spacing:-.02em;
 }
-input:focus,select:focus{border-color:var(--green);box-shadow:0 0 0 3px var(--green-glow)}
-input::placeholder{color:var(--text3)}
 
-/* ── Buttons ── */
-button{cursor:pointer;border:none;border-radius:var(--radius-sm);font-size:15px;font-weight:600;transition:opacity .12s,transform .1s;-webkit-tap-highlight-color:transparent}
-button:active{transform:scale(.96);opacity:.8}
-.btn-primary{background:var(--green);color:#000;padding:15px;width:100%;font-size:16px;border-radius:var(--radius);font-weight:700;letter-spacing:.3px}
-.btn-ghost{background:var(--surface2);color:var(--text2);padding:13px;width:100%;border:1px solid var(--border);border-radius:var(--radius-sm)}
-.btn-primary:disabled{opacity:.35;pointer-events:none}
+/* ── Type scale ── */
+.t-hero    {font-size:38px; font-weight:700; letter-spacing:-1.4px; line-height:1.02}
+.t-figure  {font-size:26px; font-weight:700; letter-spacing:-.6px; line-height:1.1}
+.t-title   {font-size:20px; font-weight:700; letter-spacing:-.4px; line-height:1.2}
+.t-section {font-size:15px; font-weight:650; letter-spacing:-.2px}
+.t-body    {font-size:14px; font-weight:450; color:var(--ink-2); line-height:1.55}
+.t-label   {font-size:12px; font-weight:550; color:var(--ink-2)}
+.t-meta    {font-size:11.5px; font-weight:450; color:var(--ink-3); line-height:1.45}
+.t-eyebrow {font-size:10px; font-weight:700; letter-spacing:1.6px; text-transform:uppercase; color:var(--ink-3)}
 
 /* ── Layout ── */
 .screen{min-height:100dvh;display:flex;flex-direction:column;background:var(--bg)}
-.content{flex:1;padding:16px 16px 32px;max-width:480px;margin:0 auto;width:100%}
+.content{flex:1;padding:var(--s5) var(--s5) var(--s9);max-width:var(--maxw);margin:0 auto;width:100%}
+@media (min-width:600px){ :root{--maxw:600px} .content{padding-left:var(--s6);padding-right:var(--s6)} }
 
-/* ── Cards ── */
-.card{
-  background:var(--surface);border:1px solid var(--border);
-  border-radius:var(--radius-lg);padding:18px 20px;margin-bottom:12px;
+.page-header{
+  padding:max(var(--s5),env(safe-area-inset-top)) var(--s5) var(--s4);
+  max-width:var(--maxw);margin:0 auto;width:100%;
+  display:flex;justify-content:space-between;align-items:flex-start;gap:var(--s3);
 }
+.page-eyebrow{font-size:10px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase;color:var(--accent);margin-bottom:3px}
+.page-title{font-size:24px;font-weight:700;letter-spacing:-.6px;line-height:1.1}
+
+/* ── Sections: rhythm from hairlines and space, not from boxing everything ── */
+.section-hdr{
+  font-size:10px;letter-spacing:1.6px;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700;margin:var(--s7) 0 var(--s3);
+}
+.section-hdr:first-child{margin-top:var(--s2)}
+.sec{margin-bottom:var(--s6)}
+.rule{height:1px;background:var(--line-soft);border:0;margin:var(--s5) 0}
+
+/* ── Card: a discrete object, not a wrapper for every paragraph ── */
+.card{
+  background:var(--surface);border:1px solid var(--line);
+  border-radius:var(--r-lg);padding:var(--s5);margin-bottom:var(--s3);
+}
+.card-flush{padding:var(--s5) var(--s5) var(--s2)}
+.card-quiet{background:transparent;border-color:var(--line-soft)}
 
 /* ── Rows ── */
-.balance-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--border)}
+.balance-row{display:flex;justify-content:space-between;align-items:center;gap:var(--s3);padding:var(--s3) 0;border-bottom:1px solid var(--line-soft)}
 .balance-row:last-child{border-bottom:none;padding-bottom:0}
 .balance-row:first-child{padding-top:0}
-.balance-label{font-size:14px;color:var(--text2);font-weight:500}
-.balance-value{font-family:'Space Mono',monospace;font-size:15px;font-weight:700}
+.balance-label{font-size:14px;color:var(--ink-2);font-weight:500}
+.balance-value{font-size:15px;font-weight:700}
 
-/* ── Section headers ── */
-.section-hdr{
-  font-size:10px;letter-spacing:2.5px;text-transform:uppercase;
-  color:var(--text3);font-weight:700;
-  margin:28px 0 10px;font-family:'Space Grotesk',sans-serif;
+/* ── Allocation bar: the signature. Composition of your money in one line ── */
+.alloc{display:flex;height:10px;border-radius:var(--r-pill);overflow:hidden;background:var(--surface-2);gap:2px}
+.alloc-seg{height:100%;transition:width .7s var(--ease)}
+.alloc-key{display:flex;flex-wrap:wrap;gap:var(--s4);margin-top:var(--s3)}
+.alloc-item{display:flex;align-items:baseline;gap:6px;font-size:12px}
+.alloc-dot{width:7px;height:7px;border-radius:2px;flex-shrink:0;transform:translateY(-1px)}
+
+/* ── Severity chip ── */
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:var(--r-pill);font-size:11px;font-weight:700;letter-spacing:.3px}
+.chip-healthy {background:var(--accent-wash);color:var(--accent)}
+.chip-watch   {background:var(--info-wash);color:var(--info)}
+.chip-warning {background:var(--warn-wash);color:var(--warn)}
+.chip-critical{background:var(--danger-wash);color:var(--danger)}
+
+/* ── Progress ── */
+.prog-wrap{background:var(--surface-2);border-radius:var(--r-pill);height:6px;overflow:hidden}
+.prog-fill{height:100%;background:var(--accent);border-radius:var(--r-pill);transition:width .7s var(--ease)}
+.prog-track-lg{height:8px}
+
+/* ── Buttons ── */
+button{cursor:pointer;border:none;border-radius:var(--r);font-size:15px;font-weight:600;
+  transition:background .15s var(--ease),opacity .12s,transform .08s;-webkit-tap-highlight-color:transparent}
+button:active{transform:scale(.985)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn-primary{background:var(--accent);color:var(--accent-ink);padding:14px;width:100%;font-size:15px;font-weight:700;border-radius:var(--r)}
+.btn-primary:hover{background:#1BEE85}
+.btn-primary:disabled{opacity:.35;pointer-events:none}
+.btn-ghost{background:var(--surface-2);color:var(--ink-2);padding:12px;width:100%;border:1px solid var(--line);border-radius:var(--r)}
+.btn-ghost:hover{background:var(--surface-3);color:var(--ink)}
+.btn-sm{padding:7px 13px;font-size:12.5px;font-weight:650;border-radius:var(--r-sm);width:auto}
+.btn-quiet{background:none;color:var(--ink-3);padding:6px 0;font-size:12px;width:auto}
+.btn-quiet:hover{color:var(--ink-2)}
+
+/* ── Inputs ── */
+input,select{
+  background:var(--surface-2);border:1px solid var(--line);color:var(--ink);
+  border-radius:var(--r);padding:13px 14px;font-size:15px;width:100%;outline:none;
+  transition:border-color .15s,box-shadow .15s;-webkit-appearance:none;
 }
-.section-hdr:first-child{margin-top:4px}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-wash)}
+input::placeholder{color:var(--ink-4)}
+
+/* ── Chips / filters ── */
+.filter-row{display:flex;gap:6px;margin-bottom:var(--s4);flex-wrap:wrap}
+.filter-chip{background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line);
+  border-radius:var(--r-pill);padding:7px 14px;font-size:12.5px;font-weight:600;width:auto}
+.filter-chip:hover{background:var(--surface-3);color:var(--ink)}
+.filter-chip.on{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+
+/* ── Transaction row: scan merchant → amount, everything else recedes ── */
+.txn{display:flex;align-items:center;gap:var(--s3);padding:12px var(--s3);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);
+  margin-bottom:6px;cursor:pointer;transition:background .15s,border-color .15s}
+.txn:hover{background:var(--surface-2);border-color:var(--surface-3)}
+.txn-date{font-size:10.5px;color:var(--ink-3);min-width:30px;text-align:center;line-height:1.25;flex-shrink:0}
+.txn-main{flex:1;min-width:0}
+.txn-merchant{font-weight:550;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.txn-cat{font-size:11.5px;color:var(--ink-3);margin-top:1px}
+.txn-amt{text-align:right;flex-shrink:0;font-size:14px;font-weight:700}
+.txn-large{border-left:2px solid var(--warn)}
 
 /* ── Nav ── */
 .nav{
   display:flex;justify-content:space-around;
-  padding:6px 0 max(12px,env(safe-area-inset-bottom));
-  background:rgba(10,10,10,.97);border-top:1px solid var(--border);
+  padding:var(--s2) 0 max(var(--s3),env(safe-area-inset-bottom));
+  background:rgba(10,10,11,.94);border-top:1px solid var(--line);
   position:sticky;bottom:0;
-  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);
 }
-.nav-btn{
-  display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:7px 11px;background:none;color:var(--text3);font-size:9.5px;
-  border-radius:12px;min-width:52px;flex-shrink:0;white-space:nowrap;
-  letter-spacing:.3px;font-weight:600;text-transform:uppercase;transition:color .15s,background .15s;
-}
-.nav-btn svg{transition:stroke .15s}
-.nav-btn.active{color:var(--green);background:var(--green-dim)}
-.nav-btn.active svg{stroke:var(--green)}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 10px;
+  background:none;color:var(--ink-4);font-size:9.5px;border-radius:var(--r-sm);
+  min-width:52px;white-space:nowrap;letter-spacing:.3px;font-weight:650;text-transform:uppercase;
+  transition:color .15s var(--ease)}
+.nav-btn:hover{color:var(--ink-2)}
+.nav-btn.active{color:var(--accent)}
+.nav-btn.active svg{stroke:var(--accent)}
+.nav-pay-wrap{display:flex;flex-direction:column;align-items:center;gap:4px;padding:0 var(--s1);flex-shrink:0;background:none;border:none}
+.nav-pay-circle{width:46px;height:46px;background:var(--accent);border-radius:50%;
+  display:flex;align-items:center;justify-content:center;margin-top:-18px;
+  box-shadow:0 0 0 4px var(--bg),0 6px 18px rgba(0,230,118,.25);
+  transition:transform .12s var(--ease)}
+.nav-pay-wrap:active .nav-pay-circle{transform:scale(.93)}
+.nav-pay-label{font-size:9.5px;color:var(--ink-4);font-weight:650;text-transform:uppercase;letter-spacing:.3px}
 
-/* ── Pay button ── */
-.nav-pay-wrap{display:flex;flex-direction:column;align-items:center;gap:3px;padding:0 4px;flex-shrink:0}
-.nav-pay-circle{
-  width:46px;height:46px;background:var(--green);border-radius:50%;
-  display:flex;align-items:center;justify-content:center;
-  margin-top:-18px;box-shadow:0 0 0 3px var(--bg),0 0 20px var(--green-glow);
-  transition:transform .1s,box-shadow .15s;
-}
-.nav-pay-circle:active{transform:scale(.92)}
-.nav-pay-label{font-size:9.5px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.3px}
-
-/* ── Page header ── */
-.page-header{
-  padding:max(16px,env(safe-area-inset-top)) 20px 16px;
-  max-width:480px;margin:0 auto;width:100%;
-  display:flex;justify-content:space-between;align-items:center;
-}
-.page-eyebrow{font-size:10px;color:var(--green);letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:2px}
-.page-title{font-size:22px;font-weight:700;letter-spacing:-.3px;line-height:1.1}
-
-/* ── Stat chips ── */
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
-.stat-chip{background:var(--surface2);border-radius:var(--radius);padding:14px;border:1px solid var(--border)}
-.stat-chip-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:1.5px;font-weight:700;margin-bottom:5px}
-.stat-chip-value{font-family:'Space Mono',monospace;font-size:18px;font-weight:700;line-height:1}
-.stat-chip-sub{font-size:11px;color:var(--text3);margin-top:3px}
-
-/* ── Progress bars ── */
-.prog-wrap{background:var(--surface2);border-radius:100px;height:6px;overflow:hidden}
-.prog-fill{height:100%;background:var(--green);border-radius:100px;transition:width .6s cubic-bezier(.4,0,.2,1)}
-
-/* ── List items ── */
-.sub-item{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--border)}
-.sub-item:last-child{border-bottom:none}
-.history-item{display:flex;justify-content:space-between;align-items:center;padding:14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px}
-
-/* ── Steps ── */
-.step-num{font-size:10px;color:var(--text3);letter-spacing:2px;text-transform:uppercase;font-weight:700;margin-bottom:8px}
-.step-title{font-size:28px;font-weight:700;letter-spacing:-.5px;line-height:1.1;margin-bottom:8px}
-.step-sub{font-size:14px;color:var(--text2);margin-bottom:28px;line-height:1.5}
-.big-wrap{display:flex;align-items:center;gap:8px;margin-bottom:24px;background:var(--surface2);border-radius:var(--radius);padding:16px 20px;border:1px solid var(--border)}
-.big-input{background:none;border:none;font-family:'Space Mono',monospace;font-size:40px;font-weight:700;color:var(--text);padding:0;width:100%;outline:none;letter-spacing:-1px}
-.sym{font-family:'Space Mono',monospace;font-size:32px;font-weight:700;color:var(--text3)}
+/* ── Steps (payday flow) ── */
+.step-num{font-size:10px;color:var(--ink-3);letter-spacing:1.6px;text-transform:uppercase;font-weight:700;margin-bottom:var(--s2)}
+.step-title{font-size:28px;font-weight:700;letter-spacing:-.8px;line-height:1.1;margin-bottom:var(--s2)}
+.step-sub{font-size:14px;color:var(--ink-2);margin-bottom:var(--s6);line-height:1.5}
+.big-wrap{display:flex;align-items:center;gap:var(--s2);margin-bottom:var(--s6);
+  background:var(--surface-2);border-radius:var(--r-lg);padding:var(--s4) var(--s5);border:1px solid var(--line)}
+.big-input{background:none;border:none;font-size:38px;font-weight:700;color:var(--ink);padding:0;width:100%;outline:none}
+.big-input:focus{box-shadow:none}
+.sym{font-family:'Space Mono',monospace;font-size:30px;font-weight:700;color:var(--ink-4)}
 
 /* ── Auth ── */
-.auth-wrap{display:flex;flex-direction:column;justify-content:center;min-height:100dvh;padding:40px 24px;max-width:400px;margin:0 auto}
-.auth-logo{font-size:36px;font-weight:700;letter-spacing:-1px;margin-bottom:4px}
-.auth-sub{font-size:14px;color:var(--text2);margin-bottom:40px}
+.auth-wrap{display:flex;flex-direction:column;justify-content:center;min-height:100dvh;padding:var(--s8) var(--s6);max-width:400px;margin:0 auto}
+.auth-logo{font-size:32px;font-weight:700;letter-spacing:-1px;margin-bottom:var(--s1)}
+.auth-sub{font-size:14px;color:var(--ink-2);margin-bottom:var(--s8)}
 
-/* ── Done icon ── */
-.done-icon{width:64px;height:64px;background:var(--green-dim);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 20px}
+/* ── States ── */
+.state{text-align:center;padding:var(--s8) var(--s5);color:var(--ink-2)}
+.state-title{font-size:15px;font-weight:650;color:var(--ink);margin-bottom:6px}
+.state-body{font-size:13px;color:var(--ink-3);line-height:1.6;max-width:300px;margin:0 auto}
+.skeleton{background:linear-gradient(90deg,var(--surface-2) 25%,var(--surface-3) 37%,var(--surface-2) 63%);
+  background-size:400% 100%;animation:shimmer 1.4s ease-in-out infinite;border-radius:var(--r-sm)}
+@keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+.skel-line{height:12px;margin-bottom:var(--s2)}
 
-/* ── Instructions ── */
-.instruction{display:flex;justify-content:space-between;align-items:center;padding:16px;background:var(--surface2);border-radius:var(--radius);margin-bottom:10px;border-left:3px solid var(--green)}
-.instruction-label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:3px}
+/* ── Misc kept for compatibility ── */
+.sub-item{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-bottom:1px solid var(--line-soft)}
+.sub-item:last-child{border-bottom:none}
+.instruction{display:flex;justify-content:space-between;align-items:center;padding:var(--s4);
+  background:var(--surface-2);border-radius:var(--r);margin-bottom:var(--s2);border-left:2px solid var(--accent)}
+.instruction-label{font-size:10px;color:var(--ink-3);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin-bottom:3px}
 .instruction-action{font-size:14px;font-weight:600}
-.instruction-amount{font-family:'Space Mono',monospace;font-size:20px;font-weight:700;color:var(--green)}
+.instruction-amount{font-size:19px;font-weight:700;color:var(--accent)}
+.info-box{background:var(--surface-2);border-radius:var(--r);padding:var(--s3) var(--s4);margin-bottom:var(--s4);
+  font-size:13px;color:var(--ink-2);line-height:1.6;border:1px solid var(--line)}
+.row{display:flex;gap:var(--s2);margin-top:var(--s3)}
+.done-icon{width:60px;height:60px;background:var(--accent-wash);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto var(--s5)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--s2);margin-bottom:var(--s3)}
+.stat-chip{background:var(--surface-2);border-radius:var(--r);padding:var(--s3) var(--s4);border:1px solid var(--line)}
+.stat-chip-label{font-size:10px;color:var(--ink-3);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin-bottom:5px}
+.stat-chip-value{font-size:17px;font-weight:700;line-height:1}
+.stat-chip-sub{font-size:11px;color:var(--ink-3);margin-top:3px}
+.history-item{display:flex;justify-content:space-between;align-items:center;padding:var(--s4);
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r);margin-bottom:var(--s2)}
 
-/* ── Info box ── */
-.info-box{background:var(--surface2);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text2);line-height:1.6;border:1px solid var(--border)}
+/* ── Legacy variable aliases so existing inline styles keep working ── */
+:root{
+  --surface2:var(--surface-2); --surface3:var(--surface-3);
+  --border:var(--line); --border2:var(--line);
+  --text:var(--ink); --text2:var(--ink-2); --text3:var(--ink-3);
+  --green:var(--accent); --green-dim:var(--accent-wash); --green-glow:var(--accent-edge);
+  --red:var(--danger); --red-dim:var(--danger-wash);
+  --amber:var(--warn); --amber-dim:var(--warn-wash);
+  --blue:var(--info); --blue-dim:var(--info-wash); --purple:#A78BFA;
+  --radius:var(--r); --radius-sm:var(--r-sm); --radius-lg:var(--r-lg); --radius-xl:20px;
+}
 
-/* ── Row layout ── */
-.row{display:flex;gap:10px;margin-top:12px}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
 </style>
 </head>
 <body>
@@ -682,6 +786,10 @@ function overviewScreen(){
     const latestStmt = cardStmts[0]||null;
     const pots = getPots();
 
+    // Reconciled model over all history, plus recency-weighted baselines
+    const fmodel = buildFinancialModel(txns);
+    const baselines = buildBaselines(txns);
+
     // Card commitment — needed by goals, safe-to-spend and the pots view
     const cardOwed = pots.card.balance;
     const dueAmount = latestStmt && latestStmt.statementBalance!=null ? latestStmt.statementBalance : cardOwed;
@@ -878,139 +986,138 @@ function overviewScreen(){
 
     intelligenceWrap.innerHTML='';
 
-    // ── YOUR POTS ──
-    // Each account has a job. Show whether each one can actually do its job.
-    const netPos = getNetWorth();
-    const dueDate = dueDateStr ? new Date(dueDateStr) : null;
-    const daysToDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate-now)/86400000) : null;
-    const cardGap = dueGap;
-    const weeksOfSpending = pots.spending.balance/96;
-
-    // Three different concepts, kept visually distinct:
-    //   cash you can actually spend | money committed to goals | money you owe
-    // Net worth is the arithmetic of those, not a thing you can spend.
+    // ── HERO: composition of your money, not just its total ──
+    // A single net worth figure misleads when most of it is committed, so the
+    // allocation bar shows what the money is FOR before showing how much it is.
     const availableCash = pots.spending.balance;
     const committedSavings = pots.goals.balance + pots.cardPot.balance;
+    const totalAssets = Math.max(0, availableCash) + Math.max(0, committedSavings);
+    const barTotal = totalAssets + Math.max(0, cardOwed);
+    const pctOf = v => barTotal>0 ? Math.max(v>0?3:0, v/barTotal*100) : 0;
 
-    const potsCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    const hero = el('div',{class:'card',style:{padding:'var(--s6) var(--s5) var(--s5)'}});
 
-    // Lead with the number you can act on
-    potsCard.append(
-      el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',fontWeight:'700',marginBottom:'2px'}},'Available cash'),
-      el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',
-        color:availableCash>0?'var(--text)':'var(--red)',lineHeight:'1'}},fmt(availableCash)),
-      el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'3px',marginBottom:'14px'}},
-        'in '+(pots.spending.exists?pots.spending.names:'your current account'))
+    hero.append(
+      el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Net worth'),
+      el('div',{class:'t-hero num',style:{color:netPos>=0?'var(--ink)':'var(--danger)',marginBottom:'var(--s5)'}},fmt(netPos))
     );
 
-    // The three concepts side by side
-    const conceptRow = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',marginBottom:'14px'}});
-    const concept=(label,val,color,sub)=>{
-      const b=el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
-      b.append(
-        el('div',{style:{fontSize:'10px',color:'var(--text3)',textTransform:'uppercase',letterSpacing:'1px',fontWeight:'700',marginBottom:'3px'}},label),
-        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color}},val),
-        sub?el('div',{style:{fontSize:'10px',color:'var(--text3)',marginTop:'2px'}},sub):el('span')
-      );
-      return b;
-    };
-    conceptRow.append(
-      concept('Saved for goals', fmt(committedSavings), 'var(--green)', 'not spendable'),
-      concept('Owed on card', fmt(cardOwed), 'var(--red)',
-        dueDateStr ? fmt(dueAmount)+' due '+dueDateStr : 'to clear'),
-    );
-    potsCard.append(conceptRow);
+    // The signature element
+    const bar = el('div',{class:'alloc'});
+    const segs = [
+      {v:Math.max(0,availableCash), c:'var(--accent)'},
+      {v:Math.max(0,committedSavings), c:'var(--info)'},
+      {v:Math.max(0,cardOwed), c:'var(--danger)'},
+    ];
+    for(const sg of segs){ if(sg.v>0) bar.append(el('div',{class:'alloc-seg',style:{width:pctOf(sg.v)+'%',background:sg.c}})); }
+    hero.append(bar);
 
-    // Net worth as the derived figure it is, with the arithmetic on show
-    potsCard.append(
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',
-        paddingTop:'10px',borderTop:'1px solid var(--border)',marginBottom:'14px'}},
+    const key = el('div',{class:'alloc-key'});
+    const keyItem=(colour,label,val)=>{
+      const i=el('div',{class:'alloc-item'});
+      i.append(
+        el('div',{class:'alloc-dot',style:{background:colour}}),
         el('div',{},
-          el('span',{style:{fontSize:'12px',color:'var(--text2)',fontWeight:'600'}},'Net worth'),
-          el('div',{style:{fontSize:'10px',color:'var(--text3)',marginTop:'1px'}},
-            fmt(availableCash)+' cash + '+fmt(committedSavings)+' saved − '+fmt(cardOwed)+' owed')
-        ),
-        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'17px',
-          color:netPos>=0?'var(--green)':'var(--red)'}},fmt(netPos))
-      )
+          el('div',{class:'num',style:{fontWeight:'700',fontSize:'13px'}},fmt(val)),
+          el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'1px'}},label))
+      );
+      return i;
+    };
+    key.append(keyItem('var(--accent)','Available', availableCash));
+    if(committedSavings>0) key.append(keyItem('var(--info)','Goal savings', committedSavings));
+    if(cardOwed>0)         key.append(keyItem('var(--danger)','Card debt', cardOwed));
+    hero.append(key);
+
+    if(uncoveredCard>0){
+      hero.append(el('div',{style:{marginTop:'var(--s4)',paddingTop:'var(--s4)',borderTop:'1px solid var(--line-soft)',
+        fontSize:'12.5px',color:'var(--ink-2)',lineHeight:'1.55'}},
+        el('span',{},'Of your '+fmt(pots.goals.balance)+' in savings, '),
+        el('span',{style:{color:'var(--warn)',fontWeight:'650'}},fmt(uncoveredCard)),
+        el('span',{},' is really covering card debt. '),
+        el('span',{style:{color:'var(--ink)',fontWeight:'650'}},fmt(trueGoals)),
+        el('span',{},' is genuinely yours.')));
+    }
+    intelligenceWrap.append(hero);
+
+    // ── SAFE TO SPEND: the number you act on ──
+    const stsTone = safeToSpend>200?'accent':safeToSpend>0?'warn':'danger';
+    const stsCol  = 'var(--'+stsTone+')';
+    const sts = el('div',{class:'card'});
+    sts.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'var(--s2)'}},
+        el('div',{class:'t-eyebrow'},'Safe to spend'),
+        predictedPay>0?el('div',{class:'t-meta'},'next pay '+fmt(predictedPay)):el('span')),
+      el('div',{class:'t-figure num',style:{color:stsCol}},fmt(safeToSpend)),
+      el('div',{class:'t-meta',style:{marginTop:'3px'}},'until your next payday')
     );
 
-    // Warn when the card figure is only as fresh as the last statement
-    if(latestStmt && latestStmt.statementBalance!=null && Math.abs(cardOwed-latestStmt.statementBalance)<0.01){
-      potsCard.append(el('div',{style:{background:'var(--amber-dim)',borderRadius:'10px',padding:'10px 12px',
-        marginBottom:'14px',fontSize:'11px',color:'var(--amber)',lineHeight:'1.5'}},
-        'Your card figure matches your last statement, so anything spent since is not included. Check the Barclaycard app and update it in Accounts for a true net worth.'));
-    }
+    // Show the deduction as a stack rather than a run-on sentence
+    const wk = el('div',{style:{marginTop:'var(--s4)',paddingTop:'var(--s4)',borderTop:'1px solid var(--line-soft)'}});
+    const wkRow=(label,val,neg)=>el('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:'12.5px'}},
+      el('span',{style:{color:'var(--ink-3)'}},label),
+      el('span',{class:'num',style:{color:neg?'var(--ink-2)':'var(--ink)',fontWeight:'600'}},(neg?'−':'')+fmt(Math.abs(val))));
+    wk.append(wkRow('In your spending pot', pots.spending.balance, false));
+    if(predictedPay>0) wk.append(wkRow('Expected pay', predictedPay, false));
+    if(subTotal>0)     wk.append(wkRow('Subscriptions', subTotal, true));
+    if(cardDueSoon>0)  wk.append(wkRow('Card payment due', cardDueSoon, true));
+    if(upcomingOut>0)  wk.append(wkRow('Planned expenses', upcomingOut, true));
+    if(totalRequiredPerPaycheck>0) wk.append(wkRow('Goal savings', totalRequiredPerPaycheck, true));
+    sts.append(wk);
+    intelligenceWrap.append(sts);
 
-    potsCard.append(el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',
-      textTransform:'uppercase',fontWeight:'700',marginBottom:'2px'}},'Your pots'));
+    // ── DIAGNOSIS ──
+    // Ranks causes and states a verdict. Deliberately non-judgemental: a
+    // disciplined saver with ambitious goals is not the same as an overspender.
+    const owedToUser = (appData.debts||[]).reduce((s,d)=>s+Math.max(0,(d.amount||0)-(d.paid||0)),0);
+    const dx = diagnose(fmodel, baselines, {
+      goalRequiredPerMonth: totalRequiredPerPaycheck*26/12,
+      cardOwed, subsMonthly: subTotal, owedToUser,
+      availableCash: pots.spending.balance,
+      committedSoon: totalCommitted,
+    });
 
-    const potRow = (icon,title,job,amount,amountColor,statusText,statusColor,barPct,barColor)=>{
-      const row = el('div',{style:{padding:'12px 0',borderBottom:'1px solid var(--border)',cursor:'pointer'}});
-      row.append(
-        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'3px'}},
-          el('div',{style:{display:'flex',gap:'8px',alignItems:'baseline',minWidth:'0'}},
-            el('span',{style:{flexShrink:'0'}},icon),
-            el('div',{style:{minWidth:'0'}},
-              el('div',{style:{fontSize:'13px',fontWeight:'600',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},title),
-              el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},job)
-            )
-          ),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'15px',color:amountColor,flexShrink:'0'}},amount)
-        )
-      );
-      if(barPct!=null){
-        row.append(el('div',{class:'prog-wrap',style:{margin:'6px 0 4px'}},
-          el('div',{class:'prog-fill',style:{width:Math.min(100,Math.max(0,barPct))+'%',background:barColor}})));
+    const highs = dx.causes.filter(c=>c.severity==='high').length;
+    const meds  = dx.causes.filter(c=>c.severity==='medium').length;
+    const level = highs>=2 ? 'critical' : highs===1 ? 'warning' : meds>0 ? 'watch' : 'healthy';
+    const levelLabel = {critical:'Needs attention',warning:'Warning',watch:'Watch',healthy:'Healthy'}[level];
+    const levelCol   = {critical:'var(--danger)',warning:'var(--warn)',watch:'var(--info)',healthy:'var(--accent)'}[level];
+
+    const dxCard = el('div',{class:'card'});
+    dxCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'var(--s3)'}},
+        el('div',{class:'t-section'},'Your position'),
+        el('div',{class:'chip chip-'+level},levelLabel)),
+      el('div',{class:'t-body',style:{color:'var(--ink)',marginBottom:'var(--s4)'}}, dx.verdict)
+    );
+
+    if(dx.causes.length){
+      const list = el('div',{style:{borderTop:'1px solid var(--line-soft)',paddingTop:'var(--s3)'}});
+      for(const c of dx.causes.slice(0,4)){
+        const col = c.severity==='high'?'var(--danger)':c.severity==='medium'?'var(--warn)':'var(--info)';
+        list.append(el('div',{style:{display:'flex',gap:'var(--s3)',padding:'var(--s3) 0',
+          borderBottom:'1px solid var(--line-soft)'}},
+          el('div',{style:{width:'3px',borderRadius:'2px',background:col,flexShrink:'0',alignSelf:'stretch'}}),
+          el('div',{style:{flex:'1',minWidth:'0'}},
+            el('div',{style:{fontSize:'13px',fontWeight:'600',marginBottom:'2px'}},c.title),
+            el('div',{class:'t-meta'},c.detail),
+            c.evidence?el('div',{class:'t-meta',style:{marginTop:'3px',color:'var(--ink-4)'}},c.evidence):el('span'))
+        ));
       }
-      if(statusText) row.append(el('div',{style:{fontSize:'11px',color:statusColor,marginTop:'2px'}},statusText));
-      row.addEventListener('click',()=>{ if(window._setTab) window._setTab('_accounts'); });
-      return row;
-    };
-
-    // 1. The card — the thing that frees everything else up
-    if(cardOwed>0 || dueAmount>0){
-      const covered = dueAmount>0 ? (pots.cardPot.balance/dueAmount*100) : 100;
-      const dueLine = dueDateStr
-        ? (cardGap>0
-            ? fmt(cardGap)+' short of the '+fmt(dueAmount)+' due '+dueDateStr+(daysToDue!=null&&daysToDue>=0?' · '+daysToDue+' days':'')
-            : '✓ Covered — '+fmt(dueAmount)+' due '+dueDateStr)
-        : (cardGap>0 ? fmt(cardGap)+' not yet set aside' : '✓ Covered by your card pot');
-      potsCard.append(potRow('💳','Card to clear','Keep this low — it frees up everything else',
-        fmt(cardOwed),'var(--red)', dueLine, cardGap>0?'var(--amber)':'var(--green)',
-        covered, cardGap>0?'var(--amber)':'var(--green)'));
+      list.lastChild.style.borderBottom='none';
+      dxCard.append(list);
     }
+    if(fmodel.grossIncome>0){
+      dxCard.append(el('div',{class:'t-meta',style:{marginTop:'var(--s3)',paddingTop:'var(--s3)',
+        borderTop:'1px solid var(--line-soft)'}},
+        'Over '+fmodel.monthCount+' months: '+fmt(fmodel.monthlyIncome)+' in, '+fmt(fmodel.monthlySpending)+
+        ' out, '+fmt(baselines.sustainableMonthlySurplus)+' surplus a month.'));
+    }
+    intelligenceWrap.append(dxCard);
 
-    // 2. Card pot — money whose only job is clearing the card
-    potsCard.append(potRow('🏦', pots.cardPot.exists?pots.cardPot.names:'Card pot',
-      'Set aside to clear the card',
-      fmt(pots.cardPot.balance), pots.cardPot.balance>0?'var(--text)':'var(--text3)',
-      cardGap>0 ? 'Needs '+fmt(cardGap)+' more to cover the next payment' : 'Fully funded',
-      cardGap>0?'var(--amber)':'var(--green)', null, null));
-
-    // 3. Spending — day to day
-    potsCard.append(potRow('💷', pots.spending.exists?pots.spending.names:'Spending',
-      'Day-to-day money',
-      fmt(pots.spending.balance), pots.spending.balance<0?'var(--red)':'var(--text)',
-      weeksOfSpending>=1 ? '≈'+weeksOfSpending.toFixed(1)+' weeks at your usual £96/week'
-                         : 'Under a week at your usual £96/week',
-      weeksOfSpending>=1?'var(--text3)':'var(--amber)', null, null));
-
-    // 4. Goals — with the honest number after the card is accounted for
-    const goalsRow = potRow('🌸', pots.goals.exists?pots.goals.names:'Goals',
-      'Flora and your savings goals',
-      fmt(pots.goals.balance),'var(--green)',
-      uncoveredCard>0 ? 'Really '+fmt(trueGoals)+' once the '+fmt(uncoveredCard)+' card debt is covered' : 'All of this is yours',
-      uncoveredCard>0?'var(--amber)':'var(--green)', null, null);
-    goalsRow.style.borderBottom='none';
-    potsCard.append(goalsRow);
-
-    intelligenceWrap.append(potsCard);
-
-    // ── WHY AM I BROKE? ──
+    // ── SUPPORTING DETAIL ──
     if(reasons.length){
       const brokeCard = el('div',{class:'card',style:{marginBottom:'12px',borderLeft:'3px solid var(--red)'}});
-      brokeCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px',color:'var(--red)'}},'⚡ Why am I broke?'));
+      brokeCard.append(el('div',{style:{fontWeight:'700',fontSize:'15px',marginBottom:'12px',color:'var(--red)'}},'⚡ Specifics'));
       for(const r of reasons){
         const color = r.severity==='critical'?'var(--red)':r.severity==='warning'?'var(--amber)':'var(--text2)';
         const icon = r.severity==='critical'?'🔴':r.severity==='warning'?'🟡':'💡';
@@ -1060,48 +1167,6 @@ function overviewScreen(){
       hiddenCard.append(reviewBtn);
       intelligenceWrap.append(hiddenCard);
     }
-
-    // ── SAFE TO SPEND ──
-    const safeCard = el('div',{class:'card',style:{marginBottom:'12px'}});
-    safeCard.append(
-      el('div',{style:{fontSize:'11px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}},'Safe to spend'),
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-end',marginBottom:'12px'}},
-        el('div',{},
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',color:safeToSpend>200?'var(--green)':safeToSpend>0?'var(--amber)':'var(--red)',lineHeight:'1'}},fmt(safeToSpend)),
-          el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'4px'}},'before next payday')
-        ),
-        predictedPay>0?el('div',{style:{textAlign:'right'}},
-          el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'Next paycheck'),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)'}},fmt(predictedPay))
-        ):el('span')
-      ),
-      el('div',{style:{fontSize:'11px',color:'var(--text3)',lineHeight:'1.6'}},
-        'Spending pot £'+Math.round(pots.spending.balance)+
-        (predictedPay>0?' + next pay £'+Math.round(predictedPay):'') +
-        ' − subs £'+Math.round(subTotal)+
-        (cardDueSoon>0?' − card £'+Math.round(cardDueSoon):'')+
-        (upcomingOut>0?' − committed £'+Math.round(upcomingOut):'')+
-        ' − goal savings £'+Math.round(totalRequiredPerPaycheck)
-      )
-    );
-
-    // If the goals simply cannot be met at this income, say so plainly
-    // rather than silently showing £0 and leaving you to guess why.
-    if(predictedPay>0 && totalRequiredPerPaycheck > predictedPay){
-      const gapPerPay = totalRequiredPerPaycheck - predictedPay;
-      const soonest = goalDetails.filter(g=>!g.met&&!g.overdue)
-        .sort((a,b)=>a.daysLeft-b.daysLeft)[0];
-      safeCard.append(el('div',{style:{background:'var(--red-dim)',border:'1px solid var(--red)',
-        borderRadius:'12px',padding:'12px',marginTop:'12px',fontSize:'12px',lineHeight:'1.6',color:'var(--text2)'}},
-        el('div',{style:{fontWeight:'700',color:'var(--red)',marginBottom:'4px'}},'These goals need more than you earn'),
-        el('span',{},'Hitting every deadline needs '+fmt(totalRequiredPerPaycheck)+' a paycheck, but you take home about '+
-          fmt(predictedPay)+' — a gap of '+fmt(gapPerPay)+'.'+
-          (soonest?' '+soonest.name+' alone needs '+fmt(soonest.requiredPerPeriod)+' over '+soonest.payPeriodsLeft+' paychecks.':'')+
-          ' Either move the deadline, lower the target, or earn more — the app cannot make this one work.')
-      ));
-    }
-
-    intelligenceWrap.append(safeCard);
 
     // ── UPCOMING COMMITMENTS ──
     const commitCard = el('div',{class:'card',style:{marginBottom:'12px'}});
@@ -1155,42 +1220,100 @@ function overviewScreen(){
       florasiiCard.querySelector('button').addEventListener('click',()=>{ if(window._setTab) window._setTab('_goals'); });
     } else {
       for(const g of goalDetails){
-        const STATUS = g.met ? '✓ Funded'
-                     : g.overdue ? '⏰ Deadline passed'
-                     : g.queued ? '⏸ Up next'
-                     : g.onTrack ? '✓ On track' : '⚠ Behind';
-        const statusColor = g.met ? 'var(--green)'
-                          : g.overdue ? 'var(--red)'
-                          : g.queued ? 'var(--text3)'
-                          : g.onTrack ? 'var(--green)' : 'var(--amber)';
+        const state = g.met ? 'healthy' : g.overdue ? 'critical' : g.queued ? 'watch' : g.onTrack ? 'healthy' : 'warning';
+        const stateLabel = g.met?'Funded':g.overdue?'Date passed':g.queued?'Up next':g.onTrack?'On track':'Behind';
+        const stateCol = {healthy:'var(--accent)',critical:'var(--danger)',watch:'var(--info)',warning:'var(--warn)'}[state];
         const deadlineStr = new Date(g.deadline).toLocaleDateString('en-GB',{month:'short',year:'numeric'});
-        const goalBlock = el('div',{style:{marginBottom:'14px',paddingBottom:'14px',
-          borderBottom:'1px solid var(--border)', opacity: g.queued ? '0.55' : '1'}});
-        goalBlock.append(
-          el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'6px'}},
-            el('div',{},
-              el('div',{style:{fontSize:'13px',fontWeight:'600'}},g.name),
-              el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},'Target: '+fmt(g.target)+' by '+deadlineStr)
-            ),
-            el('div',{style:{textAlign:'right'}},
-              el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'14px',color:g.color||'var(--green)'}},fmt(g.myShare)),
-              el('div',{style:{fontSize:'10px',color:statusColor,marginTop:'2px'}},STATUS)
-            )
-          ),
-          el('div',{style:{background:'var(--surface2)',borderRadius:'100px',height:'6px',overflow:'hidden',marginBottom:'6px'}},
-            el('div',{style:{height:'100%',width:g.pctDone+'%',background:g.color||'var(--green)',borderRadius:'100px'}})
-          ),
-          el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'11px',color:'var(--text3)',gap:'8px'}},
-            el('span',{},g.pctDone+'% · '+fmt(g.remaining)+' to go'),
-            el('span',{style:{textAlign:'right'}},
-              g.met ? 'Target reached'
-                    : g.overdue ? 'Deadline was '+Math.abs(g.daysLeft)+'d ago — update it in Goals'
-                    : g.queued ? 'Starts after '+(g.waitingFor||'your current goal')
-                    : g.daysLeft+'d · need '+fmt(g.requiredPerPeriod)+'/paycheck')
-          )
+
+        const block = el('div',{style:{padding:'var(--s4) 0',borderBottom:'1px solid var(--line-soft)',
+          opacity: g.queued ? '.6' : '1'}});
+
+        block.append(
+          el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'var(--s3)',marginBottom:'var(--s3)'}},
+            el('div',{style:{minWidth:'0'}},
+              el('div',{style:{fontSize:'14px',fontWeight:'650',marginBottom:'2px'}},g.name),
+              el('div',{class:'t-meta'},fmt(g.target)+' by '+deadlineStr)),
+            el('div',{class:'chip chip-'+state},stateLabel))
         );
-        florasiiCard.append(goalBlock);
+
+        // Progress: amount reads with the bar, not separately from it
+        block.append(
+          el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'6px'}},
+            el('div',{class:'num',style:{fontSize:'19px',fontWeight:'700',color:stateCol}},fmt(g.myShare)),
+            el('div',{class:'t-meta'},g.pctDone+'% · '+fmt(g.remaining)+' to go')),
+          el('div',{class:'prog-wrap prog-track-lg'},
+            el('div',{class:'prog-fill',style:{width:g.pctDone+'%',background:stateCol}}))
+        );
+
+        // When behind, show the gap as three numbers rather than one red word
+        if(!g.met && !g.overdue && !g.queued){
+          const perWeekNeed = g.requiredPerPeriod/2;
+          const perWeekHave = avgFlorasiiPerPay/2;
+          const perWeekGap  = Math.max(0, perWeekNeed - perWeekHave);
+          const trio = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'var(--s2)',marginTop:'var(--s3)'}});
+          const cell=(label,val,col)=>el('div',{style:{background:'var(--surface-2)',borderRadius:'var(--r-sm)',padding:'8px 10px'}},
+            el('div',{style:{fontSize:'9.5px',color:'var(--ink-3)',textTransform:'uppercase',letterSpacing:'1px',fontWeight:'700',marginBottom:'3px'}},label),
+            el('div',{class:'num',style:{fontSize:'13px',fontWeight:'700',color:col}},val));
+          trio.append(
+            cell('Needed', fmt(perWeekNeed)+'/wk', 'var(--ink)'),
+            cell('Saving', fmt(perWeekHave)+'/wk', 'var(--ink-2)'),
+            cell('Gap', perWeekGap>0?fmt(perWeekGap)+'/wk':'none', perWeekGap>0?'var(--warn)':'var(--accent)')
+          );
+          block.append(trio);
+        } else {
+          block.append(el('div',{class:'t-meta',style:{marginTop:'var(--s2)'}},
+            g.met ? 'Target reached'
+              : g.overdue ? 'Deadline was '+Math.abs(g.daysLeft)+' days ago — update it in Goals'
+              : 'Starts after '+(g.waitingFor||'your current goal')));
+        }
+        florasiiCard.append(block);
       }
+
+      // Feasibility, explained      // Feasibility, explained — with sized ways to close any gap
+      const activeGoal = goalDetails.find(g=>g.isActive);
+      if(activeGoal){
+        const asmt = assessGoal({target:activeGoal.target, deadline:activeGoal.deadline},
+                                activeGoal.myShare, baselines);
+        const box = el('div',{style:{background:asmt.feasible?'var(--green-dim)':'var(--red-dim)',
+          border:'1px solid '+(asmt.feasible?'var(--green)':'var(--red)'),
+          borderRadius:'12px',padding:'12px',marginBottom:'12px'}});
+        box.append(
+          el('div',{style:{fontWeight:'700',fontSize:'13px',marginBottom:'6px',
+            color:asmt.feasible?'var(--green)':'var(--red)'}},
+            asmt.feasible?'✓ '+activeGoal.name+' is reachable':'⚠ '+activeGoal.name+' does not add up yet'),
+          el('div',{style:{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+            'You need '+fmt(asmt.requiredPerPaycheck)+' a paycheck for '+asmt.paychecksLeft+
+            ' paychecks. Your demonstrated surplus is '+fmt(asmt.sustainablePerPaycheck)+
+            (asmt.feasible?'.':', a gap of '+fmt(asmt.shortfallPerPaycheck)+'.')),
+          asmt.feasible?el('span'):el('div',{style:{fontSize:'12px',color:'var(--text2)',marginTop:'6px',lineHeight:'1.6'}},
+            'At your current rate you would reach '+fmt(asmt.projectedAtDeadline)+' by the deadline — '+
+            fmt(asmt.projectedShortfall)+' short.')
+        );
+        florasiiCard.append(box);
+
+        const scenarios = goalScenarios(asmt, {
+          subsMonthly: subTotal,
+          discretionaryMonthly: fmodel.monthlyDiscretionary,
+          owedToUser: (appData.debts||[]).reduce((s,d)=>s+Math.max(0,(d.amount||0)-(d.paid||0)),0),
+          hourlyRate: appData.hourlyRate||14.50,
+        });
+        if(scenarios.length){
+          const sc = el('div',{style:{marginBottom:'12px'}});
+          sc.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',textTransform:'uppercase',
+            letterSpacing:'1px',fontWeight:'700',marginBottom:'8px'}},'Ways to close the gap'));
+          for(const s of scenarios.slice(0,5)){
+            sc.append(el('div',{style:{display:'flex',gap:'10px',alignItems:'flex-start',
+              padding:'8px 0',borderBottom:'1px solid var(--border)'}},
+              el('div',{style:{flex:'1'}},
+                el('div',{style:{fontSize:'12px',fontWeight:'600'}},s.label),
+                el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px',lineHeight:'1.5'}},s.detail)),
+              el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'11px',
+                color:'var(--green)',flexShrink:'0'}},fmt(s.closes))));
+          }
+          florasiiCard.append(sc);
+        }
+      }
+
       florasiiCard.append(
         el('div',{style:{display:'flex',justifyContent:'space-between',fontSize:'13px',paddingTop:'2px',gap:'8px'}},
           el('span',{style:{color:'var(--text2)'}},(()=>{
@@ -1222,7 +1345,7 @@ function overviewScreen(){
       const drillWrap = el('div',{style:{display:'none'}});
 
       // Standard categories for picker
-      const STANDARD_CATS = ['Groceries','Eating out','Transport','Shopping','Health',
+      const STANDARD_CATS = ['Housing','Groceries','Eating out','Transport','Shopping','Health',
         'Entertainment','Bars & Nights out','Travel','Bills','Subscriptions',
         'Personal care','Education','Gifts','Other'];
 
@@ -1374,19 +1497,45 @@ function overviewScreen(){
     }
 
     // ── SUBSCRIPTIONS (collapsed summary) ──
-    intelligenceWrap.append(
-      el('div',{class:'section-hdr'},'Subscriptions · '+fmt(subTotal)+'/mo'),
-      el('div',{class:'card'},
-        ...subscriptions.map(s=>el('div',{class:'sub-item'},
-          el('div',{style:{fontSize:'14px'}},s.name),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',color:'var(--text2)'}},fmt(s.amount))
-        )),
-        el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'14px',marginTop:'4px',borderTop:'1px solid var(--border)'}},
-          el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},'Annual cost'),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700',color:'var(--amber)'}},fmt(subTotal*12))
-        )
-      )
-    );
+    if(subscriptions.length){
+      const subCard = el('div',{class:'card'});
+      const annual = subTotal*12;
+      const pctIncome = fmodel.monthlyIncome>0 ? Math.round(subTotal/fmodel.monthlyIncome*100) : null;
+
+      // Annual cost leads — £1,367/year lands differently from £113.94/month
+      subCard.append(
+        el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Subscriptions cost you'),
+        el('div',{style:{display:'flex',alignItems:'baseline',gap:'var(--s2)',marginBottom:'3px'}},
+          el('div',{class:'t-figure num',style:{color:'var(--warn)'}},fmt(annual)),
+          el('div',{class:'t-label'},'a year')),
+        el('div',{class:'t-meta',style:{marginBottom:'var(--s4)'}},
+          fmt(subTotal)+' a month across '+subscriptions.length+' subscription'+(subscriptions.length===1?'':'s')+
+          (pctIncome!=null?' · '+pctIncome+'% of your income':''))
+      );
+
+      // Most expensive first — that is the order you would cancel in
+      const sorted=[...subscriptions].sort((a,b)=>b.amount-a.amount);
+      const list = el('div',{style:{borderTop:'1px solid var(--line-soft)',paddingTop:'var(--s2)'}});
+      for(const s of sorted){
+        list.append(el('div',{class:'sub-item'},
+          el('div',{style:{minWidth:'0'}},
+            el('div',{style:{fontSize:'13.5px',fontWeight:'550'}},s.name),
+            s.billingDay?el('div',{class:'t-meta'},'bills on day '+s.billingDay):el('span')),
+          el('div',{style:{textAlign:'right',flexShrink:'0'}},
+            el('div',{class:'num',style:{fontSize:'13.5px',fontWeight:'700'}},fmt(s.amount)),
+            el('div',{class:'t-meta'},fmt(s.amount*12)+'/yr'))
+        ));
+      }
+      subCard.append(list);
+
+      const priciest=sorted[0];
+      if(priciest && priciest.amount*12 > 100){
+        subCard.append(el('div',{style:{marginTop:'var(--s3)',paddingTop:'var(--s3)',
+          borderTop:'1px solid var(--line-soft)'}},
+          el('div',{class:'t-meta'},'Cancelling '+priciest.name+' alone would save '+fmt(priciest.amount*12)+' a year.')));
+      }
+      intelligenceWrap.append(el('div',{class:'section-hdr'},'Recurring costs'), subCard);
+    }
   }
 
   // Show balances immediately — use user-defined accounts if available, fallback to legacy
@@ -3118,7 +3267,8 @@ function transactionsScreen(){
   };
 
   async function load(){
-    listWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:20px 0">Loading transactions…</div>';
+    listWrap.innerHTML = '<div class="skeleton skel-line" style="width:40%"></div>'+
+      Array.from({length:5},()=>'<div class="skeleton" style="height:56px;margin-bottom:6px;border-radius:12px"></div>').join('');
     allTxns = await txnDB.getTransactions(500);
     applyFilter();
   }
@@ -3143,12 +3293,15 @@ function transactionsScreen(){
   function renderList(){
     listWrap.innerHTML = '';
     if(allTxns.length === 0){
-      listWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},
-        'No transactions yet. Import a bank statement to get started.'));
+      listWrap.append(el('div',{class:'state'},
+        el('div',{class:'state-title'},'No transactions yet'),
+        el('div',{class:'state-body'},'Import a bank statement from More → Import Statement and your spending will appear here.')));
       return;
     }
     if(filtered.length === 0){
-      listWrap.append(el('div',{style:{color:'var(--text3)',fontSize:'13px',padding:'16px 0'}},'No transactions match this filter.'));
+      listWrap.append(el('div',{class:'state'},
+        el('div',{class:'state-title'},'Nothing matches'),
+        el('div',{class:'state-body'},'Try a different filter, or clear your search.')));
       return;
     }
 
@@ -3175,29 +3328,28 @@ function transactionsScreen(){
       listWrap.append(monthHdr);
 
       for(const t of txns){
-        const row = el('div',{style:{
-          display:'flex',alignItems:'center',gap:'10px',
-          padding:'11px 14px',background:'var(--surface)',border:'1px solid var(--border)',
-          borderRadius:'12px',marginBottom:'6px',cursor:'pointer',
-          borderLeft:'3px solid '+(FINANCIAL_TYPE_COLORS[t.financialType]||'var(--border)')
-        }});
+        // Large relative to this month's typical spend — worth spotting at a glance
+        const isLarge = t.direction==='debit' && t.amount >= Math.max(60, (totalOut/Math.max(txns.length,1))*4);
+        const row = el('div',{class:'txn'+(isLarge?' txn-large':'')});
 
-        const dateSpan = el('div',{style:{fontSize:'11px',color:'var(--text3)',minWidth:'32px',textAlign:'center',lineHeight:'1.2'}});
         const d = new Date(t.postingDate);
-        dateSpan.append(el('div',{},String(d.getDate())),el('div',{},d.toLocaleDateString('en-GB',{month:'short'})));
+        const dateSpan = el('div',{class:'txn-date'});
+        dateSpan.append(
+          el('div',{style:{fontWeight:'650',color:'var(--ink-2)'}},String(d.getDate())),
+          el('div',{},d.toLocaleDateString('en-GB',{month:'short'})));
 
-        const info = el('div',{style:{flex:'1',minWidth:'0'}});
+        const info = el('div',{class:'txn-main'});
         info.append(
-          el('div',{style:{fontWeight:'500',fontSize:'13px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},t.normalisedMerchant||t.rawDescription),
-          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},t.category+(t.subcategory?' · '+t.subcategory:''))
+          el('div',{class:'txn-merchant'},t.normalisedMerchant||t.rawDescription),
+          el('div',{class:'txn-cat'},
+            (t.userCategory||t.category)+(t.sourceType==='credit_card'?' · card':''))
         );
 
-        const amtCol = el('div',{style:{textAlign:'right',flexShrink:'0'}});
+        const amtCol = el('div',{class:'txn-amt'});
         amtCol.append(
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'13px',
-            color:t.direction==='credit'?'var(--green)':'var(--text)'}},
-            (t.direction==='credit'?'+':'-')+'£'+t.amount.toFixed(2)),
-          needsReview(t)?el('div',{style:{fontSize:'9px',color:'var(--amber)',marginTop:'1px'}},'review'):el('span')
+          el('div',{class:'num',style:{color:t.direction==='credit'?'var(--accent)':'var(--ink)'}},
+            (t.direction==='credit'?'+':'−')+'£'+t.amount.toFixed(2)),
+          needsReview(t)?el('div',{style:{fontSize:'9.5px',color:'var(--warn)',marginTop:'2px',fontWeight:'600'}},'review'):el('span')
         );
 
         row.append(dateSpan, info, amtCol);
@@ -3255,6 +3407,7 @@ function transactionsScreen(){
 
     // Standard categories
     const STANDARD_CATS = [
+      ['Housing',         ['Rent','Accommodation','Mortgage']],
       ['Groceries',       ['Supermarket','Weekly shop','Food shopping']],
       ['Eating out',      ['Restaurant','Cafe','Takeaway','Fast food','Coffee']],
       ['Transport',       ['Taxi','Train','Bus','Parking','Fuel']],
@@ -3361,19 +3514,14 @@ function transactionsScreen(){
   }
 
   // Filter bar
-  const filterBar = el('div',{style:{display:'flex',gap:'6px',marginBottom:'12px',flexWrap:'wrap'}});
+  const filterBar = el('div',{class:'filter-row'});
   const filters = [['all','All'],['income','Income'],['expense','Expenses'],['transfer','Transfers'],['review','Needs review']];
   for(const [id,label] of filters){
-    const btn = el('button',{style:{
-      background:filterType===id?'var(--green)':'var(--surface2)',
-      color:filterType===id?'#000':'var(--text2)',
-      border:'none',borderRadius:'100px',padding:'6px 12px',fontSize:'12px',fontWeight:'600'
-    }},label);
+    const btn = el('button',{class:'filter-chip'+(filterType===id?' on':'')},label);
     btn.addEventListener('click',()=>{
       filterType=id;
       filterBar.querySelectorAll('button').forEach((b,i)=>{
-        b.style.background=filters[i][0]===id?'var(--green)':'var(--surface2)';
-        b.style.color=filters[i][0]===id?'#000':'var(--text2)';
+        b.className = 'filter-chip'+(filters[i][0]===id?' on':'');
       });
       applyFilter();
     });
@@ -3521,74 +3669,357 @@ const recurringDB = {
 // PHASE K — HISTORICAL ANALYTICS
 // ═══════════════════════════════════════════════════════════════
 
-async function buildAnalytics(periodMonths){
+// ═══════════════════════════════════════════════════════════════
+// FINANCIAL MODEL — one reconciled source of truth
+//
+// Accounting identity this engine guarantees:
+//     ΔNetWorth = grossIncome − trueSpending
+//
+// Transfers between your own accounts net to zero. A credit-card payment
+// converts cash into debt reduction, so it is net-worth neutral and is NOT
+// spending — the card purchase it settles was already counted as spending.
+// ═══════════════════════════════════════════════════════════════
+
+// What kind of cost is each category? Drives essential vs discretionary.
+const CATEGORY_KIND = {
+  'Housing':'essential', 'Bills':'essential', 'Groceries':'essential',
+  'Transport':'essential', 'Health':'essential', 'Education':'essential',
+  'Eating out':'discretionary', 'Shopping':'discretionary',
+  'Entertainment':'discretionary', 'Bars & Nights out':'discretionary',
+  'Travel':'discretionary', 'Personal care':'discretionary', 'Gifts':'discretionary',
+  'Subscriptions':'committed',
+  'Transfer':'excluded', 'Savings':'excluded', 'Income':'excluded', 'Refund':'excluded',
+  'Uncategorised':'unknown', 'Other':'unknown',
+};
+function categoryKind(cat){ return CATEGORY_KIND[cat] || 'unknown'; }
+
+// Life-stage costs that ended. Counting these as current lifestyle would
+// wrongly suggest today's spending is extravagant.
+function lifeStageTag(t){
+  const hay = ((t.normalisedMerchant||'')+' '+(t.rawDescription||'')+' '+(t.rawMemo||'')).toUpperCase();
+  if(/FPG |FRESH PROPERTY|YSI\*|TY NANT|THE OLDWAY|UNITE STUDENTS|STUDENT ROOST|IQ STUDENT/.test(hay))
+    return 'university_accommodation';
+  if(/SLC DISBURSEMENT|STUDENT LOAN/.test(hay)) return 'student_finance';
+  return null;
+}
+
+function txnMonth(t){ return (t.postingDate||t.transactionDate||'').slice(0,7); }
+
+// The single classifier every metric derives from.
+function classifyForModel(t){
+  const ft  = t.financialType || 'UNKNOWN';
+  const cat = t.userCategory || t.category || 'Uncategorised';
+  const stage = lifeStageTag(t);
+
+  // Money that is not income or spending — moving between your own pots
+  if(ft==='SAVINGS_TRANSFER')  return {bucket: t.direction==='debit' ? 'savings_out':'savings_in', cat, stage};
+  if(ft==='TRANSFER_OUT')      return {bucket:'transfer_out', cat, stage};
+  if(ft==='TRANSFER_IN')       return {bucket:'transfer_in',  cat, stage};
+  if(cat==='Transfer')         return {bucket: t.direction==='debit'?'transfer_out':'transfer_in', cat, stage};
+
+  if(ft==='INCOME')  return {bucket:'income', cat, stage};
+  if(ft==='REFUND')  return {bucket:'refund', cat, stage};
+
+  if(ft==='EXPENSE'){
+    return {bucket:'spending', cat, stage, kind:categoryKind(cat), onCard:t.sourceType==='credit_card'};
+  }
+  if(ft==='UNKNOWN_CREDIT') return {bucket:'unknown_credit', cat, stage};
+  return {bucket: t.direction==='credit' ? 'unknown_credit' : 'spending',
+          cat, stage, kind:categoryKind(cat)};
+}
+
+// Build the reconciled model over a set of transactions.
+function buildFinancialModel(txns, opts){
+  opts = opts||{};
+  const excludeLifeStage = opts.excludeLifeStage || [];
+
+  const M = {
+    grossIncome:0, trueSpending:0, refunds:0,
+    essential:0, discretionary:0, committed:0, unknownSpend:0,
+    savingsOut:0, savingsIn:0, transferOut:0, transferIn:0,
+    unknownCredit:0, cardSpending:0,
+    lifeStageExcluded:0, lifeStageBreakdown:{},
+    byCategory:{}, byMonth:{}, txnCount:0,
+    months:new Set(),
+  };
+
+  for(const t of txns){
+    const c = classifyForModel(t);
+    const amt = Math.abs(t.amount||0);
+    const m = txnMonth(t);
+    if(m) M.months.add(m);
+    M.txnCount++;
+
+    if(c.stage){
+      M.lifeStageBreakdown[c.stage] = (M.lifeStageBreakdown[c.stage]||0) + amt;
+      if(excludeLifeStage.includes(c.stage)){
+        M.lifeStageExcluded += amt;
+        continue;   // omitted from every headline figure
+      }
+    }
+
+    if(!M.byMonth[m]) M.byMonth[m] = {income:0, spending:0, savingsOut:0, essential:0, discretionary:0};
+
+    switch(c.bucket){
+      case 'income':
+        M.grossIncome += amt; M.byMonth[m].income += amt; break;
+      case 'refund':
+        M.refunds += amt; break;                       // netted off spending below
+      case 'spending': {
+        M.trueSpending += amt;
+        M.byMonth[m].spending += amt;
+        if(c.onCard) M.cardSpending += amt;
+        if(c.kind==='essential'){ M.essential += amt; M.byMonth[m].essential += amt; }
+        else if(c.kind==='discretionary'){ M.discretionary += amt; M.byMonth[m].discretionary += amt; }
+        else if(c.kind==='committed') M.committed += amt;
+        else M.unknownSpend += amt;
+        M.byCategory[c.cat] = M.byCategory[c.cat] || {total:0,count:0,kind:c.kind};
+        M.byCategory[c.cat].total += amt; M.byCategory[c.cat].count++;
+        break;
+      }
+      case 'savings_out': M.savingsOut += amt; M.byMonth[m].savingsOut += amt; break;
+      case 'savings_in':  M.savingsIn  += amt; break;
+      case 'transfer_out':M.transferOut += amt; break;
+      case 'transfer_in': M.transferIn  += amt; break;
+      case 'unknown_credit': M.unknownCredit += amt; break;
+    }
+  }
+
+  // Derived figures
+  M.netSpending    = Math.max(0, M.trueSpending - M.refunds);
+  M.netCashFlow    = M.grossIncome - M.netSpending;
+  M.netWorthChange = M.netCashFlow;                    // transfers are internal
+  M.monthCount     = Math.max(1, M.months.size);
+  M.monthlyIncome    = M.grossIncome / M.monthCount;
+  M.monthlySpending  = M.netSpending / M.monthCount;
+  M.monthlySurplus   = M.netCashFlow / M.monthCount;
+  M.monthlyEssential = M.essential / M.monthCount;
+  M.monthlyDiscretionary = M.discretionary / M.monthCount;
+
+  // Two distinct rates that are routinely conflated
+  M.savingsRate         = M.grossIncome>0 ? (M.netCashFlow/M.grossIncome*100) : 0;
+  M.savingsTransferRate = M.grossIncome>0 ? (M.savingsOut  /M.grossIncome*100) : 0;
+
+  // Reconciliation — surfaced, never hidden
+  M.netTransfers = (M.transferIn + M.savingsIn) - (M.transferOut + M.savingsOut);
+  M.reconciliation = {
+    identity: 'netWorthChange = grossIncome − netSpending',
+    grossIncome: M.grossIncome,
+    netSpending: M.netSpending,
+    computed: M.netWorthChange,
+    transfersExcluded: M.transferOut + M.transferIn + M.savingsOut + M.savingsIn,
+    unexplainedCredits: M.unknownCredit,
+    balances: Math.abs((M.grossIncome - M.netSpending) - M.netWorthChange) < 0.01,
+  };
+  return M;
+}
+
+// Several baselines, because one number over three years hides life changes.
+function buildBaselines(txns, opts){
+  const now = opts && opts.now ? new Date(opts.now) : new Date();
+  const windows = [['3m',3],['6m',6],['12m',12],['all',0]];
+  const out = {};
+  for(const [key,months] of windows){
+    let subset = txns;
+    if(months>0){
+      const cut = new Date(now); cut.setMonth(cut.getMonth()-months);
+      const cutStr = cut.toISOString().slice(0,10);
+      subset = txns.filter(t=>(t.postingDate||'') >= cutStr);
+    }
+    out[key] = buildFinancialModel(subset, opts);
+  }
+  // Recent behaviour predicts current behaviour better than lifetime averages
+  const w = [[out['3m'],0.5],[out['6m'],0.3],[out['12m'],0.2]];
+  let num=0, den=0;
+  for(const [m,weight] of w){ if(m && m.txnCount>5){ num += m.monthlySurplus*weight; den += weight; } }
+  out.sustainableMonthlySurplus = den>0 ? num/den : (out['all']?out['all'].monthlySurplus:0);
+  out.sustainablePerPaycheck    = out.sustainableMonthlySurplus * 12/26;
+  return out;
+}
+
+// Goal feasibility, with the reasoning shown rather than a bare number.
+function assessGoal(goal, availableForGoal, baselines, opts){
+  opts = opts||{};
+  const now = opts.now ? new Date(opts.now) : new Date();
+  const deadline = new Date(goal.deadline);
+  const daysLeft = Math.ceil((deadline - now)/86400000);
+  const monthsLeft = daysLeft/30.44;
+  const paychecksLeft = Math.max(0, Math.floor(daysLeft/14));
+  const remaining = Math.max(0, goal.target - availableForGoal);
+
+  const requiredPerPaycheck = paychecksLeft>0 ? remaining/paychecksLeft : remaining;
+  const requiredPerMonth    = monthsLeft>0 ? remaining/monthsLeft : remaining;
+
+  const sustainablePerPaycheck = baselines.sustainablePerPaycheck || 0;
+  const sustainablePerMonth    = baselines.sustainableMonthlySurplus || 0;
+  const shortfallPerPaycheck   = requiredPerPaycheck - sustainablePerPaycheck;
+  const feasible = daysLeft>0 && remaining<=0 ? true
+                 : (daysLeft>0 && requiredPerPaycheck <= sustainablePerPaycheck);
+
+  const projectedAtDeadline = availableForGoal + sustainablePerPaycheck*paychecksLeft;
+  const projectedShortfall  = Math.max(0, goal.target - projectedAtDeadline);
+
+  // When could this realistically be met at the demonstrated rate?
+  let monthsToTarget = null, feasibleDate = null;
+  if(sustainablePerMonth > 0 && remaining > 0){
+    monthsToTarget = remaining/sustainablePerMonth;
+    const d = new Date(now); d.setMonth(d.getMonth()+Math.ceil(monthsToTarget));
+    feasibleDate = d.toISOString().slice(0,10);
+  }
+
+  return {
+    goal, target:goal.target, current:availableForGoal, remaining,
+    daysLeft, monthsLeft, paychecksLeft,
+    requiredPerPaycheck, requiredPerMonth,
+    sustainablePerPaycheck, sustainablePerMonth,
+    shortfallPerPaycheck, feasible, overdue: daysLeft<0,
+    projectedAtDeadline, projectedShortfall,
+    monthsToTarget, feasibleDate,
+  };
+}
+
+// Concrete ways to close a gap, sized against real figures.
+function goalScenarios(assessment, ctx){
+  const s = [];
+  const gap = assessment.projectedShortfall;
+  if(gap<=0) return s;
+  const {subsMonthly=0, discretionaryMonthly=0, owedToUser=0, hourlyRate=14.50} = ctx||{};
+  const months = Math.max(1, assessment.monthsLeft);
+
+  if(assessment.feasibleDate){
+    s.push({type:'extend', label:'Move the deadline',
+      detail:'At your demonstrated surplus this target is reachable around '+
+        new Date(assessment.feasibleDate).toLocaleDateString('en-GB',{month:'long',year:'numeric'})+'.',
+      closes:gap});
+  }
+  s.push({type:'reduce_target', label:'Lower the target',
+    detail:'A target of '+fmt(assessment.projectedAtDeadline)+' is what your current rate actually reaches by the deadline.',
+    closes:gap});
+  if(owedToUser>0) s.push({type:'recover_debt', label:'Collect what you are owed',
+    detail:fmt(owedToUser)+' owed to you would cover '+Math.round(owedToUser/gap*100)+'% of the gap.',
+    closes:Math.min(gap,owedToUser)});
+  if(discretionaryMonthly>20){
+    const halved = discretionaryMonthly/2*months;
+    s.push({type:'cut_discretionary', label:'Halve discretionary spending',
+      detail:'You spend '+fmt(discretionaryMonthly)+'/month on non-essentials; halving it frees '+fmt(halved)+' before the deadline.',
+      closes:Math.min(gap,halved)});
+  }
+  if(subsMonthly>10){
+    const saved = subsMonthly*months;
+    s.push({type:'cut_subs', label:'Cancel subscriptions',
+      detail:'Subscriptions cost '+fmt(subsMonthly)+'/month, or '+fmt(saved)+' before the deadline.',
+      closes:Math.min(gap,saved)});
+  }
+  if(hourlyRate>0){
+    const hrs = gap/hourlyRate;
+    s.push({type:'earn_more', label:'Work extra hours',
+      detail:Math.ceil(hrs)+' extra hours at '+fmt(hourlyRate)+'/hr closes the gap — about '+
+        (hrs/Math.max(1,months*4.33)).toFixed(1)+' hours a week.',
+      closes:gap});
+  }
+  return s.sort((a,b)=>b.closes-a.closes);
+}
+
+// Why does it feel tight? Rank the causes rather than listing symptoms.
+function diagnose(model, baselines, ctx){
+  ctx = ctx||{};
+  const causes = [];
+  const inc = model.monthlyIncome || 0;
+  const push = (id,severity,title,detail,evidence)=>causes.push({id,severity,title,detail,evidence});
+
+  if(ctx.goalRequiredPerMonth > 0 && inc > 0){
+    const ratio = ctx.goalRequiredPerMonth / Math.max(baselines.sustainableMonthlySurplus, 1);
+    if(ratio > 1.2) push('aggressive_goals', ratio>2?'high':'medium',
+      'Your goals are outrunning your cash flow',
+      'Your targets need '+fmt(ctx.goalRequiredPerMonth)+'/month but your demonstrated surplus is '+
+      fmt(baselines.sustainableMonthlySurplus)+'/month.',
+      'This is a target problem, not a spending problem.');
+  }
+  if(ctx.cardOwed > 0 && inc > 0 && ctx.cardOwed > inc*0.25)
+    push('debt','high','Credit card debt is consuming cash flow',
+      fmt(ctx.cardOwed)+' owed is '+Math.round(ctx.cardOwed/inc*100)+'% of a month\'s income.',
+      'Clearing it releases that money every cycle.');
+  if(model.monthlyDiscretionary > inc*0.35 && inc>0)
+    push('discretionary','medium','Discretionary spending is high',
+      fmt(model.monthlyDiscretionary)+'/month is '+Math.round(model.monthlyDiscretionary/inc*100)+'% of income.',null);
+  if(ctx.subsMonthly > 0 && inc>0 && ctx.subsMonthly > inc*0.08)
+    push('subscription_creep','medium','Subscriptions are a large fixed cost',
+      fmt(ctx.subsMonthly)+'/month ('+fmt(ctx.subsMonthly*12)+'/year) is '+
+      Math.round(ctx.subsMonthly/inc*100)+'% of income.',null);
+  if(model.monthlyEssential > inc*0.6 && inc>0)
+    push('fixed_costs','high','Essential costs leave little room',
+      fmt(model.monthlyEssential)+'/month on essentials is '+Math.round(model.monthlyEssential/inc*100)+'% of income.',null);
+  if(model.netCashFlow < 0)
+    push('overspending','high','You are spending more than you earn',
+      'Over this period you spent '+fmt(Math.abs(model.netCashFlow))+' more than came in.',null);
+  if(ctx.owedToUser > 0 && inc>0 && ctx.owedToUser > inc*0.3)
+    push('money_owed','medium','Money owed to you is tying up cash',
+      fmt(ctx.owedToUser)+' is roughly '+(ctx.owedToUser/Math.max(inc,1)).toFixed(1)+' months of income.',null);
+  if(ctx.availableCash!=null && ctx.committedSoon>0 && ctx.availableCash < ctx.committedSoon)
+    push('timing','high','Timing, not shortage',
+      'You hold '+fmt(ctx.availableCash)+' but '+fmt(ctx.committedSoon)+' is committed before payday.',
+      'Your savings could cover it — the money is in the wrong pot.');
+
+  const order = {high:0, medium:1, low:2};
+  causes.sort((a,b)=>order[a.severity]-order[b.severity]);
+
+  // The verdict: is this person a poor saver, or just over-committed?
+  let verdict;
+  if(model.savingsRate >= 20 && causes.some(c=>c.id==='aggressive_goals'))
+    verdict = 'You are not a poor saver — you save '+Math.round(model.savingsRate)+
+      '% of income. Your goals are simply demanding more than your income comfortably supports right now.';
+  else if(model.netCashFlow < 0)
+    verdict = 'You are spending more than you earn over this period, so the gap is genuine rather than a matter of timing.';
+  else if(causes.some(c=>c.id==='timing'))
+    verdict = 'You have the money, just not in the account that needs it before payday.';
+  else if(model.savingsRate >= 20)
+    verdict = 'Your finances are fundamentally sound — you save '+Math.round(model.savingsRate)+'% of what you earn.';
+  else
+    verdict = 'Your surplus is thin, so small changes in spending have an outsized effect.';
+
+  return {causes, verdict, primaryCause: causes[0]||null};
+}
+
+async function buildAnalytics(periodMonths, opts){
+  opts = opts||{};
   const now = new Date();
   const cutoff = new Date(now);
   if(periodMonths > 0) cutoff.setMonth(cutoff.getMonth() - periodMonths);
   const cutoffStr = cutoff.toISOString().slice(0,10);
 
-  // Load transactions for period
   const snap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
-  const val = snap.val() || {};
-  const allTxns = Object.values(val).filter(t=>
-    periodMonths === 0 || t.postingDate >= cutoffStr
-  );
+  const all = Object.values(snap.val() || {});
+  const txns = all.filter(t => periodMonths === 0 || (t.postingDate||'') >= cutoffStr);
 
-  // Separate by financial type — transfers EXCLUDED from income/expense calcs
-  const income   = allTxns.filter(t=>t.financialType==='INCOME');
-  const expenses = allTxns.filter(t=>t.financialType==='EXPENSE');
-  const savings  = allTxns.filter(t=>t.financialType==='SAVINGS_TRANSFER' && t.direction==='debit');
-  const refunds  = allTxns.filter(t=>t.financialType==='REFUND');
+  const model = buildFinancialModel(txns, opts);
+  const baselines = buildBaselines(all, opts);
 
-  // Monthly aggregates
-  const monthly = {};
-  for(const t of [...income,...expenses,...savings]){
-    const m = t.postingDate.slice(0,7);
-    if(!monthly[m]) monthly[m]={income:0,expenses:0,savings:0,txnCount:0};
-    if(t.financialType==='INCOME') monthly[m].income+=t.amount;
-    if(t.financialType==='EXPENSE') monthly[m].expenses+=t.amount;
-    if(t.financialType==='SAVINGS_TRANSFER') monthly[m].savings+=t.amount;
-    monthly[m].txnCount++;
-  }
-
-  // Category breakdown (expenses only)
-  const byCategory = {};
-  for(const t of expenses){
-    const cat = t.userCategory || t.category || 'Uncategorised';
-    if(!byCategory[cat]) byCategory[cat]={total:0,count:0};
-    byCategory[cat].total += t.amount;
-    byCategory[cat].count++;
-  }
-
-  // Merchant breakdown
   const byMerchant = {};
-  for(const t of expenses){
-    const m = t.normalisedMerchant || t.rawDescription;
-    if(!byMerchant[m]) byMerchant[m]={total:0,count:0};
-    byMerchant[m].total += t.amount;
-    byMerchant[m].count++;
+  for(const t of txns){
+    if(classifyForModel(t).bucket !== 'spending') continue;
+    const m = t.normalisedMerchant || t.rawDescription || 'Unknown';
+    if(!byMerchant[m]) byMerchant[m] = {total:0,count:0};
+    byMerchant[m].total += Math.abs(t.amount||0); byMerchant[m].count++;
   }
-
-  const totalIncome   = income.reduce((s,t)=>s+t.amount,0);
-  const totalExpenses = expenses.reduce((s,t)=>s+t.amount,0);
-  const totalSavings  = savings.reduce((s,t)=>s+t.amount,0);
-  const netIncome     = totalIncome - totalExpenses;
-  const savingsRate   = totalIncome > 0 ? (totalSavings/totalIncome*100) : 0;
-
-  const monthlyArr = Object.entries(monthly).sort((a,b)=>a[0].localeCompare(b[0]));
-  const avgMonthlyIncome   = monthlyArr.length ? monthlyArr.reduce((s,[,m])=>s+m.income,0)/monthlyArr.length : 0;
-  const avgMonthlyExpenses = monthlyArr.length ? monthlyArr.reduce((s,[,m])=>s+m.expenses,0)/monthlyArr.length : 0;
 
   return {
-    totalIncome, totalExpenses, totalSavings, netIncome, savingsRate,
-    avgMonthlyIncome, avgMonthlyExpenses,
-    txnCount: allTxns.length,
-    incomeCount: income.length,
-    expenseCount: expenses.length,
-    byCategory: Object.entries(byCategory).sort((a,b)=>b[1].total-a[1].total).slice(0,10),
+    model, baselines,
+    totalIncome: model.grossIncome,
+    totalExpenses: model.netSpending,
+    totalSavings: model.savingsOut,
+    netIncome: model.netCashFlow,
+    savingsRate: model.savingsRate,
+    savingsTransferRate: model.savingsTransferRate,
+    avgMonthlyIncome: model.monthlyIncome,
+    avgMonthlyExpenses: model.monthlySpending,
+    txnCount: model.txnCount,
+    incomeCount: txns.filter(t=>classifyForModel(t).bucket==='income').length,
+    expenseCount: txns.filter(t=>classifyForModel(t).bucket==='spending').length,
+    byCategory: Object.entries(model.byCategory)
+      .sort((a,b)=>b[1].total-a[1].total).slice(0,10),
     byMerchant: Object.entries(byMerchant).sort((a,b)=>b[1].total-a[1].total).slice(0,10),
-    monthly: monthlyArr,
-    hasTxnData: allTxns.length > 0,
+    monthly: Object.entries(model.byMonth).sort((a,b)=>a[0].localeCompare(b[0])),
+    hasTxnData: txns.length > 0,
   };
 }
 
@@ -3621,13 +4052,90 @@ function analyticsScreen(){
       );
       return c;
     };
+    const M = a.model;
     grid.append(
-      scard('Income', fmt(a.totalIncome), 'var(--green)', a.incomeCount+' payments'),
-      scard('Expenses', fmt(a.totalExpenses), 'var(--red)', a.expenseCount+' transactions'),
-      scard('Saved', fmt(a.totalSavings), 'var(--amber)', 'savings transfers'),
-      scard('Savings rate', Math.round(a.savingsRate)+'%', a.savingsRate>=20?'var(--green)':'var(--amber)', 'of income'),
+      scard('Gross income', fmt(M.grossIncome), 'var(--green)', a.incomeCount+' payments'),
+      scard('True spending', fmt(M.netSpending), 'var(--red)',
+        M.refunds>0 ? 'after '+fmt(M.refunds)+' refunds' : a.expenseCount+' transactions'),
+      scard('Net cash flow', fmt(M.netCashFlow), M.netCashFlow>=0?'var(--green)':'var(--red)', 'income − spending'),
+      scard('Savings rate', Math.round(M.savingsRate)+'%', M.savingsRate>=20?'var(--green)':'var(--amber)', 'of income kept'),
     );
     resultsWrap.append(el('div',{class:'section-hdr'},'Summary'), grid);
+
+    // Essential vs discretionary — the split that decides what can actually be cut
+    if(M.essential+M.discretionary+M.committed > 0){
+      const splitCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+      splitCard.append(el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'10px'}},'What kind of spending'));
+      const rows=[['Essential',M.essential,'var(--blue)','rent, food, transport, bills'],
+                  ['Committed',M.committed,'var(--amber)','subscriptions'],
+                  ['Discretionary',M.discretionary,'var(--red)','the part you can actually change'],
+                  ['Unclassified',M.unknownSpend,'var(--text3)','still needs a category']];
+      const tot=Math.max(1,M.netSpending);
+      for(const [label,val,col,note] of rows){
+        if(val<=0) continue;
+        const pct=Math.round(val/tot*100);
+        const r=el('div',{style:{marginBottom:'10px'}});
+        r.innerHTML='<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px">'+
+          '<span>'+label+'</span><span style="font-family:\'Space Mono\',monospace;font-weight:700">'+fmt(val)+' · '+pct+'%</span></div>'+
+          '<div style="background:var(--surface2);border-radius:100px;height:5px;overflow:hidden">'+
+          '<div style="height:100%;width:'+pct+'%;background:'+col+';border-radius:100px"></div></div>'+
+          '<div style="font-size:11px;color:var(--text3);margin-top:2px">'+note+'</div>';
+        splitCard.append(r);
+      }
+      resultsWrap.append(splitCard);
+    }
+
+    // Why the headline figures differ from one another
+    const rec = el('div',{class:'card',style:{marginBottom:'12px'}});
+    rec.append(el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'8px'}},'How these numbers fit together'));
+    const line=(label,val,note,col)=>el('div',{style:{display:'flex',justifyContent:'space-between',
+      padding:'7px 0',borderBottom:'1px solid var(--border)',fontSize:'13px',gap:'10px'}},
+      el('div',{},el('div',{},label),note?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'1px'}},note):el('span')),
+      el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:col||'var(--text)',flexShrink:'0'}},val));
+    rec.append(
+      line('Gross income', fmt(M.grossIncome), 'money that actually arrived', 'var(--green)'),
+      line('− True spending', fmt(M.netSpending), 'card purchases counted once, refunds deducted', 'var(--red)'),
+      line('= Net cash flow', fmt(M.netCashFlow), 'what you genuinely kept', M.netCashFlow>=0?'var(--green)':'var(--red)'),
+      line('Moved to savings', fmt(M.savingsOut), 'moving money between your own pots is not income', 'var(--text2)'),
+      line('Other transfers', fmt(M.transferOut+M.transferIn), 'includes credit card settlements', 'var(--text2)')
+    );
+    if(Math.abs(M.savingsOut - M.netCashFlow) > 1){
+      rec.append(el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'11px',marginTop:'10px',
+        fontSize:'12px',color:'var(--text2)',lineHeight:'1.6'}},
+        'You moved '+fmt(M.savingsOut)+' into savings but only kept '+fmt(M.netCashFlow)+
+        '. The difference is money that went into savings and later came back out to be spent — '+
+        'which is why a transfer rate of '+Math.round(M.savingsTransferRate)+'% overstates real saving of '+
+        Math.round(M.savingsRate)+'%.'));
+    }
+    if(M.lifeStageExcluded>0){
+      rec.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'8px'}},
+        fmt(M.lifeStageExcluded)+' of past-life-stage costs excluded from these figures.'));
+    }
+    resultsWrap.append(rec);
+
+    // What today's behaviour actually supports
+    const B = a.baselines;
+    if(B && B.sustainableMonthlySurplus!=null){
+      const bl = el('div',{class:'card',style:{marginBottom:'12px'}});
+      bl.append(
+        el('div',{style:{fontWeight:'700',fontSize:'14px',marginBottom:'4px'}},'What you can sustainably save'),
+        el('div',{style:{fontSize:'12px',color:'var(--text2)',marginBottom:'10px',lineHeight:'1.6'}},
+          'Weighted towards recent months, because three-year averages include a life you are no longer living.')
+      );
+      for(const [k,label] of [['3m','Last 3 months'],['6m','Last 6 months'],['12m','Last 12 months'],['all','All time']]){
+        const w=B[k]; if(!w||w.txnCount<3) continue;
+        bl.append(el('div',{class:'balance-row'},
+          el('div',{},el('div',{class:'balance-label'},label),
+            el('div',{style:{fontSize:'11px',color:'var(--text3)'}},fmt(w.monthlyIncome)+' in, '+fmt(w.monthlySpending)+' out')),
+          el('div',{class:'balance-value',style:{color:w.monthlySurplus>=0?'var(--green)':'var(--red)'}},fmt(w.monthlySurplus)+'/mo')));
+      }
+      bl.append(el('div',{style:{display:'flex',justifyContent:'space-between',paddingTop:'10px',
+        borderTop:'1px solid var(--border)',marginTop:'6px',fontSize:'13px',fontWeight:'700'}},
+        el('span',{},'Sustainable surplus'),
+        el('span',{style:{fontFamily:"'Space Mono',monospace",color:'var(--green)'}},
+          fmt(B.sustainableMonthlySurplus)+'/mo · '+fmt(B.sustainablePerPaycheck)+'/paycheck')));
+      resultsWrap.append(bl);
+    }
 
     // Monthly trend
     if(a.monthly.length > 1){
@@ -3883,8 +4391,9 @@ const AUTO_RULES = [
   [/MR LAWRENCE LECHUG|SIU WOO LAWRENCE|LAWRENCE LECHUGA/i,     'Transfer',            'TRANSFER_OUT'],
   [/\b201139\s*\d{8}\b|\b2011 ?39 ?\d{8}\b/i,                   'Transfer',            null],
 
-  // Rent and housing
-  [/FRESH PROPERTY|FPG (TY NANT|THE OLDWAY)|FPG /i,             'Bills',               'EXPENSE'],
+  // Accommodation and rent — essential, and often life-stage specific
+  [/FRESH PROPERTY|FPG |YSI ?\*|TY NANT|THE OLDWAY|UNITE STUDENTS|STUDENT ROOST|IQ STUDENT/i,'Housing','EXPENSE'],
+  [/\bRENT\b|LANDLORD|LETTINGS|PROPERTY MANAG/i,                'Housing',             'EXPENSE'],
   [/VEYGO|INSURANCE/i,                                          'Bills',               'EXPENSE'],
   [/BCP ?COUNCIL(?! CAR)/i,                                     'Bills',               'EXPENSE'],
 
@@ -3994,7 +4503,7 @@ function autoCategorise(txn){
 // ── Bulk categorisation ──
 // Categorise a merchant once and apply it to every matching transaction,
 // past and future. Turns hundreds of individual edits into a handful.
-const STANDARD_CATEGORIES = ['Groceries','Eating out','Transport','Shopping','Health',
+const STANDARD_CATEGORIES = ['Housing','Groceries','Eating out','Transport','Shopping','Health',
   'Entertainment','Bars & Nights out','Travel','Bills','Subscriptions',
   'Personal care','Education','Gifts','Other'];
 
