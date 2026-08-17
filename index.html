@@ -5814,6 +5814,78 @@ function calendarScreen(){
     return days;
   }
 
+  // ── Year at a glance ──
+  // Answers "when did I have transactions" across the whole history, rather
+  // than making you page through months one at a time.
+  const yearWrap = el('div',{style:{marginBottom:'var(--s4)'}});
+  let yearShown = null;
+
+  function renderYearStrip(txns){
+    yearWrap.innerHTML='';
+    if(!txns || !txns.length) return;
+
+    const spend = {}, income = {};
+    let earliest=null, latest=null;
+    for(const t of txns){
+      const d=t.postingDate; if(!d) continue;
+      if(t.financialType && (t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER')) continue;
+      const key=d.slice(0,7);
+      if(t.direction==='credit') income[key]=(income[key]||0)+t.amount;
+      else spend[key]=(spend[key]||0)+t.amount;
+      if(!earliest||d<earliest) earliest=d;
+      if(!latest||d>latest) latest=d;
+    }
+    if(!earliest) return;
+
+    const firstYear=parseInt(earliest.slice(0,4)), lastYear=parseInt(latest.slice(0,4));
+    if(yearShown===null) yearShown=viewYear;
+    if(yearShown<firstYear) yearShown=firstYear;
+    if(yearShown>lastYear)  yearShown=lastYear;
+
+    const head=el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'var(--s3)'}});
+    const back=el('button',{class:'btn-quiet',style:{padding:'4px 8px'}},'‹');
+    const fwd =el('button',{class:'btn-quiet',style:{padding:'4px 8px'}},'›');
+    back.disabled = yearShown<=firstYear; fwd.disabled = yearShown>=lastYear;
+    back.style.opacity = back.disabled?'.3':'1'; fwd.style.opacity = fwd.disabled?'.3':'1';
+    back.addEventListener('click',()=>{ if(yearShown>firstYear){yearShown--; renderYearStrip(txns);} });
+    fwd .addEventListener('click',()=>{ if(yearShown<lastYear){yearShown++;  renderYearStrip(txns);} });
+    head.append(el('div',{class:'t-eyebrow'},'Activity in '+yearShown),
+      el('div',{style:{display:'flex',gap:'2px'}},back,fwd));
+    yearWrap.append(head);
+
+    const yearKeys=Array.from({length:12},(_,i)=>yearShown+'-'+String(i+1).padStart(2,'0'));
+    const maxSpend=Math.max(1,...yearKeys.map(k=>spend[k]||0));
+
+    const strip=el('div',{style:{display:'grid',gridTemplateColumns:'repeat(12,1fr)',gap:'3px',alignItems:'end',height:'54px'}});
+    const labels=el('div',{style:{display:'grid',gridTemplateColumns:'repeat(12,1fr)',gap:'3px',marginTop:'5px'}});
+
+    yearKeys.forEach((k,i)=>{
+      const s=spend[k]||0, has=s>0||(income[k]||0)>0;
+      const isCurrent = (yearShown===viewYear && i===viewMonth);
+      const h=has?Math.max(6,Math.round(s/maxSpend*44)):3;
+      const col=el('div',{style:{
+        height:h+'px', borderRadius:'3px', cursor:has?'pointer':'default',
+        background: isCurrent?'var(--accent)':has?'var(--surface-3)':'var(--line-soft)',
+        transition:'background .15s var(--ease),height .4s var(--ease)'}});
+      if(has){
+        col.title=k+' · '+fmt(s)+' spent';
+        col.addEventListener('click',()=>{ viewYear=yearShown; viewMonth=i; cachedData=null; renderCalendar(); });
+      }
+      strip.append(col);
+      labels.append(el('div',{style:{fontSize:'8.5px',textAlign:'center',
+        color:isCurrent?'var(--accent)':has?'var(--ink-3)':'var(--ink-4)',fontWeight:isCurrent?'700':'400'}},
+        'JFMAMJJASOND'[i]));
+    });
+
+    yearWrap.append(strip,labels);
+
+    const yTotal=yearKeys.reduce((s,k)=>s+(spend[k]||0),0);
+    const yIn=yearKeys.reduce((s,k)=>s+(income[k]||0),0);
+    const active=yearKeys.filter(k=>(spend[k]||0)>0||(income[k]||0)>0).length;
+    yearWrap.append(el('div',{class:'t-meta',style:{marginTop:'var(--s2)',textAlign:'center'}},
+      active+' active month'+(active===1?'':'s')+' · '+fmt(yIn)+' in · '+fmt(yTotal)+' out'));
+  }
+
   const calWrap = el('div',{});
   const dayDetailWrap = el('div',{});
   const legendWrap = el('div',{style:{display:'flex',gap:'16px',marginBottom:'12px',fontSize:'11px',color:'var(--text2)',flexWrap:'wrap'}});
@@ -5829,6 +5901,8 @@ function calendarScreen(){
     calWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;padding:20px">Loading…</div>';
     if(!cachedData) cachedData = await loadCalendarData();
     const dayEvents = buildDayEvents(cachedData, viewYear, viewMonth);
+
+    renderYearStrip(cachedData.txns);
 
     calWrap.innerHTML = '';
     const firstDay = new Date(viewYear, viewMonth, 1);
@@ -6034,7 +6108,7 @@ function calendarScreen(){
     );
   }).catch(()=>{});
 
-  content.append(legendWrap, calWrap, dayDetailWrap, cardNote, addToggle, formCard);
+  content.append(yearWrap, legendWrap, calWrap, dayDetailWrap, cardNote, addToggle, formCard);
   renderCalendar();
   return content;
 }
