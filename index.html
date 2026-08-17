@@ -384,6 +384,11 @@ function render(node){ app.innerHTML=''; app.append(node); }
 // must never write, or one user's data can land in another user's account.
 let sessionId = 0;
 
+// Figures derived from the signed-in user's own history. Reset on every auth
+// change so one user's spending baseline can never inform another's advice.
+let userDerived = {};
+function resetUserDerived(){ userDerived = {}; }
+
 async function save(data, expectedUid){
   if(!currentUser) return;                                   // never write signed out
   if(expectedUid && expectedUid !== currentUser.uid) return;  // stale caller, abandon
@@ -487,9 +492,14 @@ function paydayFlow(){
     const subTotal = subs.reduce((s,x)=>s+x.amount,0);
     const subBuffer = Math.round(subTotal/payPeriodsPerMonth*100)/100;
 
-    // 4. Weekly spending — based on actual transaction history
-    // Using £96/week average from real data, £192 per fortnight
-    const weeklySpend = 96; // from transaction analysis
+    // 4. Weekly spending — from THIS user's own history, never a fixed default.
+    // Falls back to their essential spend, then to zero, rather than assuming
+    // someone else's lifestyle.
+    const derivedValid = userDerived.uid && currentUser && userDerived.uid === currentUser.uid;
+    if(!derivedValid) userDerived = {};
+    const weeklySpend = userDerived.weeklySpend != null
+      ? userDerived.weeklySpend
+      : (userDerived.monthlySpending != null ? userDerived.monthlySpending*12/52 : 0);
     const spendingBuffer = weeklySpend * 2; // fortnightly
 
     // Calculate what's left after priorities
@@ -790,6 +800,15 @@ function overviewScreen(){
     const fmodel = buildFinancialModel(txns);
     const baselines = buildBaselines(txns);
 
+    // Cache for other screens (payday flow). Session-scoped, cleared on sign-out.
+    userDerived = {
+      weeklySpend: fmodel.monthlySpending>0 ? fmodel.monthlySpending*12/52 : null,
+      monthlySpending: fmodel.monthlySpending || null,
+      monthlyIncome: fmodel.monthlyIncome || null,
+      sustainableMonthlySurplus: baselines.sustainableMonthlySurplus || null,
+      uid: currentUser.uid,
+    };
+
     // Card commitment — needed by goals, safe-to-spend and the pots view
     const cardOwed = pots.card.balance;
     const dueAmount = latestStmt && latestStmt.statementBalance!=null ? latestStmt.statementBalance : cardOwed;
@@ -989,6 +1008,7 @@ function overviewScreen(){
     // ── HERO: composition of your money, not just its total ──
     // A single net worth figure misleads when most of it is committed, so the
     // allocation bar shows what the money is FOR before showing how much it is.
+    const netPos = getNetWorth();
     const availableCash = pots.spending.balance;
     const committedSavings = pots.goals.balance + pots.cardPot.balance;
     const totalAssets = Math.max(0, availableCash) + Math.max(0, committedSavings);
@@ -1889,9 +1909,9 @@ function askScreen(){
         list: subs.map(s=>({name:s.name,amount:s.amount})),
       },
       savings: {
-        florasiiGoal: 15000,
+        florasiiGoal: (appData.goals||[]).reduce((s,g)=>s+(g.target||0),0) || null,
         florasiiCurrent: balances.florasii||0,
-        florasiiRemaining: Math.max(0,15000-(balances.florasii||0)),
+        florasiiRemaining: Math.max(0, ((appData.goals||[]).reduce((s,g)=>s+(g.target||0),0)||0) - (balances.florasii||0)),
         avgSavedPerPaycheck: Math.round(avgFlorasiiPerPay*100)/100,
         estimatedSavingsRate: savingsRate+'%',
       },
@@ -4884,7 +4904,8 @@ function trendsScreen(){
   const predVsActualDiff=pairsWithActual.map((_,i)=>actualVals[i]-predictedVals[i]);
 
   const florasiiNow=appData.balances?.florasii||0;
-  const florasiiGoal=15000;
+  const florasiiGoal=(appData.goals||[]).filter(g=>g.active!==false)
+    .reduce((s,g)=>s+(g.target||0),0) || 0;
   const florasiiRemaining=Math.max(0,florasiiGoal-florasiiNow);
   const florasiiGrowth=florasiiSeries.length>1?florasiiSeries[florasiiSeries.length-1]-florasiiSeries[0]:0;
   const avgFlorasiiPerPay=florasiiGrowth/Math.max(realPays.length,1);
@@ -6928,6 +6949,7 @@ auth.onAuthStateChanged(async user => {
   const mySession = ++sessionId;   // supersedes anything the previous user started
   currentUser = user;
   appData = null;                  // drop the previous user's data immediately
+  resetUserDerived();              // and anything computed from it
   if(window._setTab) window._setTab = null;
   if(!user){ render(authScreen()); return; }
   render(el('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px'}},'Loading…'));
