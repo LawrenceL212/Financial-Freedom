@@ -886,15 +886,64 @@ function overviewScreen(){
     const cardGap = dueGap;
     const weeksOfSpending = pots.spending.balance/96;
 
+    // Three different concepts, kept visually distinct:
+    //   cash you can actually spend | money committed to goals | money you owe
+    // Net worth is the arithmetic of those, not a thing you can spend.
+    const availableCash = pots.spending.balance;
+    const committedSavings = pots.goals.balance + pots.cardPot.balance;
+
     const potsCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+
+    // Lead with the number you can act on
     potsCard.append(
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'4px'}},
-        el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',fontWeight:'700'}},'Net worth'),
-        el('div',{style:{fontSize:'11px',color:'var(--text3)'}},'Your pots')
-      ),
+      el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',textTransform:'uppercase',fontWeight:'700',marginBottom:'2px'}},'Available cash'),
       el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'32px',fontWeight:'700',
-        color:netPos>=0?'var(--green)':'var(--red)',lineHeight:'1',marginBottom:'16px'}},fmt(netPos))
+        color:availableCash>0?'var(--text)':'var(--red)',lineHeight:'1'}},fmt(availableCash)),
+      el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'3px',marginBottom:'14px'}},
+        'in '+(pots.spending.exists?pots.spending.names:'your current account'))
     );
+
+    // The three concepts side by side
+    const conceptRow = el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',marginBottom:'14px'}});
+    const concept=(label,val,color,sub)=>{
+      const b=el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'10px 12px'}});
+      b.append(
+        el('div',{style:{fontSize:'10px',color:'var(--text3)',textTransform:'uppercase',letterSpacing:'1px',fontWeight:'700',marginBottom:'3px'}},label),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color}},val),
+        sub?el('div',{style:{fontSize:'10px',color:'var(--text3)',marginTop:'2px'}},sub):el('span')
+      );
+      return b;
+    };
+    conceptRow.append(
+      concept('Saved for goals', fmt(committedSavings), 'var(--green)', 'not spendable'),
+      concept('Owed on card', fmt(cardOwed), 'var(--red)',
+        dueDateStr ? fmt(dueAmount)+' due '+dueDateStr : 'to clear'),
+    );
+    potsCard.append(conceptRow);
+
+    // Net worth as the derived figure it is, with the arithmetic on show
+    potsCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',
+        paddingTop:'10px',borderTop:'1px solid var(--border)',marginBottom:'14px'}},
+        el('div',{},
+          el('span',{style:{fontSize:'12px',color:'var(--text2)',fontWeight:'600'}},'Net worth'),
+          el('div',{style:{fontSize:'10px',color:'var(--text3)',marginTop:'1px'}},
+            fmt(availableCash)+' cash + '+fmt(committedSavings)+' saved − '+fmt(cardOwed)+' owed')
+        ),
+        el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'17px',
+          color:netPos>=0?'var(--green)':'var(--red)'}},fmt(netPos))
+      )
+    );
+
+    // Warn when the card figure is only as fresh as the last statement
+    if(latestStmt && latestStmt.statementBalance!=null && Math.abs(cardOwed-latestStmt.statementBalance)<0.01){
+      potsCard.append(el('div',{style:{background:'var(--amber-dim)',borderRadius:'10px',padding:'10px 12px',
+        marginBottom:'14px',fontSize:'11px',color:'var(--amber)',lineHeight:'1.5'}},
+        'Your card figure matches your last statement, so anything spent since is not included. Check the Barclaycard app and update it in Accounts for a true net worth.'));
+    }
+
+    potsCard.append(el('div',{style:{fontSize:'10px',color:'var(--text3)',letterSpacing:'2px',
+      textTransform:'uppercase',fontWeight:'700',marginBottom:'2px'}},'Your pots'));
 
     const potRow = (icon,title,job,amount,amountColor,statusText,statusColor,barPct,barColor)=>{
       const row = el('div',{style:{padding:'12px 0',borderBottom:'1px solid var(--border)',cursor:'pointer'}});
