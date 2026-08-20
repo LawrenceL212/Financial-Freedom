@@ -473,18 +473,33 @@ function paydayFlow(){
       ? savingsAccounts.reduce((s,a)=>s+a.balance,0)
       : (prev.florasii||0);
     
+    // Sequential mode: only the ACTIVE goal (soonest unmet) counts against this paycheck.
+    // Parallel mode: all goals funded simultaneously.
+    const goalMode = appData.goalMode || 'sequential';
+    const sortedGoals = [...goals].sort((a,b)=>String(a.deadline).localeCompare(String(b.deadline)));
     let goalAllocations = [];
     let totalGoalRequired = 0;
-    for(const g of goals){
+    let poolLeft = currentSavings;
+    let activeAssigned = false;
+
+    for(const g of sortedGoals){
       const deadline = new Date(g.deadline);
-      const daysLeft = Math.max(1,Math.ceil((deadline-now)/86400000));
-      const payPeriodsLeft = Math.max(1,Math.floor(daysLeft/14));
-      const totalGoalTarget = goals.reduce((s,x)=>s+x.target,0);
-      const myShare = totalGoalTarget>0 ? currentSavings*(g.target/totalGoalTarget) : 0;
+      const daysLeft = Math.ceil((deadline-now)/86400000);
+      const overdue = daysLeft < 0;
+      const payPeriodsLeft = overdue ? 0 : Math.max(1,Math.floor(daysLeft/14));
+      // Waterfall: earlier goals claim their share of savings first
+      const myShare = Math.min(poolLeft, g.target);
+      poolLeft = Math.max(0, poolLeft - myShare);
       const remaining = Math.max(0, g.target - myShare);
-      const required = remaining/payPeriodsLeft;
-      goalAllocations.push({name:g.name, required:Math.round(required*100)/100, remaining, payPeriodsLeft});
-      totalGoalRequired += required;
+      const met = remaining <= 0;
+      // Active = should be funded this paycheck
+      let isActive;
+      if(goalMode === 'parallel') isActive = !met && !overdue;
+      else { isActive = !met && !overdue && !activeAssigned; if(isActive) activeAssigned = true; }
+      const required = (isActive && payPeriodsLeft > 0) ? remaining/payPeriodsLeft : 0;
+      if(isActive) totalGoalRequired += required;
+      goalAllocations.push({name:g.name, required:Math.round(required*100)/100,
+        remaining, payPeriodsLeft, isActive, met, overdue});
     }
     totalGoalRequired = Math.round(totalGoalRequired*100)/100;
 
@@ -570,57 +585,87 @@ function paydayFlow(){
         el('div',{class:'step-sub'},'Based on your spending history. Tap More → Spending Insights to review your weekly costs.')
       );
 
-      // Priority stack
-      const mkRow = (icon, label, amount, color, sub) => {
-        const row = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 16px',background:'var(--surface2)',borderRadius:'14px',marginBottom:'8px',borderLeft:'3px solid '+color}});
-        row.append(
-          el('div',{},
-            el('div',{style:{display:'flex',alignItems:'center',gap:'8px'}},
+      const pots = getPots();
+      const cardPotName  = pots.cardPot.exists  ? pots.cardPot.names  : 'your card pot';
+      const goalsName    = pots.goals.exists     ? pots.goals.names    : 'your savings pot';
+      const spendingName = pots.spending.exists  ? pots.spending.names : 'Current Account';
+
+      // Each row = one physical transfer you need to make right now
+      const mkRow = (icon, action, account, amount, color, note) => {
+        const row = el('div',{style:{background:'var(--surface2)',borderRadius:'14px',
+          marginBottom:'8px',borderLeft:'3px solid '+color,overflow:'hidden'}});
+        const top = el('div',{style:{display:'flex',justifyContent:'space-between',
+          alignItems:'flex-start',padding:'14px 16px 10px'}});
+        top.append(
+          el('div',{style:{flex:'1',minWidth:'0'}},
+            el('div',{style:{display:'flex',alignItems:'center',gap:'8px',marginBottom:'3px'}},
               el('span',{},icon),
-              el('div',{style:{fontWeight:'600',fontSize:'14px'}},label)
+              el('div',{style:{fontWeight:'700',fontSize:'13px',color:'var(--ink-3)',
+                textTransform:'uppercase',letterSpacing:'0.5px'}},action)
             ),
-            sub?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px',paddingLeft:'26px'}},sub):el('span')
+            el('div',{style:{fontWeight:'600',fontSize:'15px',paddingLeft:'26px'}},account)
           ),
-          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'16px',color}},fmt(amount))
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',
+            fontSize:'18px',color,flexShrink:'0',paddingLeft:'12px'}},fmt(amount))
         );
+        row.append(top);
+        if(note) row.append(el('div',{style:{fontSize:'11.5px',color:'var(--ink-3)',
+          padding:'0 16px 12px 42px',lineHeight:'1.5'}},note));
         return row;
       };
 
-      // 1. CC
+      // Summary line at top
+      content.append(el('div',{style:{display:'flex',justifyContent:'space-between',
+        alignItems:'baseline',marginBottom:'var(--s4)'}},
+        el('div',{class:'t-label'},'You earned'),
+        el('div',{class:'num',style:{fontSize:'22px',fontWeight:'700',color:'var(--accent)'}},fmt(income))
+      ));
+
+      content.append(el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Transfer now'));
+
+      // 1. CC — move to card pot
       if(alloc.ccReserve > 0){
-        content.append(mkRow('💳','Credit card (full balance)', alloc.ccReserve,'var(--red)',
-          'Move to '+(getPots().cardPot.exists?getPots().cardPot.names:'your card pot')+' — clears the card, no interest'));
+        content.append(mkRow('💳','Transfer to',cardPotName, alloc.ccReserve,'var(--danger)',
+          'This covers the direct debit that clears your card on its due date. Pay the full amount — no interest.'));
       }
 
-      // 2. Goals
+      // 2. Active goal only
       for(const g of alloc.goalAllocations){
-        if(g.required > 0){
-          content.append(mkRow('🌸', g.name, g.required, '#64B5F6',
-            'Move to '+(getPots().goals.exists?getPots().goals.names:'your goals pot')+' · '+g.payPeriodsLeft+' paychecks left'));
-        }
+        if(!g.isActive || g.required <= 0) continue;
+        content.append(mkRow('🌸','Transfer to', goalsName, g.required,'var(--info)',
+          g.name+' · '+g.payPeriodsLeft+' paychecks to go · '+fmt(g.remaining)+' still needed'));
       }
 
-      // 3. Subscriptions buffer
-      content.append(mkRow('📋','Subscriptions', alloc.subBuffer,'var(--amber)',
-        'Leave in '+(getPots().spending.exists?getPots().spending.names:'your current account')+' — do not spend this'));
+      content.append(el('div',{class:'t-eyebrow',style:{margin:'var(--s4) 0 var(--s2)'}},'Leave in '+spendingName));
+
+      // 3. Subs — stay in current, ring-fenced
+      content.append(mkRow('📋','Ring-fence for', 'Subscriptions', alloc.subBuffer,'var(--warn)',
+        'Direct debits will take this automatically — do not spend it'));
 
       // 4. Spending
       if(alloc.actualSpending > 0){
-        content.append(mkRow('💸','Yours to spend', alloc.actualSpending,'var(--green)',
-          'Stays in '+(getPots().spending.exists?getPots().spending.names:'your current account')+' · about £'+Math.round(alloc.actualSpending/2)+'/week'));
+        content.append(mkRow('💸','Yours to spend','This fortnight', alloc.actualSpending,'var(--accent)',
+          '≈ £'+Math.round(alloc.actualSpending/2)+'/week based on your history'));
+      } else {
+        content.append(el('div',{style:{background:'var(--surface2)',borderRadius:'12px',
+          padding:'12px 14px',marginBottom:'8px',fontSize:'13px',color:'var(--ink-3)',lineHeight:'1.5'}},
+          '£0 spending money this fortnight — priorities take everything. Work a few extra shifts to create headroom.'));
       }
 
-      // Shortfall warning
+      // Shortfall or buffer
       if(alloc.shortfall > 0){
-        content.append(el('div',{style:{background:'var(--red-dim)',border:'1px solid var(--red)',borderRadius:'14px',padding:'14px',marginTop:'4px',marginBottom:'8px'}},
-          el('div',{style:{fontWeight:'700',color:'var(--red)',marginBottom:'4px'}},'⚠️ Shortfall this paycheck'),
-          el('div',{style:{fontSize:'13px',color:'var(--text2)',lineHeight:'1.5'}},
+        content.append(el('div',{style:{background:'var(--danger-wash)',border:'1px solid var(--danger)',
+          borderRadius:'14px',padding:'14px',marginTop:'4px',marginBottom:'8px'}},
+          el('div',{style:{fontWeight:'700',color:'var(--danger)',marginBottom:'4px'}},'⚠ Shortfall this paycheck'),
+          el('div',{style:{fontSize:'13px',color:'var(--ink-2)',lineHeight:'1.5'}},
             fmt(alloc.shortfall)+' short of your usual spending budget. '+
-            (alloc.ccReserve>0?'The credit card payment takes priority — consider spending less this fortnight.':'Consider working more hours or reducing spending.'))
+            (alloc.ccReserve>0?'The card payment takes priority — spend less this fortnight or pick up extra shifts.':
+             'Consider working more hours or reducing spending.'))
         ));
       } else if(alloc.buffer > 0){
-        content.append(el('div',{style:{background:'var(--green-dim)',border:'1px solid var(--green)',borderRadius:'14px',padding:'12px',marginTop:'4px',marginBottom:'8px'}},
-          el('div',{style:{fontSize:'13px',color:'var(--green)'}},'✓ '+fmt(alloc.buffer)+' buffer remaining after all priorities')
+        content.append(el('div',{style:{background:'var(--accent-wash)',border:'1px solid var(--accent-edge)',
+          borderRadius:'14px',padding:'12px',marginTop:'4px',marginBottom:'8px'}},
+          el('div',{style:{fontSize:'13px',color:'var(--accent)'}},'✓ '+fmt(alloc.buffer)+' buffer after all priorities')
         ));
       }
 
@@ -1589,7 +1634,15 @@ function overviewScreen(){
   );
 
   intelligenceWrap.innerHTML = '<div style="color:var(--text3);font-size:13px;text-align:center;padding:20px">Analysing your finances…</div>';
-  renderIntelligence();
+  renderIntelligence().catch(err=>{
+    console.error('renderIntelligence failed:', err);
+    intelligenceWrap.innerHTML = '';
+    intelligenceWrap.append(el('div',{class:'card',style:{borderLeft:'3px solid var(--danger)'}},
+      el('div',{style:{fontWeight:'700',color:'var(--danger)',marginBottom:'6px'}},'Could not load financial analysis'),
+      el('div',{style:{fontSize:'13px',color:'var(--ink-2)',lineHeight:'1.6'}},err.message||'Unknown error'),
+      el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'6px'}},'Check the browser console for details.')
+    ));
+  });
   return content;
 }
 
@@ -2615,7 +2668,8 @@ async function updateSubscriptionBillingDates(allTxns, expectedUid){
     // Most common billing day across all history
     const dayCount = {};
     for(const t of matchingTxns){
-      const d = parseInt(t.postingDate.split('-')[2]);
+      const d = parseInt((t.postingDate||'').split('-')[2]||'0');
+      if(!d) continue;
       dayCount[d] = (dayCount[d]||0)+1;
     }
     const billingDay = parseInt(Object.entries(dayCount).sort((a,b)=>b[1]-a[1])[0][0]);
@@ -2905,7 +2959,7 @@ function statementsScreen(){
         total:txns.length,
         income:txns.filter(t=>t.financialType==='INCOME').length,
         expenses:txns.filter(t=>t.financialType==='EXPENSE').length,
-        transfers:txns.filter(t=>t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER').length,
+        transfers:txns.filter(t=>(t.financialType||'').includes('TRANSFER')||(t.financialType||'')==='SAVINGS_TRANSFER').length,
         possibleDuplicates:dupes,
         needsReview:txns.filter(t=>needsReview(t)||t.financialType.startsWith('UNKNOWN')).length,
       },
@@ -5142,8 +5196,112 @@ function trendsScreen(){
 
 function hoursScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
-  const weeks = appData.hoursLog || [];
   const RATE = appData.hourlyRate || 14.50;
+
+  // ── Clock in / clock out ──
+  // Active shift stored in Firebase so it survives page reloads.
+  // Path: users/{uid}/activeShift  → {clockedIn: ISO string, note: string}
+  const shiftRef = ()=> db.ref('users/'+currentUser.uid+'/activeShift');
+
+  const clockCard = el('div',{class:'card',style:{marginBottom:'var(--s3)'}});
+  const clockStatus   = el('div',{style:{fontSize:'13px',color:'var(--ink-2)',marginBottom:'var(--s3)',lineHeight:'1.6'}});
+  const clockBtn      = el('button',{class:'btn-primary',style:{marginBottom:'var(--s2)'}},'Clock in');
+  const clockNote     = el('input',{placeholder:'What are you working on? (optional)',style:{marginBottom:'var(--s3)',display:'none'}});
+  const clockDuration = el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'28px',fontWeight:'700',
+    color:'var(--accent)',letterSpacing:'-0.5px',marginBottom:'var(--s2)',display:'none'}});
+  let ticker = null;
+
+  function fmt2(n){ return String(Math.floor(n)).padStart(2,'0'); }
+  function durStr(ms){
+    const t=Math.floor(ms/1000), h=Math.floor(t/3600), m=Math.floor((t%3600)/60), s=t%60;
+    return fmt2(h)+':'+fmt2(m)+':'+fmt2(s);
+  }
+
+  async function loadShiftState(){
+    const snap = await shiftRef().once('value');
+    const shift = snap.val();
+    if(shift && shift.clockedIn){
+      renderClockedIn(shift);
+    } else {
+      renderClockedOut();
+    }
+  }
+
+  function renderClockedOut(){
+    if(ticker){ clearInterval(ticker); ticker=null; }
+    clockDuration.style.display='none';
+    clockNote.style.display='block';
+    clockNote.value='';
+    clockStatus.textContent='You are clocked out.';
+    clockBtn.textContent='Clock in';
+    clockBtn.style.background='var(--accent)';
+    clockBtn.onclick=async()=>{
+      const now=new Date().toISOString();
+      await shiftRef().set({clockedIn:now, note:clockNote.value.trim()||null});
+      renderClockedIn({clockedIn:now, note:clockNote.value.trim()||null});
+    };
+  }
+
+  function renderClockedIn(shift){
+    const start=new Date(shift.clockedIn);
+    clockNote.style.display='none';
+    clockDuration.style.display='block';
+    if(shift.note) clockStatus.textContent='Working on: '+shift.note;
+    else clockStatus.textContent='Clocked in at '+start.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+    clockBtn.textContent='Clock out';
+    clockBtn.style.background='var(--danger)';
+
+    // Live ticker
+    if(ticker) clearInterval(ticker);
+    function tick(){ clockDuration.textContent=durStr(Date.now()-start); }
+    tick(); ticker=setInterval(tick,1000);
+
+    clockBtn.onclick=async()=>{
+      clearInterval(ticker); ticker=null;
+      const end=new Date();
+      const hoursWorked=(end-start)/3600000;
+      await shiftRef().remove();
+
+      // Which day did this shift fall on?
+      const dayNames=['sun','mon','tue','wed','thu','fri','sat'];
+      const dayKey=dayNames[start.getDay()];
+      const weekStart=new Date(start);
+      weekStart.setDate(weekStart.getDate()-(weekStart.getDay()===0?6:weekStart.getDay()-1));
+      const weekLabel=weekStart.toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'numeric'});
+
+      // Find an existing week entry for this week or create one
+      const log=[...(appData.hoursLog||[])];
+      let week=log.find(w=>w.label===weekLabel);
+      if(!week){
+        week={id:uid(),label:weekLabel,mon:0,tue:0,wed:0,thu:0,fri:0,sat:0,sun:0,total:0,predicted:0};
+        log.unshift(week);
+      }
+      week[dayKey]=Math.round(((week[dayKey]||0)+hoursWorked)*100)/100;
+      week.total=Math.round(['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+(week[d]||0),0)*100)/100;
+      week.predicted=Math.round(week.total*(appData.hourlyRate||14.50)*100)/100;
+
+      await save({...appData,hoursLog:log});
+      renderClockedOut();
+      renderAll();
+
+      // Show a summary
+      clockStatus.textContent='✓ Shift saved — '+hoursWorked.toFixed(2)+'h on '+
+        dayKey.charAt(0).toUpperCase()+dayKey.slice(1)+
+        ' ('+fmt(hoursWorked*(appData.hourlyRate||14.50))+' earned)';
+    };
+  }
+
+  clockCard.append(
+    el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Time tracker'),
+    clockDuration, clockStatus, clockNote, clockBtn
+  );
+  content.append(clockCard);
+
+  loadShiftState();
+
+  // ── Existing hours tracker below ──
+
+  const weeks = appData.hoursLog || [];
   const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 
   // Current week being logged
@@ -5643,10 +5801,13 @@ function calendarScreen(){
       const d = (t.transactionDateInferred === false && t.transactionDate)
                   ? t.transactionDate
                   : (t.transactionDate || t.postingDate);
-      if(!d) continue;
-      const [y,m] = d.split('-').map(Number);
+      if(!d || d.length < 7) continue;
+      const parts = d.split('-').map(Number);
+      if(parts.length < 3 || isNaN(parts[0])) continue;
+      const [y,m] = parts;
       if(y !== year || m-1 !== month) continue;
-      if(t.financialType.includes('TRANSFER') || t.financialType === 'SAVINGS_TRANSFER') continue;
+      if(!t.financialType) continue;
+      if((t.financialType||'').includes('TRANSFER') || (t.financialType||'') === 'SAVINGS_TRANSFER') continue;
       const onCard = t.sourceType === 'credit_card';
       addEvent(d, {
         onCard,
@@ -5835,8 +5996,8 @@ function calendarScreen(){
       const d = (t.transactionDateInferred === false && t.transactionDate)
                   ? t.transactionDate
                   : (t.transactionDate || t.postingDate);
-      if(!d) continue;
-      if(t.financialType && (t.financialType.includes('TRANSFER')||t.financialType==='SAVINGS_TRANSFER')) continue;
+      if(!d || d.length < 7) continue;
+      if(t.financialType && ((t.financialType||'').includes('TRANSFER')||(t.financialType||'')==='SAVINGS_TRANSFER')) continue;
       const key=d.slice(0,7);
       if(t.direction==='credit') income[key]=(income[key]||0)+t.amount;
       else spend[key]=(spend[key]||0)+t.amount;
