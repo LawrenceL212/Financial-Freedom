@@ -517,32 +517,46 @@ function paydayFlow(){
       : (userDerived.monthlySpending != null ? userDerived.monthlySpending*12/52 : 0);
     const spendingBuffer = weeklySpend * 2; // fortnightly
 
-    // Calculate what's left after priorities
-    const remaining = inc - ccReserve - totalGoalRequired - subBuffer;
-    const canAffordSpending = remaining >= spendingBuffer;
-    const actualSpending = Math.max(0, Math.min(remaining, spendingBuffer));
-    const shortfall = spendingBuffer - remaining;
-    const buffer = remaining - actualSpending;
+    // What's genuinely left after the two non-negotiables: card and subs.
+    // Goals only get what remains — you cannot transfer money you don't have.
+    const afterMandatory = Math.max(0, inc - ccReserve - subBuffer);
 
-    // Scale back goals if CC takes everything
-    let adjustedGoalRequired = totalGoalRequired;
-    if(inc - ccReserve < totalGoalRequired){
-      adjustedGoalRequired = Math.max(0, inc - ccReserve);
-    }
+    // Goal gets the lesser of: what it needs per paycheck, or what's left
+    // after subs. Spending money gets whatever remains after goals.
+    const goalAffordable = Math.min(totalGoalRequired, afterMandatory);
+    const afterGoals = Math.max(0, afterMandatory - goalAffordable);
+    const actualSpending = Math.max(0, Math.min(afterGoals, spendingBuffer));
+    const buffer = Math.max(0, afterGoals - actualSpending);
+
+    // Scale each active goal's shown amount proportionally if capped
+    const scaleFactor = totalGoalRequired > 0 ? goalAffordable / totalGoalRequired : 1;
+    const scaledGoalAllocations = goalAllocations.map(g=>({
+      ...g,
+      required: g.isActive ? Math.round(g.required * scaleFactor * 100)/100 : 0,
+      capped: g.isActive && scaleFactor < 0.999,
+      needed: g.required, // the full amount needed per paycheck
+    }));
+
+    const shortfall = totalGoalRequired > goalAffordable
+      ? Math.round((totalGoalRequired - goalAffordable)*100)/100
+      : spendingBuffer > afterGoals
+        ? Math.round((spendingBuffer - afterGoals)*100)/100
+        : 0;
 
     return {
       income: inc,
       ccReserve: Math.round(ccReserve*100)/100,
       ccBalance: Math.round(ccBalance*100)/100,
-      goalAllocations,
-      totalGoalRequired: Math.round(adjustedGoalRequired*100)/100,
+      goalAllocations: scaledGoalAllocations,
+      totalGoalRequired: Math.round(goalAffordable*100)/100,
       subBuffer: Math.round(subBuffer*100)/100,
       spendingBuffer: Math.round(spendingBuffer*100)/100,
       actualSpending: Math.round(actualSpending*100)/100,
       buffer: Math.round(buffer*100)/100,
-      shortfall: shortfall > 0 ? Math.round(shortfall*100)/100 : 0,
-      canAffordSpending,
-      remaining: Math.round(remaining*100)/100,
+      shortfall: Math.round(shortfall*100)/100,
+      canAffordSpending: actualSpending >= spendingBuffer,
+      remaining: Math.round(afterGoals*100)/100,
+      afterMandatory: Math.round(afterMandatory*100)/100,
     };
   }
 
@@ -632,8 +646,10 @@ function paydayFlow(){
       // 2. Active goal only
       for(const g of alloc.goalAllocations){
         if(!g.isActive || g.required <= 0) continue;
-        content.append(mkRow('🌸','Transfer to', goalsName, g.required,'var(--info)',
-          g.name+' · '+g.payPeriodsLeft+' paychecks to go · '+fmt(g.remaining)+' still needed'));
+        const note = g.capped
+          ? g.name+' needs £'+fmt(g.needed)+'/paycheck to hit the deadline — only £'+fmt(g.required)+' is available after card + subs'
+          : g.name+' · '+g.payPeriodsLeft+' paychecks to go · '+fmt(g.remaining)+' still needed';
+        content.append(mkRow('🌸','Transfer to', goalsName, g.required,'var(--info)', note));
       }
 
       content.append(el('div',{class:'t-eyebrow',style:{margin:'var(--s4) 0 var(--s2)'}},'Leave in '+spendingName));
