@@ -715,89 +715,113 @@ function paydayFlow(){
         color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'16px',outline:'none',
         fontFamily:'Space Mono,monospace',fontWeight:'700'};
 
-      // Pull known values from accounts + latest statement
+      // Pull known values from accounts — each one separately
       const accts = appData.accounts||[];
-      const knownCurrent  = accts.find(a=>a.type==='current')?.balance ?? prev.current;
-      const knownSavings  = accts.filter(a=>a.type==='savings').reduce((s,a)=>s+a.balance,0) || prev.florasii;
-      const knownCardPot  = accts.find(a=>a.legacyKey==='creditCard'||a.legacyKey==='personalSavings')?.balance ?? prev.personalSavings;
-      const savingsLabel  = accts.filter(a=>a.type==='savings').map(a=>a.name).join(' + ') || 'Savings';
 
-      // Card: latest statement balance is the amount owed until next statement
+      // Match by role first, then by legacy key, then by type
+      const current   = accts.find(a=>inferRole(a)==='spending') || accts.find(a=>a.type==='current');
+      const cardPotAc = accts.find(a=>inferRole(a)==='card_pot') || accts.find(a=>a.legacyKey==='personalSavings');
+      const goalsAc   = accts.find(a=>inferRole(a)==='goals')    || accts.find(a=>a.legacyKey==='florasii');
+      const cardAc    = accts.find(a=>a.type==='credit_card');
+
+      const knownCurrent  = current?.balance   ?? prev.current;
+      const knownCardPot  = cardPotAc?.balance  ?? prev.personalSavings;
+      const knownFlorasii = goalsAc?.balance    ?? prev.florasii;
+
+      // Card: statement balance is due, live total is what you actually owe
       const stSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
       const cardStmts2 = Object.values(stSnap.val()||{})
         .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')&&s.statementBalance!=null)
         .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
-
-      // What's been spent on the card since the last statement?
       const latestStmt2  = cardStmts2[0];
       const stmtBalance  = latestStmt2?.statementBalance ?? prev.creditCard;
       const stmtEnd      = latestStmt2?.periodEnd;
       let spentSinceStmt = 0;
       if(stmtEnd){
         const txSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
-        const txAll  = Object.values(txSnap.val()||{});
-        spentSinceStmt = txAll
-          .filter(t=>t.sourceType==='credit_card' && t.direction==='debit'
-                  && (t.postingDate||'') > stmtEnd)
+        spentSinceStmt = Object.values(txSnap.val()||{})
+          .filter(t=>t.sourceType==='credit_card'&&t.direction==='debit'&&(t.postingDate||'')>stmtEnd)
           .reduce((s,t)=>s+t.amount,0);
       }
-      const estimatedLiveCard = Math.round((stmtBalance + spentSinceStmt)*100)/100;
+      const estimatedLiveCard = Math.round((stmtBalance+spentSinceStmt)*100)/100;
 
-      const mkField = (label, knownVal, hint) => {
-        const wrap = el('div',{style:{marginBottom:'16px'}});
+      const mkField = (label, knownVal, hint, role) => {
+        const wrap = el('div',{style:{marginBottom:'14px'}});
         const top  = el('div',{style:{display:'flex',justifyContent:'space-between',
-          alignItems:'baseline',marginBottom:'6px'}});
+          alignItems:'baseline',marginBottom:'5px'}});
         top.append(
           el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},label),
           hint ? el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},hint) : el('span')
         );
         const inp = el('input',{inputmode:'decimal',value:String(knownVal||''),style:fldStyle});
+        if(role) wrap.setAttribute('data-role',role);
         wrap.append(top, inp);
         return {wrap, inp};
       };
 
-      const cur  = mkField('Current Account', knownCurrent, 'after income landed');
-      const sav  = mkField(savingsLabel, knownSavings, 'your savings pots');
+      const fCurrent  = mkField(
+        (current?.name||'Current Account'),
+        knownCurrent, 'spending account');
 
-      // Card gets two lines: due now vs estimated total
-      const ccWrap = el('div',{style:{marginBottom:'16px'}});
-      const ccTop  = el('div',{style:{display:'flex',justifyContent:'space-between',
-        alignItems:'baseline',marginBottom:'4px'}});
-      ccTop.append(
-        el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},'Credit Card (total owed)'),
-        el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},'live balance')
-      );
+      const fCardPot  = mkField(
+        (cardPotAc?.name||'Personal Savings'),
+        knownCardPot, 'card pot — covers the DDR');
+
+      const fFlorasii = mkField(
+        (goalsAc?.name||'Florasii'),
+        knownFlorasii, 'goals savings');
+
+      // Card field with statement context
+      const ccWrap = el('div',{style:{marginBottom:'14px'}});
+      ccWrap.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'5px'}},
+          el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},
+            (cardAc?.name||'Credit Card')),
+          el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},'total owed')));
       const ccInp = el('input',{inputmode:'decimal',value:String(estimatedLiveCard||''),style:fldStyle});
-      const ccNote = el('div',{style:{marginTop:'6px',fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}});
+      const ccNote = el('div',{style:{marginTop:'5px',fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}});
       if(latestStmt2){
+        const covered = knownCardPot >= stmtBalance;
         ccNote.innerHTML =
-          '<span style="color:var(--warn);font-weight:600">£'+stmtBalance.toFixed(2)+'</span>'+
-          ' due '+latestStmt2.paymentDue+
-          (spentSinceStmt>0?' · <span style="color:var(--ink-3)">+£'+spentSinceStmt.toFixed(2)+
-          ' since last statement (pays '+new Date(new Date(stmtEnd).setMonth(new Date(stmtEnd).getMonth()+2)).toLocaleDateString('en-GB',{month:'short',year:'numeric'})+')</span>':'');
+          '<span style="color:var('+(covered?'--accent':'--warn')+');font-weight:600">£'+stmtBalance.toFixed(2)+'</span>'+
+          ' due '+latestStmt2.paymentDue+' · '+
+          (covered
+            ? '<span style="color:var(--accent)">✓ covered by '+
+              (cardPotAc?.name||'Personal Savings')+'</span>'
+            : '<span style="color:var(--warn)">'+
+              (cardPotAc?.name||'Personal Savings')+' has £'+knownCardPot.toFixed(2)+
+              ' — short by £'+(stmtBalance-knownCardPot).toFixed(2)+'</span>')+
+          (spentSinceStmt>0?' · £'+spentSinceStmt.toFixed(2)+' since last statement rolls to next month':'');
       }
-      ccWrap.append(ccTop, ccInp, ccNote);
-
-      const pot  = mkField('Personal Savings', knownCardPot, 'non-goal savings');
+      ccWrap.append(ccInp, ccNote);
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
       const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Save →');
       backBtn.addEventListener('click',()=>{step=1;show();});
       nextBtn.addEventListener('click',()=>{
         newBalances = {
-          current:         parseFloat(cur.inp.value)  || knownCurrent,
-          florasii:        parseFloat(sav.inp.value)  || knownSavings,
-          creditCard:      parseFloat(ccInp.value)    || estimatedLiveCard,
-          personalSavings: parseFloat(pot.inp.value)  || knownCardPot,
+          current:         parseFloat(fCurrent.inp.value)  || knownCurrent,
+          florasii:        parseFloat(fFlorasii.inp.value) || knownFlorasii,
+          creditCard:      parseFloat(ccInp.value)         || estimatedLiveCard,
+          personalSavings: parseFloat(fCardPot.inp.value)  || knownCardPot,
         };
+        // Also update the individual account records
+        const updatedAccts = accts.map(a=>{
+          if(a.id===current?.id)   return {...a, balance:newBalances.current,         updatedAt:new Date().toISOString()};
+          if(a.id===goalsAc?.id)   return {...a, balance:newBalances.florasii,        updatedAt:new Date().toISOString()};
+          if(a.id===cardAc?.id)    return {...a, balance:newBalances.creditCard,       updatedAt:new Date().toISOString()};
+          if(a.id===cardPotAc?.id) return {...a, balance:newBalances.personalSavings, updatedAt:new Date().toISOString()};
+          return a;
+        });
+        if(updatedAccts.length) appData.accounts=updatedAccts;
         step=3; show();
       });
 
       content.append(
         el('div',{class:'step-num'},'Step 3 of 3'),
         el('div',{class:'step-title'},'Confirm your balances'),
-        el('div',{class:'step-sub'},'We\'ve pre-filled from your accounts and statements. Correct anything that\'s changed.'),
-        cur.wrap, sav.wrap, ccWrap, pot.wrap,
+        el('div',{class:'step-sub'},'Open Barclays and enter each account. We\'ve pre-filled what we know.'),
+        fCurrent.wrap, fCardPot.wrap, fFlorasii.wrap, ccWrap,
         el('div',{class:'row'}, backBtn, nextBtn)
       );
     }
