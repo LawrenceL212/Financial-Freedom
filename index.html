@@ -340,7 +340,15 @@ function inferRole(a){
   if(a.type==='current') return 'spending';
   if(a.type==='credit_card') return 'card';
   if(a.type==='savings'){
-    if(a.legacyKey==='florasii' || /flora|saver|goal|holiday/i.test(a.name||'')) return 'goals';
+    // Legacy key is the most reliable signal — set explicitly during migration
+    if(a.legacyKey==='florasii') return 'goals';
+    if(a.legacyKey==='personalSavings') return 'card_pot';
+    // Name-based: "Florasii", "Holiday", "Goal" → goals pot
+    // "Personal Savings", "Bills", "Card" → card pot
+    if(/flora|goal|holiday|travel|trip/i.test(a.name||'')) return 'goals';
+    if(/personal|bill|card pot|pot/i.test(a.name||'')) return 'card_pot';
+    // "Everyday Saver", "Easy Saver" etc — Barclays saver accounts are often goals
+    if(/saver/i.test(a.name||'')) return 'goals';
     return 'card_pot';
   }
   if(a.type==='cash') return 'spending';
@@ -6606,7 +6614,7 @@ function accountsScreen(){
       const stampDate = stampStr ? new Date(stampStr) : null;
       const daysOld = stampDate && !isNaN(stampDate)
         ? Math.floor((Date.now()-stampDate)/86400000) : null;
-      const isCard = inferRole(a)==='card';
+      const isCard = a.type==='credit_card';
       const freshness = el('div',{style:{fontSize:'11px',marginTop:'6px',
         color: daysOld!=null && daysOld>14 ? 'var(--amber)' : 'var(--text3)'}},
         isCard
