@@ -449,7 +449,7 @@ function paydayFlow(){
   const wrap = el('div',{class:'screen'});
 
   // ── Calculate smart allocation ──
-  function calcAllocation(inc){
+  async function calcAllocation(inc){
     const now = new Date();
     const subs = appData.subscriptions||[];
     const goals = (appData.goals||[]).filter(g=>g.active!==false&&g.target&&g.deadline);
@@ -462,10 +462,26 @@ function paydayFlow(){
     const avgPay = paychecks.length ? paychecks.slice(-6).reduce((s,p)=>s+p.income,0)/Math.min(paychecks.length,6) : inc;
     const payPeriodsPerMonth = 2.17; // fortnightly
 
-    // 1. Credit card — full balance (priority 1)
+    // 1. Credit card — reserve the STATEMENT balance due, not the live balance.
+    // The DDR clears the statement amount; spending since that statement rolls
+    // to next month's payment, so reserving the full live balance would be wrong.
     const accounts = appData.accounts||[];
     const ccBalance = accounts.find(a=>a.type==='credit_card')?.balance || (prev.creditCard||0);
-    const ccReserve = Math.min(ccBalance, inc); // can't reserve more than we earn
+
+    // Find the most recent card statement to get the actual amount due
+    const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+    const cardStmts = Object.values(stmtSnap.val()||{})
+      .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')&&s.statementBalance!=null&&s.paymentDue)
+      .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+    const latestDue = cardStmts[0];
+    // Only use the statement amount if the due date is within ~5 weeks
+    const dueDate = latestDue ? new Date(latestDue.paymentDue) : null;
+    const daysUntilDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate-now)/86400000) : null;
+    const amountDue = (latestDue && daysUntilDue!=null && daysUntilDue>=-3 && daysUntilDue<=35)
+      ? latestDue.statementBalance
+      : ccBalance; // fallback to full balance if no recent statement
+
+    const ccReserve = Math.min(amountDue, inc);
 
     // 2. Goal savings — calculated from deadlines
     const savingsAccounts = accounts.filter(a=>a.type==='savings');
@@ -560,7 +576,7 @@ function paydayFlow(){
     };
   }
 
-  function show(){
+  async function show(){
     wrap.innerHTML='';
     const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1',paddingBottom:'32px'}});
 
@@ -589,7 +605,7 @@ function paydayFlow(){
 
     // ── Step 1: Smart allocation plan ──
     if(step===1){
-      const alloc = calcAllocation(income);
+      const alloc = await calcAllocation(income);
       content.style.justifyContent='flex-start';
 
       // Header
@@ -692,51 +708,96 @@ function paydayFlow(){
       content.append(el('div',{class:'row'},backBtn,nextBtn));
     }
 
-    // ── Step 2: Enter current Barclays balances ──
+    // ── Step 2: Confirm balances — app pre-fills from known data ──
     if(step===2){
       content.style.justifyContent='flex-start';
-      const fieldStyle = {width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'16px',outline:'none',fontFamily:'Space Mono,monospace',fontWeight:'700'};
+      const fldStyle = {width:'100%',background:'var(--surface2)',border:'1px solid var(--border)',
+        color:'var(--text)',borderRadius:'12px',padding:'12px 14px',fontSize:'16px',outline:'none',
+        fontFamily:'Space Mono,monospace',fontWeight:'700'};
 
-      const savingsAccounts = (appData.accounts||[]).filter(a=>a.type==='savings');
-      const savingsLabel = savingsAccounts.length ? savingsAccounts.map(a=>a.name).join(' + ') : 'Savings Fund';
+      // Pull known values from accounts + latest statement
+      const accts = appData.accounts||[];
+      const knownCurrent  = accts.find(a=>a.type==='current')?.balance ?? prev.current;
+      const knownSavings  = accts.filter(a=>a.type==='savings').reduce((s,a)=>s+a.balance,0) || prev.florasii;
+      const knownCardPot  = accts.find(a=>a.legacyKey==='creditCard'||a.legacyKey==='personalSavings')?.balance ?? prev.personalSavings;
+      const savingsLabel  = accts.filter(a=>a.type==='savings').map(a=>a.name).join(' + ') || 'Savings';
 
-      const curInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.current), style:fieldStyle});
-      const florInp = el('input',{inputmode:'decimal',placeholder:fmt(prev.florasii), style:fieldStyle});
-      const ccInp   = el('input',{inputmode:'decimal',placeholder:fmt(prev.creditCard), style:fieldStyle});
-      const savInp  = el('input',{inputmode:'decimal',placeholder:fmt(prev.personalSavings), style:fieldStyle});
+      // Card: latest statement balance is the amount owed until next statement
+      const stSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+      const cardStmts2 = Object.values(stSnap.val()||{})
+        .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')&&s.statementBalance!=null)
+        .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+
+      // What's been spent on the card since the last statement?
+      const latestStmt2  = cardStmts2[0];
+      const stmtBalance  = latestStmt2?.statementBalance ?? prev.creditCard;
+      const stmtEnd      = latestStmt2?.periodEnd;
+      let spentSinceStmt = 0;
+      if(stmtEnd){
+        const txSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+        const txAll  = Object.values(txSnap.val()||{});
+        spentSinceStmt = txAll
+          .filter(t=>t.sourceType==='credit_card' && t.direction==='debit'
+                  && (t.postingDate||'') > stmtEnd)
+          .reduce((s,t)=>s+t.amount,0);
+      }
+      const estimatedLiveCard = Math.round((stmtBalance + spentSinceStmt)*100)/100;
+
+      const mkField = (label, knownVal, hint) => {
+        const wrap = el('div',{style:{marginBottom:'16px'}});
+        const top  = el('div',{style:{display:'flex',justifyContent:'space-between',
+          alignItems:'baseline',marginBottom:'6px'}});
+        top.append(
+          el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},label),
+          hint ? el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},hint) : el('span')
+        );
+        const inp = el('input',{inputmode:'decimal',value:String(knownVal||''),style:fldStyle});
+        wrap.append(top, inp);
+        return {wrap, inp};
+      };
+
+      const cur  = mkField('Current Account', knownCurrent, 'after income landed');
+      const sav  = mkField(savingsLabel, knownSavings, 'your savings pots');
+
+      // Card gets two lines: due now vs estimated total
+      const ccWrap = el('div',{style:{marginBottom:'16px'}});
+      const ccTop  = el('div',{style:{display:'flex',justifyContent:'space-between',
+        alignItems:'baseline',marginBottom:'4px'}});
+      ccTop.append(
+        el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},'Credit Card (total owed)'),
+        el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},'live balance')
+      );
+      const ccInp = el('input',{inputmode:'decimal',value:String(estimatedLiveCard||''),style:fldStyle});
+      const ccNote = el('div',{style:{marginTop:'6px',fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}});
+      if(latestStmt2){
+        ccNote.innerHTML =
+          '<span style="color:var(--warn);font-weight:600">£'+stmtBalance.toFixed(2)+'</span>'+
+          ' due '+latestStmt2.paymentDue+
+          (spentSinceStmt>0?' · <span style="color:var(--ink-3)">+£'+spentSinceStmt.toFixed(2)+
+          ' since last statement (pays '+new Date(new Date(stmtEnd).setMonth(new Date(stmtEnd).getMonth()+2)).toLocaleDateString('en-GB',{month:'short',year:'numeric'})+')</span>':'');
+      }
+      ccWrap.append(ccTop, ccInp, ccNote);
+
+      const pot  = mkField('Personal Savings', knownCardPot, 'non-goal savings');
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
-      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Calculate →');
+      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Save →');
       backBtn.addEventListener('click',()=>{step=1;show();});
       nextBtn.addEventListener('click',()=>{
         newBalances = {
-          current:       isNaN(parseFloat(curInp.value))  ? prev.current        : parseFloat(curInp.value),
-          florasii:      isNaN(parseFloat(florInp.value)) ? prev.florasii       : parseFloat(florInp.value),
-          creditCard:    isNaN(parseFloat(ccInp.value))   ? prev.creditCard     : parseFloat(ccInp.value),
-          personalSavings: isNaN(parseFloat(savInp.value)) ? prev.personalSavings : parseFloat(savInp.value),
+          current:         parseFloat(cur.inp.value)  || knownCurrent,
+          florasii:        parseFloat(sav.inp.value)  || knownSavings,
+          creditCard:      parseFloat(ccInp.value)    || estimatedLiveCard,
+          personalSavings: parseFloat(pot.inp.value)  || knownCardPot,
         };
         step=3; show();
       });
 
-      const mkRow2 = (label, prevVal, inp) => {
-        const row = el('div',{style:{marginBottom:'14px'}});
-        row.append(
-          el('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'6px'}},
-            el('div',{style:{fontSize:'13px',color:'var(--text2)',fontWeight:'600'}},label),
-            el('div',{style:{fontSize:'12px',color:'var(--text3)'}},'was '+fmt(prevVal))
-          ), inp
-        );
-        return row;
-      };
-
       content.append(
         el('div',{class:'step-num'},'Step 3 of 3'),
-        el('div',{class:'step-title'},'Open Barclays'),
-        el('div',{class:'step-sub'},'Enter what each account shows right now.'),
-        mkRow2('Current Account (after income landed)', prev.current, curInp),
-        mkRow2(savingsLabel, prev.florasii, florInp),
-        mkRow2('Credit Card (owed)', prev.creditCard, ccInp),
-        mkRow2('Personal Savings', prev.personalSavings, savInp),
+        el('div',{class:'step-title'},'Confirm your balances'),
+        el('div',{class:'step-sub'},'We\'ve pre-filled from your accounts and statements. Correct anything that\'s changed.'),
+        cur.wrap, sav.wrap, ccWrap, pot.wrap,
         el('div',{class:'row'}, backBtn, nextBtn)
       );
     }
@@ -2752,7 +2813,14 @@ function parseBarclaycardText(text){
   const prevBalance = num(grab(/Your previous balance:?\s*£([\d,]+\.\d{2})/i));
   const paymentMade = num(grab(/Payments towards your account:?\s*£([\d,]+\.\d{2})/i));
   const creditLimit = num(grab(/credit limit:?\s*£([\d,]+\.\d{2})/i));
-  const statedSpend = num(grab(/How you've used your card\s*£([\d,]+\.\d{2})/i));
+  // "How you've used your card" may be £0 on older statements where all spending
+  // was under a 0% promotional offer. In that case the real total is under
+  // "Promotional transactions". Take whichever is larger, or the sum.
+  const statedStandard  = num(grab(/How you.ve used your card\s*£([\d,]+\.\d{2})/i));
+  const statedPromo     = num(grab(/Promotional transactions\s*£([\d,]+\.\d{2})/i));
+  const statedSpend = (statedStandard!=null && statedPromo!=null)
+    ? Math.round((statedStandard + statedPromo)*100)/100
+    : (statedStandard ?? statedPromo);
   const minPayment  = num(grab(/Minimum payment:?\s*£([\d,]+\.\d{2})/i));
   const dueDateStr  = grab(/Please pay by:?\s*(\d{1,2}\s+\w+\s+\d{4})/i);
   const cardLast4   = (grab(/Number\s+((?:\d{4}\s*){4})/)||'').replace(/\s/g,'').slice(-4)||null;
@@ -2798,6 +2866,137 @@ function parseBarclaycardText(text){
       reconciles: statedSpend!=null ? Math.abs(statedSpend-parsedSpend)<0.02 : null,
       dueDate: dueDateStr, cardLast4,
       periodStart: dates[0]||null, periodEnd: dates[dates.length-1]||null,
+    },
+  };
+}
+
+// ── Barclaycard CSV Parser ──
+// Handles two common Barclaycard export formats:
+//
+// Format A (standard export):
+//   Transaction Date,Transaction Type,Transaction Description,Debit Amount,Credit Amount
+//   07/07/2026,Purchase,McDonalds 120 Bournemouth,19.14,
+//
+// Format B (simple export):
+//   Date,Description,Amount
+//   07/07/2026,McDonalds 120 Bournemouth,-19.14
+//
+// Both auto-detected from headers.
+
+function detectBarclaycardCSVFormat(text){
+  const firstLine = text.split('\n')[0].toLowerCase().trim();
+  if(firstLine.includes('transaction date') || firstLine.includes('debit amount'))
+    return 'A';
+  if(firstLine.startsWith('date,') && firstLine.includes('description'))
+    return 'B';
+  return null;
+}
+
+function parseBarclaycardCSV(text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  if(!lines.length) throw new Error('File is empty');
+  const fmt = detectBarclaycardCSVFormat(text);
+  if(!fmt) throw new Error('This does not look like a Barclaycard CSV. Expected columns: Transaction Date, Transaction Type, Transaction Description, Debit Amount, Credit Amount');
+
+  const MONTHS = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+
+  function parseDate(str){
+    str = str.trim().replace(/"/g,'');
+    // DD/MM/YYYY
+    const dmy = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if(dmy) return `${dmy[3]}-${dmy[2].padStart(2,'0')}-${dmy[1].padStart(2,'0')}`;
+    // YYYY-MM-DD
+    if(/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+    // DD Mon YYYY
+    const dmy2 = str.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
+    if(dmy2){
+      const m = MONTHS[dmy2[2].slice(0,3)];
+      if(m!=null) return `${dmy2[3]}-${String(m+1).padStart(2,'0')}-${dmy2[1].padStart(2,'0')}`;
+    }
+    return null;
+  }
+
+  function parseAmount(str){
+    if(!str && str!=='0') return null;
+    return parseFloat(String(str).replace(/[£,"\s]/g,'').trim()) || null;
+  }
+
+  function parseLine(line){
+    // Respect quoted fields
+    const fields = [];
+    let cur = '', inQ = false;
+    for(const ch of line){
+      if(ch==='"'){ inQ=!inQ; continue; }
+      if(ch===','&&!inQ){ fields.push(cur.trim()); cur=''; continue; }
+      cur+=ch;
+    }
+    fields.push(cur.trim());
+    return fields;
+  }
+
+  const txns = [];
+  let stmtBalance = null, prevBalance = null, paymentMade = null;
+  let periodStart = null, periodEnd = null;
+
+  for(let i=1; i<lines.length; i++){
+    const f = parseLine(lines[i]);
+
+    if(fmt==='A'){
+      // Transaction Date, Transaction Type, Transaction Description, Debit, Credit
+      if(f.length < 3) continue;
+      const date = parseDate(f[0]);
+      if(!date) continue;
+      const type = (f[1]||'').trim();
+      const desc = (f[2]||'').trim();
+      const debit  = parseAmount(f[3]);
+      const credit = parseAmount(f[4]);
+      const amount = debit || credit || 0;
+      const direction = credit ? 'credit' : 'debit';
+      if(amount===0) continue;
+
+      const isPayment = /payment|direct debit/i.test(type)||/payment|direct debit/i.test(desc);
+      if(isPayment && credit){ paymentMade = (paymentMade||0)+credit; }
+
+      if(!periodStart || date<periodStart) periodStart=date;
+      if(!periodEnd   || date>periodEnd)   periodEnd=date;
+      txns.push({date, description:desc, type, amount, direction, isPayment});
+    }
+
+    if(fmt==='B'){
+      // Date, Description, Amount (negative=debit, positive=credit/refund)
+      if(f.length < 3) continue;
+      const date = parseDate(f[0]);
+      if(!date) continue;
+      const desc = (f[1]||'').trim();
+      const raw  = parseAmount(f[2]);
+      if(raw===null) continue;
+      const direction = raw >= 0 ? 'credit' : 'debit';
+      const amount = Math.abs(raw);
+      const isPayment = /payment|direct debit/i.test(desc);
+      if(isPayment && direction==='credit') paymentMade = (paymentMade||0)+amount;
+      if(!periodStart || date<periodStart) periodStart=date;
+      if(!periodEnd   || date>periodEnd)   periodEnd=date;
+      txns.push({date, description:desc, type:'', amount, direction, isPayment});
+    }
+  }
+
+  // Try to pull balance from last line or header metadata
+  const lastFew = lines.slice(-5).join('\n');
+  const balM = lastFew.match(/new balance[:\s]+£?([\d,]+\.\d{2})/i);
+  if(balM) stmtBalance = parseAmount(balM[1]);
+  const prevM = lastFew.match(/previous balance[:\s]+£?([\d,]+\.\d{2})/i);
+  if(prevM) prevBalance = parseAmount(prevM[1]);
+
+  const spending = txns.filter(t=>!t.isPayment&&t.direction==='debit');
+  const parsedSpend = Math.round(spending.reduce((s,t)=>s+t.amount,0)*100)/100;
+
+  return {
+    txns,
+    meta:{
+      stmtBalance, prevBalance, paymentMade,
+      parsedSpend, periodStart, periodEnd,
+      reconciles: stmtBalance!=null ? Math.abs(stmtBalance-(prevBalance||0)-parsedSpend+(paymentMade||0))<1 : null,
+      format: fmt,
     },
   };
 }
@@ -2959,6 +3158,33 @@ function statementsScreen(){
       };
     }
 
+    // ── CSV: detect which bank/format ──
+    const cardCSVFmt = detectBarclaycardCSVFormat(text);
+    if(cardCSVFmt){
+      // Barclaycard CSV — route through the card parser, same as PDF
+      const parsed = parseBarclaycardCSV(text);
+      const m = parsed.meta;
+      const accountId = 'barclaycard_csv';
+      const cardTxns = normaliseCardTransactions(parsed, null, accountId);
+      let cdupe=0;
+      for(const t of cardTxns){
+        const s=fileSig(t);
+        if(existingSigs.has(s)||batchSigs.has(s)) cdupe++; else batchSigs.add(s);
+      }
+      return {
+        kind:'credit_card', fingerprint, txns:cardTxns,
+        settlement:{amount:m.paymentMade, date:null},
+        analysis:{
+          account:'Barclaycard (CSV)', periodStart:m.periodStart, periodEnd:m.periodEnd,
+          total:cardTxns.length, income:0, expenses:cardTxns.length, transfers:0,
+          possibleDuplicates:cdupe,
+          needsReview:cardTxns.filter(t=>needsReview(t)).length,
+          cardMeta:m,
+        },
+      };
+    }
+
+    // ── Barclays current account CSV ──
     const {txns, account, minDate, maxDate} = parseBarclaysCSV(text);
     let dupes=0;
     for(const t of txns){
