@@ -459,129 +459,155 @@ function paydayFlow(){
   // ── Calculate smart allocation ──
   async function calcAllocation(inc){
     const now = new Date();
+    const nextPay = new Date(now.getTime() + 14*86400000); // ~2 weeks
     const subs = appData.subscriptions||[];
     const goals = (appData.goals||[]).filter(g=>g.active!==false&&g.target&&g.deadline);
-    const cashFlow = appData.cashFlow||[];
-    const hoursLog = appData.hoursLog||[];
-    const actualPay = appData.actualPay||{};
-
-    // Avg pay per period from history
-    const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
-    const avgPay = paychecks.length ? paychecks.slice(-6).reduce((s,p)=>s+p.income,0)/Math.min(paychecks.length,6) : inc;
-    const payPeriodsPerMonth = 2.17; // fortnightly
-
-    // 1. Credit card — reserve the STATEMENT balance due, not the live balance.
-    // The DDR clears the statement amount; spending since that statement rolls
-    // to next month's payment, so reserving the full live balance would be wrong.
     const accounts = appData.accounts||[];
-    const ccBalance = accounts.find(a=>a.type==='credit_card')?.balance || (prev.creditCard||0);
 
-    // Find the most recent card statement to get the actual amount due
+    // ── PRIORITY 1: Credit card DDR ──
+    // Reserve the statement balance (what actually leaves the bank), not the live total.
+    const ccBalance = accounts.find(a=>a.type==='credit_card')?.balance || (prev.creditCard||0);
     const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
     const cardStmts = Object.values(stmtSnap.val()||{})
       .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')&&s.statementBalance!=null&&s.paymentDue)
       .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
     const latestDue = cardStmts[0];
-    // Only use the statement amount if the due date is within ~5 weeks
     const dueDate = latestDue ? new Date(latestDue.paymentDue) : null;
     const daysUntilDue = dueDate && !isNaN(dueDate) ? Math.ceil((dueDate-now)/86400000) : null;
-    const amountDue = (latestDue && daysUntilDue!=null && daysUntilDue>=-3 && daysUntilDue<=35)
-      ? latestDue.statementBalance
-      : ccBalance; // fallback to full balance if no recent statement
 
+    // Has the DDR already cleared? Check if a matching debit left the current account
+    const txSnap2 = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
+    const allTxns2 = Object.values(txSnap2.val()||{});
+    const ddAmount = latestDue?.statementBalance || 0;
+    const alreadyPaid = ddAmount > 0 && dueDate && allTxns2.some(t=>
+      t.direction==='debit' && t.sourceType!=='credit_card' &&
+      Math.abs(t.amount - ddAmount) < 1 &&
+      Math.abs(new Date(t.postingDate) - dueDate) / 86400000 <= 7
+    );
+
+    // If already paid, reserve the NEXT statement's amount (current live balance minus what was paid)
+    const amountDue = alreadyPaid
+      ? Math.max(0, ccBalance) // what remains is next month's debt
+      : (latestDue && daysUntilDue!=null && daysUntilDue>=-3 && daysUntilDue<=42)
+        ? latestDue.statementBalance
+        : ccBalance;
     const ccReserve = Math.min(amountDue, inc);
+    const afterCard = Math.max(0, inc - ccReserve);
 
-    // 2. Goal savings — calculated from deadlines
+    // ── PRIORITY 2: Florasii / active goal ──
     const savingsAccounts = accounts.filter(a=>a.type==='savings');
-    const currentSavings = savingsAccounts.length
-      ? savingsAccounts.reduce((s,a)=>s+a.balance,0)
-      : (prev.florasii||0);
-    
-    // Sequential mode: only the ACTIVE goal (soonest unmet) counts against this paycheck.
-    // Parallel mode: all goals funded simultaneously.
+    const goalsAcct = accounts.find(a=>inferRole(a)==='goals');
+    const currentSavings = goalsAcct?.balance || (prev.florasii||0);
     const goalMode = appData.goalMode || 'sequential';
     const sortedGoals = [...goals].sort((a,b)=>String(a.deadline).localeCompare(String(b.deadline)));
-    let goalAllocations = [];
-    let totalGoalRequired = 0;
-    let poolLeft = currentSavings;
-    let activeAssigned = false;
-
+    let goalAllocations = [], totalGoalRequired = 0, poolLeft = currentSavings, activeAssigned = false;
     for(const g of sortedGoals){
       const deadline = new Date(g.deadline);
       const daysLeft = Math.ceil((deadline-now)/86400000);
       const overdue = daysLeft < 0;
       const payPeriodsLeft = overdue ? 0 : Math.max(1,Math.floor(daysLeft/14));
-      // Waterfall: earlier goals claim their share of savings first
-      const myShare = Math.min(poolLeft, g.target);
-      poolLeft = Math.max(0, poolLeft - myShare);
-      const remaining = Math.max(0, g.target - myShare);
-      const met = remaining <= 0;
-      // Active = should be funded this paycheck
+      const myShare = Math.min(poolLeft, g.target); poolLeft = Math.max(0,poolLeft-myShare);
+      const remaining = Math.max(0, g.target - myShare); const met = remaining <= 0;
       let isActive;
-      if(goalMode === 'parallel') isActive = !met && !overdue;
-      else { isActive = !met && !overdue && !activeAssigned; if(isActive) activeAssigned = true; }
-      const required = (isActive && payPeriodsLeft > 0) ? remaining/payPeriodsLeft : 0;
+      if(goalMode==='parallel') isActive = !met&&!overdue;
+      else { isActive = !met&&!overdue&&!activeAssigned; if(isActive) activeAssigned=true; }
+      const required = (isActive&&payPeriodsLeft>0) ? remaining/payPeriodsLeft : 0;
       if(isActive) totalGoalRequired += required;
-      goalAllocations.push({name:g.name, required:Math.round(required*100)/100,
-        remaining, payPeriodsLeft, isActive, met, overdue});
+      goalAllocations.push({name:g.name,required:Math.round(required*100)/100,
+        remaining,payPeriodsLeft,isActive,met,overdue});
     }
     totalGoalRequired = Math.round(totalGoalRequired*100)/100;
 
-    // 3. Subscriptions buffer (half monthly, since fortnightly pay)
-    const subTotal = subs.reduce((s,x)=>s+x.amount,0);
-    const subBuffer = Math.round(subTotal/payPeriodsPerMonth*100)/100;
+    // ── PRIORITY 3: Subscriptions — ONLY what bills in the next 14 days ──
+    // Not the full monthly amount — only what will actually leave the account
+    // before the next paycheck arrives.
+    const subsThisFortnight = subs.filter(s => {
+      if(!s.billingDay) return false; // unknown billing date — reserve next paycheck
+      const day = parseInt(s.billingDay);
+      // Check if it bills between today and next payday
+      const thisMonth = new Date(now.getFullYear(), now.getMonth(), day);
+      const nextMonth = new Date(now.getFullYear(), now.getMonth()+1, day);
+      const billDate = thisMonth >= now ? thisMonth : nextMonth;
+      return billDate <= nextPay;
+    });
+    const subsUnknown = subs.filter(s => !s.billingDay); // no billing date known
+    const subBuffer = Math.round([...subsThisFortnight, ...subsUnknown.slice(0,1)]
+      .reduce((s,x)=>s+x.amount,0)*100)/100;
+    const afterCardAndGoal = Math.max(0, afterCard - Math.min(totalGoalRequired, afterCard));
 
-    // 4. Weekly spending — from THIS user's own history, never a fixed default.
-    // Falls back to their essential spend, then to zero, rather than assuming
-    // someone else's lifestyle.
-    const derivedValid = userDerived.uid && currentUser && userDerived.uid === currentUser.uid;
-    if(!derivedValid) userDerived = {};
-    const weeklySpend = userDerived.weeklySpend != null
-      ? userDerived.weeklySpend
-      : (userDerived.monthlySpending != null ? userDerived.monthlySpending*12/52 : 0);
-    const spendingBuffer = weeklySpend * 2; // fortnightly
+    // ── PRIORITY 4: Transport budget (2 weeks) ──
+    const transportBudget = Math.round((appData.transportBudget||20)*2*100)/100; // fortnightly
+    
+    // ── PRIORITY 4+5: Florasii vs personal spending ──
+    // Florasii always comes before personal fun.
+    // If the goal needs more than the formula gives, personal = £0.
+    // Only when the goal is fully covered does personal get anything.
+    const afterTransport = Math.max(0, afterCard - Math.min(transportBudget, afterCard));
+    const afterMandatory = Math.max(0, afterTransport - subBuffer); // true discretionary
 
-    // What's genuinely left after the two non-negotiables: card and subs.
-    // Goals only get what remains — you cannot transfer money you don't have.
-    const afterMandatory = Math.max(0, inc - ccReserve - subBuffer);
+    // The formula split (what we'd do if the goal is under-demanding)
+    const florasiiFormula = Math.ceil((afterMandatory + subBuffer) / 2 * 100) / 100;
 
-    // Goal gets the lesser of: what it needs per paycheck, or what's left
-    // after subs. Spending money gets whatever remains after goals.
-    const goalAffordable = Math.min(totalGoalRequired, afterMandatory);
-    const afterGoals = Math.max(0, afterMandatory - goalAffordable);
-    const actualSpending = Math.max(0, Math.min(afterGoals, spendingBuffer));
-    const buffer = Math.max(0, afterGoals - actualSpending);
+    let goalAffordable, actualSpending;
+    if(totalGoalRequired <= 0){
+      // No active goal — save the larger half anyway, personal gets the rest
+      goalAffordable = florasiiFormula;
+      actualSpending = Math.max(0, afterMandatory - goalAffordable);
+    } else if(totalGoalRequired >= afterMandatory){
+      // Goal needs everything — personal = £0
+      goalAffordable = afterMandatory;
+      actualSpending = 0;
+    } else if(totalGoalRequired >= florasiiFormula){
+      // Goal needs more than formula — give exactly what it needs, personal gets crumbs
+      goalAffordable = totalGoalRequired;
+      actualSpending = Math.max(0, afterMandatory - goalAffordable);
+    } else {
+      // Goal is under-demanding — apply formula, give surplus to personal
+      goalAffordable = totalGoalRequired;
+      actualSpending = Math.max(0, afterMandatory - goalAffordable);
+    }
 
-    // Scale each active goal's shown amount proportionally if capped
+    const constraintMet = goalAffordable > (actualSpending + subBuffer);
+
     const scaleFactor = totalGoalRequired > 0 ? goalAffordable / totalGoalRequired : 1;
     const scaledGoalAllocations = goalAllocations.map(g=>({
       ...g,
-      required: g.isActive ? Math.round(g.required * scaleFactor * 100)/100 : 0,
+      required: g.isActive ? Math.round(g.required * scaleFactor * 100) / 100 : 0,
       capped: g.isActive && scaleFactor < 0.999,
-      needed: g.required, // the full amount needed per paycheck
+      needed: g.required,
     }));
 
     const shortfall = totalGoalRequired > goalAffordable
-      ? Math.round((totalGoalRequired - goalAffordable)*100)/100
-      : spendingBuffer > afterGoals
-        ? Math.round((spendingBuffer - afterGoals)*100)/100
-        : 0;
+      ? Math.round((totalGoalRequired - goalAffordable) * 100) / 100 : 0;
+
+    // What each account should look like after transfers
+    const cardPotAcct = accounts.find(a=>inferRole(a)==='card_pot');
+    const spendingAcct = accounts.find(a=>inferRole(a)==='spending');
+    const projectedBalances = {
+      spending: Math.round((spendingAcct?.balance||0) - ccReserve + inc - goalAffordable - subBuffer - Math.min(transportBudget, afterTransport)),
+      florasii: Math.round(((goalsAcct?.balance||0) + goalAffordable)*100)/100,
+      savings:  Math.round(((cardPotAcct?.balance||0) + ccReserve)*100)/100,
+      card:     Math.round(amountDue*100)/100,
+    };
+
+    const subTotal = subs.reduce((s,x)=>s+x.amount,0);
 
     return {
-      income: inc,
-      ccReserve: Math.round(ccReserve*100)/100,
-      ccBalance: Math.round(ccBalance*100)/100,
+      income: inc, ccReserve: Math.round(ccReserve*100)/100,
+      ccBalance, amountDue, alreadyPaid,
+      dueDate: latestDue?.paymentDue||null, daysUntilDue,
       goalAllocations: scaledGoalAllocations,
       totalGoalRequired: Math.round(goalAffordable*100)/100,
       subBuffer: Math.round(subBuffer*100)/100,
-      spendingBuffer: Math.round(spendingBuffer*100)/100,
+      subsThisFortnight, subTotal,
+      transportBudget, transportReserve: Math.min(transportBudget, afterGoals),
       actualSpending: Math.round(actualSpending*100)/100,
-      buffer: Math.round(buffer*100)/100,
-      shortfall: Math.round(shortfall*100)/100,
-      canAffordSpending: actualSpending >= spendingBuffer,
+      buffer: 0, shortfall, canAffordSpending: true,
       remaining: Math.round(afterGoals*100)/100,
       afterMandatory: Math.round(afterMandatory*100)/100,
+      projectedBalances,
     };
+  }
   }
 
   async function show(){
@@ -659,63 +685,94 @@ function paydayFlow(){
         el('div',{class:'num',style:{fontSize:'22px',fontWeight:'700',color:'var(--accent)'}},fmt(income))
       ));
 
-      content.append(el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Transfer now'));
-
-      // 1. CC — move to card pot
-      if(alloc.ccReserve > 0){
-        content.append(mkRow('💳','Transfer to',cardPotName, alloc.ccReserve,'var(--danger)',
-          'This covers the direct debit that clears your card on its due date. Pay the full amount — no interest.'));
+      // DDR already cleared?
+      if(alloc.alreadyPaid){
+        content.append(el('div',{style:{background:'var(--accent-wash)',border:'1px solid var(--accent-edge)',
+          borderRadius:'12px',padding:'11px 14px',marginBottom:'var(--s3)',fontSize:'13px',color:'var(--accent)'}},
+          '✓ Last card statement already paid — reserving '+fmt(alloc.amountDue)+' for next month\'s DDR'));
       }
 
-      // 2. Active goal only
+      content.append(el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s2)'}},'Move money'));
+
+      // Priority 1: Card → Savings
+      if(alloc.ccReserve > 0){
+        content.append(mkRow('💳','Transfer to', cardPotName, alloc.ccReserve,'var(--danger)',
+          alloc.alreadyPaid
+            ? 'Next DDR due ~'+(alloc.dueDate||'next month')+' — get it in Savings now'
+            : 'DDR due '+alloc.dueDate+' — pay in full, no interest'));
+      }
+
+      // Priority 2: Florasii
       for(const g of alloc.goalAllocations){
         if(!g.isActive || g.required <= 0) continue;
         const note = g.capped
-          ? g.name+' needs £'+fmt(g.needed)+'/paycheck to hit the deadline — only £'+fmt(g.required)+' is available after card + subs'
-          : g.name+' · '+g.payPeriodsLeft+' paychecks to go · '+fmt(g.remaining)+' still needed';
+          ? g.name+' needs '+fmt(g.needed)+' — only '+fmt(g.required)+' available this paycheck'
+          : g.name+' · '+g.payPeriodsLeft+' paychecks left · '+fmt(g.remaining)+' to go';
         content.append(mkRow('🌸','Transfer to', goalsName, g.required,'var(--info)', note));
       }
 
       content.append(el('div',{class:'t-eyebrow',style:{margin:'var(--s4) 0 var(--s2)'}},'Leave in '+spendingName));
 
-      // 3. Subs — stay in current, ring-fenced
-      content.append(mkRow('📋','Ring-fence for', 'Subscriptions', alloc.subBuffer,'var(--warn)',
-        'Direct debits will take this automatically — do not spend it'));
+      // Priority 3: Subs due THIS fortnight only
+      if(alloc.subBuffer > 0){
+        const subNames = (alloc.subsThisFortnight||[]).map(s=>s.name).join(', ') || 'subscriptions';
+        content.append(mkRow('📋','Ring-fence for', 'Subscriptions', alloc.subBuffer,'var(--warn)',
+          subNames+' bill before your next payday — do not touch this'));
+      }
 
-      // 4. Spending
+      // Priority 4: Transport
+      if(alloc.transportReserve > 0){
+        content.append(mkRow('🚲','Budget for', 'Transport (2 weeks)', alloc.transportReserve,'var(--info)',
+          'Beryl + bus · £'+Math.round(alloc.transportReserve/2)+'/week'));
+      }
+
+      // Priority 5: Personal spending
       if(alloc.actualSpending > 0){
-        content.append(mkRow('💸','Yours to spend','This fortnight', alloc.actualSpending,'var(--accent)',
-          '≈ £'+Math.round(alloc.actualSpending/2)+'/week based on your history'));
+        content.append(mkRow('💸','Yours to spend','Food, life, fun', alloc.actualSpending,'var(--accent)',
+          'Florasii ('+fmt(alloc.totalGoalRequired)+') > subs ('+fmt(alloc.subBuffer)+') + spending ('+fmt(alloc.actualSpending)+') ✓'));
       } else {
         content.append(el('div',{style:{background:'var(--surface2)',borderRadius:'12px',
           padding:'12px 14px',marginBottom:'8px',fontSize:'13px',color:'var(--ink-3)',lineHeight:'1.5'}},
-          '£0 spending money this fortnight — priorities take everything. Work a few extra shifts to create headroom.'));
+          'Nothing left for personal spending this fortnight. Pick up extra shifts to create headroom.'));
       }
 
-      // Shortfall or buffer
+      // ── What your Barclays app should look like after doing this ──
+      if(alloc.projectedBalances){
+        const pb = alloc.projectedBalances;
+        const proj = el('div',{style:{background:'var(--surface2)',borderRadius:'14px',
+          padding:'14px 16px',marginTop:'var(--s4)',marginBottom:'var(--s3)'}});
+        proj.append(el('div',{style:{fontSize:'10px',fontWeight:'700',letterSpacing:'1.6px',
+          textTransform:'uppercase',color:'var(--ink-3)',marginBottom:'10px'}},'Your Barclays app should show'));
+        for(const [label,val,col] of [
+          [spendingName,   pb.spending,  'var(--ink)'],
+          [goalsName,      pb.florasii,  'var(--accent)'],
+          [cardPotName,    pb.savings,   'var(--info)'],
+          ['Barclaycard', -pb.card,      'var(--danger)'],
+        ]){
+          proj.append(el('div',{style:{display:'flex',justifyContent:'space-between',
+            padding:'5px 0',borderBottom:'1px solid var(--line-soft)',fontSize:'13px'}},
+            el('span',{style:{color:'var(--ink-2)'}},label),
+            el('span',{class:'num',style:{fontWeight:'700',color:col}},
+              (val<0?'-':'')+fmt(Math.abs(val)))));
+        }
+        proj.lastChild.style.borderBottom='none';
+        content.append(proj);
+      }
+
       if(alloc.shortfall > 0){
         content.append(el('div',{style:{background:'var(--danger-wash)',border:'1px solid var(--danger)',
-          borderRadius:'14px',padding:'14px',marginTop:'4px',marginBottom:'8px'}},
-          el('div',{style:{fontWeight:'700',color:'var(--danger)',marginBottom:'4px'}},'⚠ Shortfall this paycheck'),
+          borderRadius:'14px',padding:'14px',marginBottom:'8px'}},
+          el('div',{style:{fontWeight:'700',color:'var(--danger)',marginBottom:'4px'}},'⚠ Tight paycheck'),
           el('div',{style:{fontSize:'13px',color:'var(--ink-2)',lineHeight:'1.5'}},
-            fmt(alloc.shortfall)+' short of your usual spending budget. '+
-            (alloc.ccReserve>0?'The card payment takes priority — spend less this fortnight or pick up extra shifts.':
-             'Consider working more hours or reducing spending.'))
-        ));
-      } else if(alloc.buffer > 0){
-        content.append(el('div',{style:{background:'var(--accent-wash)',border:'1px solid var(--accent-edge)',
-          borderRadius:'14px',padding:'12px',marginTop:'4px',marginBottom:'8px'}},
-          el('div',{style:{fontSize:'13px',color:'var(--accent)'}},'✓ '+fmt(alloc.buffer)+' buffer after all priorities')
+            'Card + goals need more than you earned. Extra shifts before next payday would help.')
         ));
       }
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
-      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done — enter balances →');
+      const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done →');
       backBtn.addEventListener('click',()=>{step=0;show();});
       nextBtn.addEventListener('click',()=>{step=2;show();});
       content.append(el('div',{class:'row'},backBtn,nextBtn));
-    }
-
     // ── Step 2: Confirm balances — app pre-fills from known data ──
     if(step===2){
       content.style.justifyContent='flex-start';
