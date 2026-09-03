@@ -1007,9 +1007,11 @@ function paydayFlow(){
 }
 
 function overviewScreen(){
-  const {balances, paychecks, subscriptions} = appData;
-  const habits = appData.habits||{xp:0,level:1};
-  const subTotal = subscriptions.reduce((s,x)=>s+x.amount,0);
+  const balances = appData?.balances || {};
+  const paychecks = appData?.paychecks || [];
+  const subscriptions = appData?.subscriptions || [];
+  const habits = appData?.habits||{xp:0,level:1};
+  const subTotal = subscriptions.reduce((s,x)=>s+(x.amount||0),0);
   // pct removed - goals now user-defined
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
