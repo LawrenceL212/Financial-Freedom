@@ -616,6 +616,35 @@ function paydayFlow(){
   }
   }
 
+  function showStep0(){
+    wrap.innerHTML = '';
+    wrap.style.position = 'relative';
+    const exitBtn = el('button',{style:{background:'none',color:'var(--text3)',fontSize:'14px',
+      padding:'4px 8px',position:'absolute',top:'20px',right:'16px'}},'✕');
+    exitBtn.addEventListener('click',()=>mainScreen());
+    wrap.append(exitBtn);
+
+    const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',
+      justifyContent:'center',flex:'1',paddingBottom:'32px'}});
+    const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
+    const btn = el('button',{class:'btn-primary'},'See my plan →');
+    btn.disabled = true;
+    inp.addEventListener('input',()=>{ btn.disabled=!parseFloat(inp.value); });
+    btn.addEventListener('click',()=>{
+      income = parseFloat(inp.value)||0;
+      step = 1;
+      show();
+    });
+    content.append(
+      el('div',{class:'step-num'},'Step 1 of 3'),
+      el('div',{class:'step-title'},'You got paid 💰'),
+      el('div',{class:'step-sub'},'How much landed in your account?'),
+      el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
+      btn
+    );
+    wrap.append(content);
+  }
+
   async function show(){
     wrap.innerHTML='';
     const content = el('div',{class:'content',style:{display:'flex',flexDirection:'column',justifyContent:'center',flex:'1',paddingBottom:'32px'}});
@@ -627,21 +656,8 @@ function paydayFlow(){
       wrap.append(exitBtn);
     }
 
-    // ── Step 0: How much did you earn? ──
-    if(step===0){
-      const inp = el('input',{class:'big-input',inputmode:'decimal',placeholder:'0.00'});
-      const btn = el('button',{class:'btn-primary'},'See my plan →');
-      btn.disabled = true;
-      inp.addEventListener('input',()=>{ btn.disabled=!parseFloat(inp.value); });
-      btn.addEventListener('click',()=>{ income=parseFloat(inp.value)||0; step=1; show(); });
-      content.append(
-        el('div',{class:'step-num'},'Step 1 of 3'),
-        el('div',{class:'step-title'},'You got paid 💰'),
-        el('div',{class:'step-sub'},'How much landed in your account?'),
-        el('div',{class:'big-wrap'}, el('span',{class:'sym'},'£'), inp),
-        btn
-      );
-    }
+    // step 0 handled by showStep0() — no async needed for the entry screen
+    if(step===0){ showStep0(); return; }
 
     // ── Step 1: Smart allocation plan ──
     if(step===1){
@@ -656,7 +672,7 @@ function paydayFlow(){
             el('div',{style:{fontSize:'13px',color:'var(--ink-2)',lineHeight:'1.6',marginBottom:'12px'}},
               err.message || 'Unknown error in calcAllocation'),
             el('button',{class:'btn-ghost'},  '← Back').addEventListener ? 
-              (() => { const b=el('button',{class:'btn-ghost'},'← Back'); b.addEventListener('click',()=>{step=0;show();}); return b; })()
+              (() => { const b=el('button',{class:'btn-ghost'},'← Back'); b.addEventListener('click',()=>{step=0;showStep0();}); return b; })()
               : el('span')
           )
         );
@@ -793,7 +809,7 @@ function paydayFlow(){
 
       const backBtn = el('button',{class:'btn-ghost',style:{flex:'1'}},'← Back');
       const nextBtn = el('button',{class:'btn-primary',style:{flex:'2'}},'Done →');
-      backBtn.addEventListener('click',()=>{step=0;show();});
+      backBtn.addEventListener('click',()=>{step=0;showStep0();});
       nextBtn.addEventListener('click',()=>{step=2;show();});
       content.append(el('div',{class:'row'},backBtn,nextBtn));
     // ── Step 2: Confirm balances — app pre-fills from known data ──
@@ -1002,7 +1018,7 @@ function paydayFlow(){
 
     wrap.append(content);
   }
-  show();
+  showStep0();
   return wrap;
 }
 
