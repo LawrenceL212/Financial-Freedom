@@ -459,7 +459,7 @@ function paydayFlow(){
   let step = 0;
   let income = 0;
   let newBalances = {};
-  const prev = {...appData.balances};
+  const prev = {...(appData?.balances||{})};
   const wrap = el('div',{class:'screen'});
 
   // ── Calculate smart allocation ──
@@ -645,7 +645,24 @@ function paydayFlow(){
 
     // ── Step 1: Smart allocation plan ──
     if(step===1){
-      const alloc = await calcAllocation(income);
+      let alloc;
+      try {
+        alloc = await calcAllocation(income);
+      } catch(err) {
+        content.append(
+          el('div',{class:'step-num'},'Step 2 of 3'),
+          el('div',{class:'card',style:{borderLeft:'3px solid var(--danger)',marginTop:'var(--s4)'}},
+            el('div',{style:{fontWeight:'700',color:'var(--danger)',marginBottom:'6px'}},'Could not build your plan'),
+            el('div',{style:{fontSize:'13px',color:'var(--ink-2)',lineHeight:'1.6',marginBottom:'12px'}},
+              err.message || 'Unknown error in calcAllocation'),
+            el('button',{class:'btn-ghost'},  '← Back').addEventListener ? 
+              (() => { const b=el('button',{class:'btn-ghost'},'← Back'); b.addEventListener('click',()=>{step=0;show();}); return b; })()
+              : el('span')
+          )
+        );
+        return;
+      }
+      if(!alloc){ content.append(el('div',{style:{padding:'20px',color:'var(--danger)'}},'Plan calculation returned empty — tap Back and try again.')); return; }
       content.style.justifyContent='flex-start';
 
       // Header
