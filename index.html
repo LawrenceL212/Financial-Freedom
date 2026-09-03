@@ -626,7 +626,7 @@ function paydayFlow(){
       const pots = getPots();
       const cardPotName  = pots.cardPot.exists  ? pots.cardPot.names  : 'your card pot';
       const goalsName    = pots.goals.exists     ? pots.goals.names    : 'your savings pot';
-      const spendingName = pots.spending.exists  ? pots.spending.names : 'Current Account';
+      const spendingName = pots.spending.exists  ? pots.spending.names : 'Spending';
 
       // Each row = one physical transfer you need to make right now
       const mkRow = (icon, action, account, amount, color, note) => {
@@ -768,11 +768,11 @@ function paydayFlow(){
       };
 
       const fCurrent  = mkField(
-        (current?.name||'Current Account'),
+        (current?.name||'Spending'),
         knownCurrent, 'spending account');
 
       const fCardPot  = mkField(
-        (cardPotAc?.name||'Personal Savings'),
+        (cardPotAc?.name||'Savings'),
         knownCardPot, 'card pot — covers the DDR');
 
       const fFlorasii = mkField(
@@ -784,7 +784,7 @@ function paydayFlow(){
       ccWrap.append(
         el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'5px'}},
           el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--ink-2)'}},
-            (cardAc?.name||'Credit Card')),
+            (cardAc?.name||'Barclaycard')),
           el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},'total owed')));
       const ccInp = el('input',{inputmode:'decimal',value:String(estimatedLiveCard||''),style:fldStyle});
       const ccNote = el('div',{style:{marginTop:'5px',fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}});
@@ -795,9 +795,9 @@ function paydayFlow(){
           ' due '+latestStmt2.paymentDue+' · '+
           (covered
             ? '<span style="color:var(--accent)">✓ covered by '+
-              (cardPotAc?.name||'Personal Savings')+'</span>'
+              (cardPotAc?.name||'Savings')+'</span>'
             : '<span style="color:var(--warn)">'+
-              (cardPotAc?.name||'Personal Savings')+' has £'+knownCardPot.toFixed(2)+
+              (cardPotAc?.name||'Savings')+' has £'+knownCardPot.toFixed(2)+
               ' — short by £'+(stmtBalance-knownCardPot).toFixed(2)+'</span>')+
           (spentSinceStmt>0?' · £'+spentSinceStmt.toFixed(2)+' since last statement rolls to next month':'');
       }
@@ -1238,6 +1238,77 @@ function overviewScreen(){
     if(totalRequiredPerPaycheck>0) wk.append(wkRow('Goal savings', totalRequiredPerPaycheck, true));
     sts.append(wk);
     intelligenceWrap.append(sts);
+
+    // ── TRANSPORT BUDGET ──
+    // Beryl + bus combined. One number, resets Monday.
+    const transportBudget = appData.transportBudget || 20;
+    const monStart = new Date(); monStart.setDate(monStart.getDate()-((monStart.getDay()+6)%7)); monStart.setHours(0,0,0,0);
+    const monStr = monStart.toISOString().slice(0,10);
+
+    const isTransport = t => {
+      const h = ((t.normalisedMerchant||'')+(t.rawDescription||'')+(t.rawMemo||'')).toUpperCase();
+      return t.direction==='debit' && /BERYL|GO SOUTH COAST|FIRST CYMRU|STAGECOACH/.test(h);
+    };
+    const isBeryl = t => /BERYL/.test(((t.normalisedMerchant||'')+(t.rawDescription||'')+(t.rawMemo||'')).toUpperCase());
+
+    const transportThisWeek = txns.filter(t => {
+      const d = t.transactionDate||t.postingDate||'';
+      return d >= monStr && isTransport(t);
+    });
+
+    const berylTotal = transportThisWeek.filter(isBeryl).reduce((s,t)=>s+t.amount,0);
+    const busTotal   = transportThisWeek.filter(t=>!isBeryl(t)).reduce((s,t)=>s+t.amount,0);
+    const transTotal = berylTotal + busTotal;
+    const transPct   = Math.min(100, Math.round(transTotal/transportBudget*100));
+    const transOver  = transTotal > transportBudget;
+    const transCol   = transOver ? 'var(--danger)' : transPct>75 ? 'var(--warn)' : 'var(--accent)';
+
+    const transCard = el('div',{class:'card',style:{marginBottom:'12px'}});
+    transCard.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'var(--s2)'}},
+        el('div',{class:'t-eyebrow'},'Transport this week'),
+        el('div',{style:{fontSize:'11px',color:'var(--ink-3)'}},'Budget £'+transportBudget+'/wk · resets Mon')),
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:'var(--s2)'}},
+        el('div',{class:'num',style:{fontSize:'26px',fontWeight:'700',color:transCol}},'£'+transTotal.toFixed(2)),
+        el('div',{style:{fontSize:'13px',color:'var(--ink-2)'}},
+          transOver ? '£'+Math.abs(transportBudget-transTotal).toFixed(2)+' over' : '£'+(transportBudget-transTotal).toFixed(2)+' left')),
+      el('div',{class:'prog-wrap',style:{marginBottom:'var(--s3)'}},
+        el('div',{class:'prog-fill',style:{width:transPct+'%',background:transCol}}))
+    );
+
+    // Beryl vs bus split
+    const splitRow = el('div',{style:{display:'flex',gap:'var(--s3)',marginBottom:'var(--s2)'}});
+    for(const [label,val] of [['🚲 Beryl',berylTotal],['🚌 Bus',busTotal]]){
+      const chip = el('div',{style:{flex:'1',background:'var(--surface-2)',borderRadius:'var(--r-sm)',padding:'8px 10px'}});
+      chip.append(
+        el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginBottom:'2px'}},label),
+        el('div',{class:'num',style:{fontSize:'14px',fontWeight:'700'}},'£'+val.toFixed(2)));
+      splitRow.append(chip);
+    }
+    transCard.append(splitRow);
+
+    // Recent rides
+    if(transportThisWeek.length){
+      const rides = el('div',{style:{borderTop:'1px solid var(--line-soft)',paddingTop:'var(--s2)'}});
+      for(const t of transportThisWeek.slice(-5).reverse()){
+        rides.append(el('div',{style:{display:'flex',justifyContent:'space-between',
+          fontSize:'12px',color:'var(--ink-3)',padding:'3px 0'}},
+          el('span',{},(t.transactionDate||t.postingDate||'').slice(5).replace('-','/')+
+            ' · '+(isBeryl(t)?'Beryl':'Bus')),
+          el('span',{class:'num'},'£'+t.amount.toFixed(2))));
+      }
+      transCard.append(rides);
+    } else {
+      transCard.append(el('div',{style:{fontSize:'12px',color:'var(--ink-4)'}},'No transport spend yet this week'));
+    }
+
+    const editTransBtn = el('button',{class:'btn-quiet',style:{marginTop:'var(--s2)',fontSize:'11px',color:'var(--ink-3)'}},'Change budget');
+    editTransBtn.addEventListener('click',()=>{
+      const v = prompt('Weekly transport budget (£)?', String(transportBudget));
+      if(v && !isNaN(parseFloat(v))){ appData.transportBudget=parseFloat(v); save({...appData,transportBudget:parseFloat(v)}); renderIntelligence(); }
+    });
+    transCard.append(editTransBtn);
+    intelligenceWrap.append(el('div',{class:'section-hdr'},'Transport'), transCard);
 
     // ── DIAGNOSIS ──
     // Ranks causes and states a verdict. Deliberately non-judgemental: a
@@ -1860,9 +1931,9 @@ function settingsScreen(){
     ),
     el('div',{class:'section-hdr'},'Update Balances'),
     el('div',{class:'card'},
-      el('div',{style:{marginBottom:'12px'}}, mkLabel('Current Account (£)'), curInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Spending (£)'), curInput),
       el('div',{style:{marginBottom:'12px'}}, mkLabel((()=>{ const sa=(appData.accounts||[]).filter(a=>a.type==='savings'); return sa.length?sa[0].name+' (£)':'Savings Fund (£)'; })()), florInput),
-      el('div',{style:{marginBottom:'12px'}}, mkLabel('Personal Savings (£)'), savInput),
+      el('div',{style:{marginBottom:'12px'}}, mkLabel('Savings (£)'), savInput),
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Credit Card Owed (£)'), ccInput),
       saveBalBtn
     ),
@@ -5311,8 +5382,8 @@ function trendsScreen(){
     makeGraph('Net worth (savings − credit card)','#64B5F6',netWorthSeries,dates),
     el('div',{class:'section-hdr'},'Savings'),
     makeGraph('Savings — running balance','var(--green)',florasiiSeries,dates),
-    el('div',{class:'section-hdr'},'Current Account'),
-    makeGraph('Current Account — running balance','#4FC3F7',currentSeries,dates)
+    el('div',{class:'section-hdr'},'Spending'),
+    makeGraph('Spending — running balance','#4FC3F7',currentSeries,dates)
   );
   if(ccSeries.some(v=>v>0)) content.append(
     el('div',{class:'section-hdr'},'Credit Card'),
@@ -6559,7 +6630,7 @@ function calendarScreen(){
 function accountsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const TYPES = [
-    {key:'current',      label:'Current Account', icon:'🏦', sign:1},
+    {key:'current',      label:'Spending', icon:'🏦', sign:1},
     {key:'savings',      label:'Savings Account',  icon:'💰', sign:1},
     {key:'credit_card',  label:'Credit Card',       icon:'💳', sign:-1},
     {key:'investment',   label:'Investment',         icon:'📈', sign:1},
@@ -6729,9 +6800,9 @@ function accountsScreen(){
     const importBtn = el('button',{class:'btn-primary'},'Import existing balances');
     importBtn.addEventListener('click',async()=>{
       const toImport = [];
-      if(b.current)         toImport.push({id:uid(),name:'Current Account',type:'current',balance:b.current,currency:'GBP',legacyKey:'current',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
-      if(b.florasii)        toImport.push({id:uid(),name:'Florasii Fund',type:'savings',balance:b.florasii,currency:'GBP',legacyKey:'florasii',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
-      if(b.personalSavings) toImport.push({id:uid(),name:'Personal Savings',type:'savings',balance:b.personalSavings,currency:'GBP',legacyKey:'personalSavings',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+      if(b.current)         toImport.push({id:uid(),name:'Spending',type:'current',balance:b.current,currency:'GBP',legacyKey:'current',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+      if(b.florasii)        toImport.push({id:uid(),name:'Florasii',type:'savings',balance:b.florasii,currency:'GBP',legacyKey:'florasii',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+      if(b.personalSavings) toImport.push({id:uid(),name:'Savings',type:'savings',balance:b.personalSavings,currency:'GBP',legacyKey:'personalSavings',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
       if(b.creditCard)      toImport.push({id:uid(),name:'Credit Card',type:'credit_card',balance:b.creditCard,currency:'GBP',legacyKey:'creditCard',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
       accounts = toImport;
       appData.accounts=accounts;
