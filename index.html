@@ -567,7 +567,11 @@ async function syncBankingBalances(){
 
   if(changed){
     appData.accounts=updated;
-    await save({...appData,accounts:updated});
+    await save({...appData,accounts:updated,lastBankSync:new Date().toISOString()});
+  } else {
+    // Always update the sync timestamp even if nothing changed
+    appData.lastBankSync = new Date().toISOString();
+    await db.ref('users/'+currentUser.uid+'/lastBankSync').set(appData.lastBankSync);
   }
   if(payDetected) showPaydayDetectedPrompt(payDetected);
   return changed;
@@ -7352,8 +7356,10 @@ function accountsScreen(){
   // Check if already connected and update banner async
   getValidAccessToken().then(token=>{
     if(!token) return;
-    const lastSync = (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
+    const lastSync = appData.lastBankSync || (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
     const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
+    const lastSyncEl = el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},
+      lastSync?'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Connected');
     syncBtn.addEventListener('click',async()=>{
       syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
       try {
@@ -7361,9 +7367,11 @@ function accountsScreen(){
           syncBankingBalances().catch(()=>false),
           syncBankingTransactions().catch(()=>0),
         ]);
+        const now = new Date();
+        lastSyncEl.textContent = 'Last synced '+now.toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
         syncBtn.textContent = (balChanged||txnImported>0)
-          ? '✓ Updated'+(txnImported>0?' · '+txnImported+' new transactions':'')
-          : '✓ Already up to date';
+          ? '✓ Updated'+(txnImported>0?' · '+txnImported+' new':'')
+          : '✓ Up to date';
         if(balChanged) renderAccounts();
       } catch(e){
         syncBtn.textContent = 'Sync failed';
@@ -7375,8 +7383,7 @@ function accountsScreen(){
       el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
         el('div',{},
           el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays connected'),
-          el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},
-            lastSync?'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Connected')),
+          lastSyncEl),
         syncBtn));
   }).catch(()=>{});
   const TYPES = [
