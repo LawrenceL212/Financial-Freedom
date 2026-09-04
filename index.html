@@ -457,14 +457,20 @@ async function syncBankingTransactions(){
         const date = (t.timestamp||'').slice(0,10);
         if(!date) continue;
 
-        // Use merchant name from meta if available
-        const desc = t.meta?.provider_merchant_name || t.description || '';
-        const normDesc = desc.toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim();
+        // Use best available merchant name
+        const merchantName = t.meta?.provider_merchant_name 
+          || t.merchant_name
+          || null;
+        const desc = merchantName || t.description || '';
+        const rawDesc = t.description || '';
+        const normDesc = (merchantName||rawDesc).toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim();
 
         // Detect transfers between own accounts
         const isTransfer = t.transaction_category==='TRANSFER'
-          || /201139\s*\d{8}/.test(t.description||'')
-          || /B\/CARD FORWARD.*DDR/i.test(t.description||'');
+          || /201139\s*\d{8}/.test(rawDesc)
+          || /B\/CARD FORWARD.*DDR/i.test(rawDesc)
+          || /BARCLAYS CURRENT ACCOUNT/i.test(rawDesc)
+          || (!merchantName && /^[0-9]{6}\s[0-9]{8}/i.test(rawDesc));
 
         // Detect income
         const isIncome = /WAGAMAMA/i.test(t.description||'') && direction==='credit';
@@ -494,8 +500,8 @@ async function syncBankingTransactions(){
           transactionDate: date,
           amount,
           direction,
-          rawDescription: t.description||'',
-          normalisedMerchant: desc,
+          rawDescription: rawDesc,
+          normalisedMerchant: desc || rawDesc,
           category,
           financialType,
           sourceType: acct.type==='credit_card'?'credit_card':'current_account',
@@ -3286,7 +3292,7 @@ const CATEGORY_RULES = [
 function suggestCategory(merchant, financialType){
   // What the money IS takes precedence over which merchant it involved
   if(financialType === 'INCOME') return ['Income', 'Employment'];
-  if(financialType.includes('TRANSFER') || financialType === 'SAVINGS_TRANSFER') return ['Transfer', null];
+  if((financialType||'').includes('TRANSFER') || financialType === 'SAVINGS_TRANSFER') return ['Transfer', null];
   if(financialType === 'REFUND') return ['Refund', null];
   // Then the detailed merchant rules
   if(typeof AUTO_RULES!=='undefined'){
@@ -4398,12 +4404,12 @@ function transactionsScreen(){
     filtered = allTxns.filter(t=>{
       if(filterType==='income' && t.financialType!=='INCOME') return false;
       if(filterType==='expense' && t.financialType!=='EXPENSE') return false;
-      if(filterType==='transfer' && !t.financialType.includes('TRANSFER') && t.financialType!=='SAVINGS_TRANSFER') return false;
+      if(filterType==='transfer' && !(t.financialType||'').includes('TRANSFER') && (t.financialType||'')!=='SAVINGS_TRANSFER') return false;
       if(filterType==='review' && !needsReview(t)) return false;
       if(searchQ){
         const q = searchQ.toLowerCase();
-        if(!t.normalisedMerchant.toLowerCase().includes(q) &&
-           !t.rawDescription.toLowerCase().includes(q) &&
+        if(!(t.normalisedMerchant||'').toLowerCase().includes(q) &&
+           !(t.rawDescription||'').toLowerCase().includes(q) &&
            !(t.category||'').toLowerCase().includes(q)) return false;
       }
       return true;
@@ -4665,7 +4671,7 @@ function detectRecurring(transactions){
   // Group by normalised merchant
   const byMerchant = {};
   for(const t of transactions){
-    if(t.financialType === 'INCOME' || t.financialType.includes('TRANSFER')) continue;
+    if(t.financialType === 'INCOME' || (t.financialType||'').includes('TRANSFER')) continue;
     const key = t.normalisedMerchant || t.rawDescription;
     if(!byMerchant[key]) byMerchant[key] = [];
     byMerchant[key].push(t);
