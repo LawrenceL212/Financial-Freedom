@@ -418,60 +418,70 @@ function showDailyCheckin(importedCount){
 }
 
 async function syncBankingTransactions(){
-  // Fetch transactions from TrueLayer and merge into Firebase
-  // Only fetches since the last sync to avoid duplicates
   const accessToken = await getValidAccessToken();
   if(!accessToken) return 0;
 
-  const bankAccounts = await fetchBankingAccounts();
-  if(!bankAccounts||!bankAccounts.length) return 0;
+  // Get account IDs stored from last balance sync
+  const appAccts = appData.accounts||[];
+  const syncableAccounts = appAccts.filter(a=>a.bankAccountId);
+  if(!syncableAccounts.length) return 0;
 
-  // Get last sync date from appData
-  const lastSync = appData.lastTransactionSync || 
-    new Date(Date.now() - 90*86400000).toISOString().slice(0,10); // default 90 days
-  const fromDate = lastSync.slice(0,10);
+  const lastSync = appData.lastTransactionSync
+    ? appData.lastTransactionSync.slice(0,10)
+    : new Date(Date.now()-90*86400000).toISOString().slice(0,10);
 
-  // Fetch existing transaction IDs to avoid duplicates
+  // Get existing transaction IDs to avoid duplicates
   const existingSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
   const existing = existingSnap.val()||{};
-  const existingIds = new Set(Object.values(existing).map(t=>t.bankTransactionId).filter(Boolean));
+  const existingBankIds = new Set(
+    Object.values(existing).map(t=>t.bankTransactionId).filter(Boolean));
 
   let imported = 0;
   const writes = {};
 
-  for(const acct of bankAccounts){
+  for(const acct of syncableAccounts){
     try {
       const res = await fetch(
-        window.FF_BANKING_URL+'/transactions?account_id='+acct.account_id+'&from='+fromDate,
+        window.FF_BANKING_URL+'/transactions?account_id='+acct.bankAccountId+'&from='+lastSync,
         {headers:{'Authorization':'Bearer '+accessToken}});
       if(!res.ok) continue;
       const {transactions} = await res.json();
       if(!transactions||!transactions.length) continue;
 
       for(const t of transactions){
-        // Skip if already imported
-        if(existingIds.has(t.transaction_id)) continue;
+        if(existingBankIds.has(t.transaction_id)) continue;
 
-        // Normalise to app's transaction format
         const amount = Math.abs(t.amount||0);
+        if(!amount) continue;
         const direction = (t.amount||0) < 0 ? 'debit' : 'credit';
-        const date = (t.timestamp||t.date||'').slice(0,10);
-        if(!date||!amount) continue;
+        const date = (t.timestamp||'').slice(0,10);
+        if(!date) continue;
 
-        const desc = t.description||t.merchant_name||'';
+        // Use merchant name from meta if available
+        const desc = t.meta?.provider_merchant_name || t.description || '';
         const normDesc = desc.toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim();
 
-        // Auto-categorise
+        // Detect transfers between own accounts
+        const isTransfer = t.transaction_category==='TRANSFER'
+          || /201139\s*\d{8}/.test(t.description||'')
+          || /B\/CARD FORWARD.*DDR/i.test(t.description||'');
+
+        // Detect income
+        const isIncome = /WAGAMAMA/i.test(t.description||'') && direction==='credit';
+
         let category = 'Other';
         let financialType = direction==='credit' ? 'INCOME' : 'EXPENSE';
 
-        // Check against AUTO_RULES
-        if(typeof AUTO_RULES !== 'undefined'){
+        if(isTransfer){
+          category = 'Transfer';
+          financialType = direction==='credit' ? 'TRANSFER_IN' : 'TRANSFER_OUT';
+        } else if(isIncome){
+          category = 'Income';
+          financialType = 'INCOME';
+        } else if(typeof AUTO_RULES !== 'undefined'){
           for(const [pat, cat, type] of AUTO_RULES){
             if(pat.test(normDesc)){
-              category = cat;
-              financialType = type;
-              break;
+              category = cat; financialType = type; break;
             }
           }
         }
@@ -484,28 +494,25 @@ async function syncBankingTransactions(){
           transactionDate: date,
           amount,
           direction,
-          rawDescription: desc,
+          rawDescription: t.description||'',
           normalisedMerchant: desc,
           category,
           financialType,
-          sourceType: acct.account_type==='CREDIT_CARD'?'credit_card':'current_account',
+          sourceType: acct.type==='credit_card'?'credit_card':'current_account',
           sourceBank: 'Barclays',
           importedFromBank: true,
-          needsReview: financialType==='EXPENSE'&&category==='Other',
+          needsReview: !isTransfer && !isIncome && category==='Other',
         };
-        existingIds.add(t.transaction_id);
+        existingBankIds.add(t.transaction_id);
         imported++;
       }
-    } catch(e){ console.error('Transaction fetch error for account', acct.account_id, e); }
+    } catch(e){ console.error('Transaction fetch failed:', e); }
   }
 
-  if(imported > 0){
-    // Write all new transactions to Firebase
+  if(imported>0){
     await db.ref('users/'+currentUser.uid+'/transactions').update(writes);
-    // Update last sync timestamp
-    await save({...appData, lastTransactionSync: new Date().toISOString()});
-    // Update local appData
     appData.lastTransactionSync = new Date().toISOString();
+    await save({...appData, lastTransactionSync:appData.lastTransactionSync});
   }
 
   return imported;
@@ -1401,6 +1408,194 @@ function paydayFlow(prefillIncome){
   return wrap;
 }
 
+
+// ── Smart financial reminders ──
+// Runs on every app open. Checks account health against goals and upcoming
+// obligations, then surfaces actionable nudges on the home screen.
+
+async function buildFinancialReminders(){
+  if(!appData||!currentUser) return [];
+  const reminders = [];
+  const now = new Date();
+  const accounts = appData.accounts||[];
+
+  const spending   = accounts.find(a=>inferRole(a)==='spending');
+  const cardPot    = accounts.find(a=>inferRole(a)==='card_pot');
+  const florasii   = accounts.find(a=>inferRole(a)==='goals');
+  const card       = accounts.find(a=>a.type==='credit_card');
+
+  const spendBal   = spending?.balance  || 0;
+  const potBal     = cardPot?.balance   || 0;
+  const florBal    = florasii?.balance  || 0;
+  const cardBal    = card?.balance      || 0;
+
+  // ── 1. Upcoming card DDR ──
+  // Find the latest statement to know what's due and when
+  try {
+    const stmtSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+    const stmts = Object.values(stmtSnap.val()||{})
+      .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')
+               && s.statementBalance!=null && s.paymentDue)
+      .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+
+    const latest = stmts[0];
+    if(latest){
+      const due       = new Date(latest.paymentDue);
+      const daysUntil = Math.ceil((due-now)/86400000);
+      const amtDue    = latest.statementBalance;
+
+      // Check if DDR already cleared from imported transactions
+      const allTxns = Object.values(appData.transactions||{});
+      const ddrCleared = allTxns.some(t=>
+        t.direction==='debit' &&
+        Math.abs(t.amount - amtDue) < 2 &&
+        (t.rawDescription||'').toUpperCase().includes('B/CARD') &&
+        (t.postingDate||'') >= (latest.periodEnd||'').slice(0,10)
+      );
+      const cleared = appData['cardCleared_'+latest.statementId] || ddrCleared;
+
+      if(!cleared){
+        if(daysUntil <= 14 && daysUntil >= -1){
+          const shortfall = amtDue - potBal;
+          if(shortfall > 0){
+            // Not enough in card pot
+            reminders.push({
+              priority: 1,
+              icon: '⚠️',
+              colour: 'var(--danger)',
+              title: 'Card payment shortfall',
+              body: fmt(amtDue)+' due '+latest.paymentDue+' — '+
+                    'Savings only has '+fmt(potBal)+'. '+
+                    'You need to move '+fmt(shortfall)+' from Spending now.',
+              action: 'payday',
+            });
+          } else {
+            reminders.push({
+              priority: 2,
+              icon: '✅',
+              colour: 'var(--accent)',
+              title: 'Card payment covered',
+              body: fmt(amtDue)+' due '+latest.paymentDue+' — '+
+                    'Savings has '+fmt(potBal)+'. You\'re covered.',
+            });
+          }
+        } else if(daysUntil > 14 && daysUntil <= 35){
+          // Next cycle — estimate what will be owed
+          const spentSinceStmt = Object.values(appData.transactions||{})
+            .filter(t=>t.sourceType==='credit_card'&&t.direction==='debit'
+                    &&(t.postingDate||'')>(latest.periodEnd||''))
+            .reduce((s,t)=>s+t.amount,0);
+          const estimatedNext = Math.round((cardBal)*100)/100;
+          reminders.push({
+            priority: 3,
+            icon: '📅',
+            colour: 'var(--warn)',
+            title: 'Next card statement coming',
+            body: 'Est. '+fmt(estimatedNext)+' will be due around '+
+                  new Date(due.getTime()+30*86400000)
+                    .toLocaleDateString('en-GB',{day:'numeric',month:'short'})+
+                  '. Start saving '+fmt(estimatedNext)+' in Savings now.',
+          });
+        }
+      } else {
+        // DDR cleared — now warn about the NEXT payment
+        // Current card balance = what will be due next month
+        if(cardBal > 0){
+          const nextDue = new Date(due);
+          nextDue.setMonth(nextDue.getMonth()+1);
+          const daysToNext = Math.ceil((nextDue-now)/86400000);
+          const nextShortfall = cardBal - potBal;
+          reminders.push({
+            priority: nextShortfall > 0 ? 2 : 4,
+            icon: nextShortfall > 0 ? '📅' : '✅',
+            colour: nextShortfall > 0 ? 'var(--warn)' : 'var(--accent)',
+            title: nextShortfall > 0 ? 'Save for next card payment' : 'Next card payment on track',
+            body: 'Sep DDR cleared ✓ · Next payment est. '+fmt(cardBal)+
+                  ' due ~'+nextDue.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+
+                  (nextShortfall>0
+                    ? ' · Savings has '+fmt(potBal)+', still need '+fmt(nextShortfall)
+                    : ' · Savings has '+fmt(potBal)+' ✓'),
+            action: nextShortfall > 0 ? 'payday' : null,
+          });
+        }
+      }
+    }
+  } catch(e){ console.warn('Reminder: statement check failed', e); }
+
+  // ── 2. Goal savings ──
+  const goals = (appData.goals||[]).filter(g=>g.active!==false&&g.target&&g.deadline);
+  const sortedGoals = [...goals].sort((a,b)=>String(a.deadline).localeCompare(String(b.deadline)));
+  const activeGoal = sortedGoals.find(g=>!g.met);
+
+  if(activeGoal){
+    const deadline    = new Date(activeGoal.deadline);
+    const daysLeft    = Math.ceil((deadline-now)/86400000);
+    const paychecks   = Math.max(1,Math.floor(daysLeft/14));
+    const remaining   = Math.max(0, activeGoal.target - florBal);
+    const perPaycheck = Math.round(remaining/paychecks*100)/100;
+    const paychecks2  = (appData.paychecks||[]).slice(-4);
+    const avgPay      = paychecks2.length
+      ? paychecks2.reduce((s,p)=>s+(p.income||0),0)/paychecks2.length : 0;
+    const onTrack     = avgPay > 0 && perPaycheck < avgPay * 0.3;
+
+    if(remaining > 0){
+      reminders.push({
+        priority: onTrack ? 4 : 2,
+        icon: '🌸',
+        colour: onTrack ? 'var(--info)' : 'var(--warn)',
+        title: activeGoal.name,
+        body: fmt(florBal)+' saved of '+fmt(activeGoal.target)+
+              ' · '+fmt(remaining)+' to go · '+paychecks+' paychecks · '+
+              fmt(perPaycheck)+'/paycheck needed'+
+              (onTrack?' · on track ✓':' · needs attention'),
+      });
+    }
+  }
+
+  // ── 3. Payday action pending ──
+  // If pay landed but money hasn't been moved yet
+  const lastPaycheck = (appData.paychecks||[]).slice(-1)[0];
+  if(lastPaycheck){
+    const payDate = new Date(lastPaycheck.date||lastPaycheck.createdAt||0);
+    const daysSincePay = Math.floor((now-payDate)/86400000);
+    if(daysSincePay <= 3 && potBal < (card?.balance||0)*0.8){
+      reminders.push({
+        priority: 1,
+        icon: '💰',
+        colour: 'var(--accent)',
+        title: 'Move your pay',
+        body: 'You got paid '+fmt(lastPaycheck.income)+' '+daysSincePay+
+              ' day'+(daysSincePay===1?'':'s')+' ago. Tap to see where to move it.',
+        action: 'payday',
+      });
+    }
+  }
+
+  return reminders.sort((a,b)=>a.priority-b.priority);
+}
+
+function renderReminders(reminders, container){
+  if(!reminders||!reminders.length) return;
+  container.append(el('div',{class:'section-hdr'},'Action needed'));
+  for(const r of reminders){
+    const card = el('div',{class:'card',style:{
+      borderLeft:'3px solid '+r.colour,
+      marginBottom:'8px',
+      cursor:r.action?'pointer':'default'}});
+    const top = el('div',{style:{display:'flex',alignItems:'flex-start',gap:'10px'}});
+    top.append(
+      el('div',{style:{fontSize:'20px',flexShrink:'0'}},r.icon),
+      el('div',{style:{flex:'1'}},
+        el('div',{style:{fontWeight:'700',fontSize:'13px',marginBottom:'3px'}},r.title),
+        el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},r.body)));
+    card.append(top);
+    if(r.action==='payday'){
+      card.addEventListener('click',()=>render(paydayFlow()));
+    }
+    container.append(card);
+  }
+}
+
 function overviewScreen(){
   const balances = appData?.balances || {};
   const paychecks = appData?.paychecks || [];
@@ -1635,6 +1830,12 @@ function overviewScreen(){
     if(topCats.length&&topCats[0][1].total>predictedPay*0.3) reasons.push({severity:'info',msg:topCats[0][0]+' is your biggest cost this month at '+fmt(topCats[0][1].total)+'.'});
 
     intelligenceWrap.innerHTML='';
+
+    // ── REMINDERS ──
+    const reminders = await buildFinancialReminders().catch(()=>[]);
+    if(reminders.length){
+      renderReminders(reminders, intelligenceWrap);
+    }
 
     // ── HERO: composition of your money, not just its total ──
     // A single net worth figure misleads when most of it is committed, so the
