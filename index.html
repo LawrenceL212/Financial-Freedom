@@ -586,13 +586,17 @@ function paydayFlow(){
     const shortfall = totalGoalRequired > goalAffordable
       ? Math.round((totalGoalRequired - goalAffordable) * 100) / 100 : 0;
 
-    // What each account should look like after transfers
+    // What each account should look like AFTER you make the transfers
+    // Spending: receives the pay, then sends out ccReserve + goalAffordable + subBuffer + transport
     const cardPotAcct = accounts.find(a=>inferRole(a)==='card_pot');
     const spendingAcct = accounts.find(a=>inferRole(a)==='spending');
+    const currentSpending = spendingAcct?.balance || (prev.current||0);
+    const currentFlorasii = goalsAcct?.balance || (prev.florasii||0);
+    const currentSavingsPot = cardPotAcct?.balance || (prev.personalSavings||0);
     const projectedBalances = {
-      spending: Math.round((spendingAcct?.balance||0) - ccReserve + inc - goalAffordable - subBuffer - Math.min(transportBudget, afterTransport)),
-      florasii: Math.round(((goalsAcct?.balance||0) + goalAffordable)*100)/100,
-      savings:  Math.round(((cardPotAcct?.balance||0) + ccReserve)*100)/100,
+      spending: Math.round((currentSpending + inc - ccReserve - goalAffordable - subBuffer - Math.min(transportBudget, afterTransport))*100)/100,
+      florasii: Math.round((currentFlorasii + goalAffordable)*100)/100,
+      savings:  Math.round((currentSavingsPot + ccReserve)*100)/100,
       card:     Math.round(amountDue*100)/100,
     };
 
@@ -737,7 +741,9 @@ function paydayFlow(){
         content.append(mkRow('💳','Transfer to', cardPotName, alloc.ccReserve,'var(--danger)',
           alloc.alreadyPaid
             ? 'Next DDR due ~'+(alloc.dueDate||'next month')+' — get it in Savings now'
-            : 'DDR due '+alloc.dueDate+' — pay in full, no interest'));
+            : alloc.dueDate
+              ? 'DDR due '+alloc.dueDate+' — pay in full, no interest'
+              : 'Full balance — pay in full, no interest'));
       }
 
       // Priority 2: Florasii
