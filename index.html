@@ -577,6 +577,155 @@ async function syncBankingBalances(){
   return changed;
 }
 
+function showMoneyAllocationPlan(){
+  // Calculate what transfers to make based on current balances and goals
+  const accounts  = appData.accounts||[];
+  const subs      = appData.subscriptions||[];
+  const now       = new Date();
+  const nextPay   = new Date(now.getTime()+14*86400000);
+
+  const spending  = accounts.find(a=>inferRole(a)==='spending');
+  const cardPot   = accounts.find(a=>inferRole(a)==='card_pot');
+  const florasii  = accounts.find(a=>inferRole(a)==='goals');
+  const card      = accounts.find(a=>a.type==='credit_card');
+
+  const spendBal  = spending?.balance  || 0;
+  const potBal    = cardPot?.balance   || 0;
+  const florBal   = florasii?.balance  || 0;
+  const cardBal   = card?.balance      || 0;
+
+  // What's the next DDR amount?
+  const subsThisFortnight = subs.filter(s=>{
+    if(!s.billingDay) return false;
+    const day = parseInt(s.billingDay);
+    const thisMonth = new Date(now.getFullYear(),now.getMonth(),day);
+    const nextMonth = new Date(now.getFullYear(),now.getMonth()+1,day);
+    const billDate = thisMonth >= now ? thisMonth : nextMonth;
+    return billDate <= nextPay;
+  });
+  const subBuffer = Math.round(subsThisFortnight.reduce((s,x)=>s+x.amount,0)*100)/100;
+  const transportBudget = (appData.transportBudget||20)*2;
+
+  // What Savings SHOULD have = next card DDR
+  const savingsTarget = cardBal; // full card balance is what will be due
+  const savingsShortfall = Math.max(0, savingsTarget - potBal);
+  const savingsSurplus   = Math.max(0, potBal - savingsTarget);
+
+  // What's available to move from Spending after keeping essentials
+  const spendingKeep = subBuffer + transportBudget + 50; // keep £50 buffer
+  const spendingFree = Math.max(0, spendBal - spendingKeep);
+
+  // Transfers needed
+  const transfers = [];
+
+  if(savingsShortfall > 0){
+    const canMove = Math.min(savingsShortfall, spendingFree);
+    if(canMove > 0){
+      transfers.push({
+        from: spending?.name||'Spending',
+        to:   cardPot?.name||'Savings',
+        amount: canMove,
+        reason: 'Cover Oct card DDR ('+fmt(cardBal)+' due ~1 Oct)',
+        urgent: true,
+      });
+    } else {
+      transfers.push({
+        from: null, to: null, amount: savingsShortfall,
+        reason: '⚠ Need '+fmt(savingsShortfall)+' more in Savings for card DDR — not enough in Spending',
+        urgent: true, impossible: true,
+      });
+    }
+  }
+
+  const afterSavings = spendingFree - (transfers[0]?.amount||0);
+  if(afterSavings > 0 && !transfers[0]?.impossible){
+    // Goals get what's left (applying the Florasii > subs+personal rule)
+    const discretionary = afterSavings;
+    const florAmount = Math.ceil((discretionary+subBuffer)/2*100)/100;
+    const florasiiMove = Math.min(florAmount, afterSavings);
+    if(florasiiMove > 1){
+      transfers.push({
+        from: spending?.name||'Spending',
+        to:   florasii?.name||'Florasii',
+        amount: Math.round(florasiiMove*100)/100,
+        reason: 'Hong Kong · '+fmt(florBal+florasiiMove)+' total saved',
+        urgent: false,
+      });
+    }
+  }
+
+  // What accounts should look like after
+  const projected = {
+    spending: Math.round((spendBal - transfers.filter(t=>t.from&&!t.impossible).reduce((s,t)=>s+t.amount,0))*100)/100,
+    savings:  Math.round((potBal   + (transfers.find(t=>t.to===(cardPot?.name||'Savings'))?.amount||0))*100)/100,
+    florasii: Math.round((florBal  + (transfers.find(t=>t.to===(florasii?.name||'Florasii'))?.amount||0))*100)/100,
+    card:     -cardBal,
+  };
+
+  // Build the overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9000;display:flex;align-items:flex-end;justify-content:center;padding:0';
+  const sheet = document.createElement('div');
+  sheet.style.cssText='background:var(--surface);border-radius:20px 20px 0 0;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto';
+
+  const title = document.createElement('div');
+  title.style.cssText='font-size:17px;font-weight:700;margin-bottom:4px';
+  title.textContent='💡 Sort my money';
+  const sub = document.createElement('div');
+  sub.style.cssText='font-size:12px;color:var(--ink-3);margin-bottom:16px;line-height:1.5';
+  sub.textContent='Based on your current balances, make these transfers in Barclays now:';
+  sheet.append(title, sub);
+
+  if(transfers.length === 0){
+    const ok = document.createElement('div');
+    ok.style.cssText='text-align:center;padding:24px;color:var(--accent)';
+    ok.innerHTML='<div style="font-size:32px;margin-bottom:8px">✅</div><div style="font-weight:700">Everything is where it should be</div>';
+    sheet.append(ok);
+  } else {
+    for(const t of transfers){
+      const card2 = document.createElement('div');
+      card2.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-bottom:10px;border-left:3px solid '+(t.impossible?'var(--danger)':t.urgent?'var(--warn)':'var(--accent)');
+      if(t.impossible){
+        card2.innerHTML='<div style="font-weight:700;color:var(--danger);margin-bottom:4px">'+t.reason+'</div>';
+      } else {
+        card2.innerHTML=
+          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'+
+          '<div style="font-weight:700;font-size:15px">'+t.from+' → '+t.to+'</div>'+
+          '<div style="font-family:Space Mono,monospace;font-weight:700;font-size:18px;color:'+(t.urgent?'var(--warn)':'var(--accent)')+'">'+fmt(t.amount)+'</div>'+
+          '</div>'+
+          '<div style="font-size:12px;color:var(--ink-3)">'+t.reason+'</div>';
+      }
+      sheet.append(card2);
+    }
+  }
+
+  // Projected balances
+  const projDiv = document.createElement('div');
+  projDiv.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-top:8px;margin-bottom:16px';
+  projDiv.innerHTML='<div style="font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px">Your Barclays app should show</div>';
+  for(const [label,val,col] of [
+    [spending?.name||'Spending', projected.spending, 'var(--ink)'],
+    [florasii?.name||'Florasii', projected.florasii, 'var(--accent)'],
+    [cardPot?.name||'Savings',   projected.savings,  'var(--info)'],
+    [card?.name||'Barclaycard',  projected.card,     'var(--danger)'],
+  ]){
+    projDiv.innerHTML+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:13px">'+
+      '<span style="color:var(--ink-2)">'+label+'</span>'+
+      '<span style="font-family:Space Mono,monospace;font-weight:700;color:'+col+'">'+
+      (val<0?'-':'')+fmt(Math.abs(val))+'</span></div>';
+  }
+  sheet.append(projDiv);
+
+  const doneBtn = document.createElement('button');
+  doneBtn.style.cssText='width:100%;background:var(--accent);color:#000;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer';
+  doneBtn.textContent='Got it — I\'ll make these transfers';
+  doneBtn.addEventListener('click',()=>overlay.remove());
+  sheet.append(doneBtn);
+
+  overlay.append(sheet);
+  document.body.appendChild(overlay);
+}
+
 function showPaydayDetectedPrompt(pay){
   // Don't show if already dismissed today
   const key = 'ff_payday_prompt_'+new Date().toISOString().slice(0,10);
@@ -1997,6 +2146,12 @@ function overviewScreen(){
     });
     transCard.append(editTransBtn);
     intelligenceWrap.append(el('div',{class:'section-hdr'},'Transport'), transCard);
+
+    // ── SORT MY MONEY BUTTON ──
+    const sortBtn = el('button',{class:'btn-primary',style:{width:'100%',marginBottom:'var(--s4)'}},
+      '💡 Sort my money — see what to move');
+    sortBtn.addEventListener('click',()=>showMoneyAllocationPlan());
+    intelligenceWrap.append(sortBtn);
 
     // ── DIAGNOSIS ──
     // Ranks causes and states a verdict. Deliberately non-judgemental: a
@@ -8357,19 +8512,21 @@ auth.onAuthStateChanged(async user => {
     appData.profile = {displayName, email:user.email};
   }
   mainScreen();
-  // Sync banking balances and transactions if connected
+  // Auto-sync banking balances and transactions
   if(window.FF_BANKING_URL){
-    getValidAccessToken().then(async t=>{
+    const runSync = async()=>{
+      const t = await getValidAccessToken().catch(()=>null);
       if(!t) return;
       const [, imported] = await Promise.all([
         syncBankingBalances().catch(()=>{}),
         syncBankingTransactions().catch(()=>0),
       ]);
-      if(imported > 0){
-        // Show daily check-in if new transactions arrived
-        showDailyCheckin(imported);
-      }
-    }).catch(()=>{});
+      if(imported > 0) showDailyCheckin(imported);
+    };
+    // Sync immediately on login
+    runSync();
+    // Then every 30 minutes while app is open
+    setInterval(runSync, 30*60*1000);
   }
 
   // ── Card settlement detection ──
