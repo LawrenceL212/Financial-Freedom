@@ -409,22 +409,30 @@ async function handleBankingCallback(){
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
   if(!code) return;
-  // Clean URL immediately
   window.history.replaceState({},'',window.location.pathname);
   localStorage.removeItem('ff_banking_connecting');
 
   try {
+    // Exchange code for token
     const res = await fetch(window.FF_BANKING_URL+'/exchange',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({code})});
     if(!res.ok) throw new Error('Token exchange failed: '+(await res.text()));
     const tokenData = await res.json();
     await saveBankingToken(tokenData);
+
+    // Load appData first before syncing balances
+    if(!appData && currentUser){
+      const snap = await db.ref('users/'+currentUser.uid).once('value');
+      const val = snap.val();
+      appData = val ? {...DEFAULT_DATA,...val} : {...DEFAULT_DATA};
+    }
+
     await syncBankingBalances();
     if(window._setTab) window._setTab('money');
+    else mainScreen('money');
   } catch(e){
-    console.error('Banking callback failed:', e);
-    alert('Failed to connect Barclays: '+e.message);
+    throw e;
   }
 }
 
@@ -7862,15 +7870,29 @@ auth.onAuthStateChanged(async user => {
       justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px',gap:'12px'}},
       el('div',{style:{fontSize:'32px'}},'🔗'),
       el('div',{},'Connecting Barclays…')));
-    handleBankingCallback().catch(e=>{
-      render(el('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',
-        justifyContent:'center',minHeight:'100dvh',padding:'20px',gap:'12px'}},
-        el('div',{style:{fontSize:'32px'}},'❌'),
-        el('div',{style:{fontWeight:'700',fontSize:'16px'}},'Connection failed'),
-        el('div',{style:{fontSize:'13px',color:'var(--ink-3)',textAlign:'center',maxWidth:'320px'}},e.message),
-        (() => { const b=el('button',{class:'btn-primary',style:{marginTop:'8px'}},'Go back');
-          b.addEventListener('click',()=>window.location.reload()); return b; })()
-      ));
+
+    // Wait for Firebase auth to be ready, then handle callback
+    const unsubscribe = firebase.auth().onAuthStateChanged(async user => {
+      unsubscribe(); // only fire once
+      if(!user){ mainScreen(); return; }
+      currentUser = user;
+      // Load appData
+      const snap = await db.ref('users/'+user.uid).once('value');
+      const val = snap.val();
+      appData = val ? {...DEFAULT_DATA,...val} : {...DEFAULT_DATA};
+
+      handleBankingCallback().then(()=>{
+        mainScreen('money');
+      }).catch(e=>{
+        render(el('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',
+          justifyContent:'center',minHeight:'100dvh',padding:'20px',gap:'12px'}},
+          el('div',{style:{fontSize:'32px'}},'❌'),
+          el('div',{style:{fontWeight:'700',fontSize:'16px'}},'Connection failed'),
+          el('div',{style:{fontSize:'13px',color:'var(--ink-3)',textAlign:'center',maxWidth:'320px'}},e.message),
+          (() => { const b=el('button',{class:'btn-primary',style:{marginTop:'8px'}},'Go back');
+            b.addEventListener('click',()=>window.location.reload()); return b; })()
+        ));
+      });
     });
     return;
   }
