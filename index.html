@@ -606,10 +606,10 @@ function paydayFlow(){
       totalGoalRequired: Math.round(goalAffordable*100)/100,
       subBuffer: Math.round(subBuffer*100)/100,
       subsThisFortnight, subTotal,
-      transportBudget, transportReserve: Math.min(transportBudget, afterGoals),
+      transportBudget, transportReserve: Math.min(transportBudget, afterTransport),
       actualSpending: Math.round(actualSpending*100)/100,
       buffer: 0, shortfall, canAffordSpending: true,
-      remaining: Math.round(afterGoals*100)/100,
+      remaining: Math.round(actualSpending*100)/100,
       afterMandatory: Math.round(afterMandatory*100)/100,
       projectedBalances,
     };
@@ -811,6 +811,7 @@ function paydayFlow(){
       backBtn.addEventListener('click',()=>{step=0;showStep0();});
       nextBtn.addEventListener('click',()=>{step=2;show();});
       content.append(el('div',{class:'row'},backBtn,nextBtn));
+    }
     // ── Step 2: Confirm balances — app pre-fills from known data ──
     if(step===2){
       content.style.justifyContent='flex-start';
