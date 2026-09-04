@@ -515,15 +515,20 @@ async function syncBankingTransactions(){
         const rawDesc = t.description || '';
         const normDesc = (merchantName||rawDesc).toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim();
 
-        // Detect transfers between own accounts
-        const isTransfer = t.transaction_category==='TRANSFER'
+        // Detect income first — takes priority over transfer detection
+        const isIncome = direction==='credit' && (
+          /WAGAMAMA/i.test(rawDesc) ||
+          /EMPLOYER|SALARY|PAYROLL|BGC/i.test(rawDesc)
+        );
+
+        // Detect transfers between own accounts (debits only, or known transfer patterns)
+        const isTransfer = !isIncome && (
+          t.transaction_category==='TRANSFER'
           || /201139\s*\d{8}/.test(rawDesc)
           || /B\/CARD FORWARD.*DDR/i.test(rawDesc)
           || /BARCLAYS CURRENT ACCOUNT/i.test(rawDesc)
-          || (!merchantName && /^[0-9]{6}\s[0-9]{8}/i.test(rawDesc));
-
-        // Detect income
-        const isIncome = /WAGAMAMA/i.test(t.description||'') && direction==='credit';
+          || (!merchantName && /^[0-9]{6}\s[0-9]{8}/i.test(rawDesc))
+        );
 
         let category = 'Other';
         let financialType = direction==='credit' ? 'INCOME' : 'EXPENSE';
