@@ -271,7 +271,8 @@ input::placeholder{color:var(--ink-4)}
 // Set this to your Cloudflare Worker URL to enable Ask My Finances.
 // The Anthropic API key lives ONLY in the Worker — never here.
 // See ff_worker/README.md for setup instructions.
-window.FF_WORKER_URL = null; // e.g. 'https://financial-freedom-ai.your-subdomain.workers.dev'
+window.FF_WORKER_URL  = null; // AI chat worker — set to your Cloudflare Worker URL
+window.FF_BANKING_URL = 'https://ff-banking.lawrencelechuga2.workers.dev';
 
 // Prevent Back-Forward Cache from freezing Firebase WebSocket connections.
 // When the browser restores a BFCache snapshot, Firebase's persistent
@@ -6758,38 +6759,38 @@ function calendarScreen(){
 function accountsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
-  // ── Barclays sync banner ──
+  // ── Barclays sync banner — renders immediately, updates async ──
   const syncBanner = el('div',{class:'card',style:{marginBottom:'var(--s3)'}});
-  (async()=>{
-    const token = await getValidAccessToken().catch(()=>null);
-    if(token){
-      const lastSync = (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
-      const lastStr = lastSync ? 'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : 'Connected';
-      const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
-      syncBtn.addEventListener('click',async()=>{
-        syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
-        const changed = await syncBankingBalances().catch(()=>false);
-        syncBtn.textContent = changed?'✓ Updated':'✓ Already up to date';
-        setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; }, 2000);
-        if(changed) renderAccounts();
-      });
-      syncBanner.append(
-        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
-          el('div',{},
-            el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays connected'),
-            el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},lastStr)),
-          syncBtn));
-    } else {
-      const connectBtn = el('button',{class:'btn-primary',style:{width:'100%'}},'🏦 Connect Barclays — sync balances automatically');
-      connectBtn.addEventListener('click',()=>connectBarclays());
-      syncBanner.append(
-        el('div',{style:{marginBottom:'10px'}},
-          el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
-          el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},'Connect once and your balances update automatically every time you open the app.')),
-        connectBtn);
-    }
-  })().catch(()=>{});
+  const connectBtn = el('button',{class:'btn-primary',style:{width:'100%',marginTop:'10px'}},
+    '🏦 Connect Barclays — sync balances automatically');
+  connectBtn.addEventListener('click',()=>connectBarclays());
+  syncBanner.append(
+    el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
+    el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},
+      'Connect once and your balances update automatically every time you open the app.'),
+    connectBtn);
   content.append(syncBanner);
+  // Check if already connected and update banner async
+  getValidAccessToken().then(token=>{
+    if(!token) return;
+    const lastSync = (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
+    const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
+    syncBtn.addEventListener('click',async()=>{
+      syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
+      const changed = await syncBankingBalances().catch(()=>false);
+      syncBtn.textContent=changed?'✓ Updated':'✓ Up to date';
+      setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; },2000);
+      if(changed) renderAccounts();
+    });
+    syncBanner.innerHTML='';
+    syncBanner.append(
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+        el('div',{},
+          el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays connected'),
+          el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},
+            lastSync?'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Connected')),
+        syncBtn));
+  }).catch(()=>{});
   const TYPES = [
     {key:'current',      label:'Spending', icon:'🏦', sign:1},
     {key:'savings',      label:'Savings Account',  icon:'💰', sign:1},
