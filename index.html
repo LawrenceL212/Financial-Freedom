@@ -273,12 +273,6 @@ input::placeholder{color:var(--ink-4)}
 // See ff_worker/README.md for setup instructions.
 window.FF_WORKER_URL = null; // e.g. 'https://financial-freedom-ai.your-subdomain.workers.dev'
 
-// Prevent Back-Forward Cache from freezing Firebase WebSocket connections.
-// When the browser restores a BFCache snapshot, Firebase's persistent
-// WebSocket is dead and reads return undefined. Force a reload instead.
-window.addEventListener('pageshow', e => { if(e.persisted) window.location.reload(); });
-window.addEventListener('beforeunload', () => {}); // opts page out of BFCache
-
 firebase.initializeApp({
   apiKey:"AIzaSyBqjVFKGnQujQQ0rQqsPZ2px1DCCkjlzyA",
   authDomain:"financial-freedom-eb995.firebaseapp.com",
