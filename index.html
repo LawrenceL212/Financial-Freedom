@@ -520,49 +520,34 @@ async function syncBankingBalances(){
   let changed=false;
   let payDetected=null;
 
-  // Log what TrueLayer returned so we can match correctly
-  console.log('TrueLayer accounts:', bankAccounts.map(b=>b.display_name+' '+b.account_type+' £'+b.balance));
+  // Separate bank accounts by type
+  const bankTxn     = bankAccounts.find(b=>b.account_type==='TRANSACTION');
+  const bankSavings = bankAccounts.filter(b=>b.account_type==='SAVINGS')
+                        .sort((a,b)=>(b.balance||0)-(a.balance||0)); // highest balance first
+  const bankCard    = bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
+
+  // bankSavings[0] = highest balance = Florasii (goals)
+  // bankSavings[1] = lower balance  = Personal Savings (card pot)
 
   const updated = appAccts.map(a=>{
     const role = inferRole(a);
     let match = null;
 
-    // Match by display name first (most reliable)
-    const aName = (a.name||'').toLowerCase();
-    const aNum  = (a.accountNumber||a.sortCode||'').replace(/\s/g,'');
+    if(role==='spending') match = bankTxn;
+    if(role==='card')     match = bankCard;
+    if(role==='goals')    match = bankSavings[0]; // Florasii — highest savings balance
+    if(role==='card_pot') match = bankSavings[1]; // Personal Savings — lower balance
 
-    // Try name match
-    match = bankAccounts.find(b=>{
-      const bName = (b.display_name||'').toLowerCase();
-      return bName.includes(aName.slice(0,6)) || aName.includes(bName.slice(0,6));
-    });
-
-    // If no name match, fall back to type — but be specific for savings
-    if(!match){
-      if(role==='spending')  match=bankAccounts.find(b=>b.account_type==='TRANSACTION');
-      if(role==='card')      match=bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
-      if(role==='goals'){
-        // Florasii — pick the savings account with higher balance (goals pot)
-        const savings = bankAccounts.filter(b=>b.account_type==='SAVINGS');
-        match = savings.sort((a,b)=>(b.balance||0)-(a.balance||0))[0];
-      }
-      if(role==='card_pot'){
-        // Personal Savings — pick the savings account with lower balance
-        const savings = bankAccounts.filter(b=>b.account_type==='SAVINGS');
-        match = savings.sort((a,b)=>(a.balance||0)-(b.balance||0))[0];
-      }
-    }
-
-    if(match&&match.balance!=null&&Math.abs(match.balance-a.balance)>0.01){
-      if(role==='spending' && match.balance-a.balance>400){
+    if(match&&match.balance!=null&&Math.abs((match.balance||0)-(a.balance||0))>0.01){
+      if(role==='spending' && (match.balance||0)-(a.balance||0)>400){
         payDetected={
-          amount:Math.round((match.balance-a.balance)*100)/100,
-          prevBalance:a.balance, newBalance:match.balance,
+          amount: Math.round(((match.balance||0)-(a.balance||0))*100)/100,
+          prevBalance: a.balance, newBalance: match.balance,
         };
       }
       changed=true;
-      return {...a,balance:match.balance,updatedAt:new Date().toISOString(),syncedFromBank:true,
-        bankAccountId:match.account_id};
+      return {...a, balance:match.balance, updatedAt:new Date().toISOString(),
+        syncedFromBank:true, bankAccountId:match.account_id};
     }
     return a;
   });
