@@ -312,21 +312,92 @@ async function syncBankingBalances(){
   if(!bankAccounts||!bankAccounts.length) return false;
   const appAccts = appData.accounts||[];
   if(!appAccts.length) return false;
+
   let changed=false;
+  let payDetected=null;
+
   const updated = appAccts.map(a=>{
     const role=inferRole(a);
     let match=null;
-    if(role==='spending')          match=bankAccounts.find(b=>b.account_type==='TRANSACTION');
+    if(role==='spending')               match=bankAccounts.find(b=>b.account_type==='TRANSACTION');
     if(role==='goals'||role==='card_pot') match=bankAccounts.find(b=>b.account_type==='SAVINGS'&&!match);
-    if(role==='card')              match=bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
+    if(role==='card')                   match=bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
     if(match&&match.balance!=null&&Math.abs(match.balance-a.balance)>0.01){
+      // Detect a pay landing: spending account balance jumped by >£400
+      if(role==='spending' && match.balance - a.balance > 400){
+        payDetected = {
+          amount: Math.round((match.balance - a.balance)*100)/100,
+          prevBalance: a.balance,
+          newBalance: match.balance,
+        };
+      }
       changed=true;
       return {...a,balance:match.balance,updatedAt:new Date().toISOString(),syncedFromBank:true};
     }
     return a;
   });
-  if(changed){ appData.accounts=updated; await save({...appData,accounts:updated}); }
+
+  if(changed){
+    appData.accounts=updated;
+    await save({...appData,accounts:updated});
+  }
+
+  // If pay detected, show the payday prompt automatically
+  if(payDetected){
+    showPaydayDetectedPrompt(payDetected);
+  }
+
   return changed;
+}
+
+function showPaydayDetectedPrompt(pay){
+  // Don't show if already dismissed today
+  const key = 'ff_payday_prompt_'+new Date().toISOString().slice(0,10);
+  if(sessionStorage.getItem(key)) return;
+  sessionStorage.setItem(key,'1');
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9000;display:flex;align-items:flex-end;justify-content:center;padding:20px';
+
+  const sheet = document.createElement('div');
+  sheet.style.cssText='background:var(--surface);border-radius:20px 20px 16px 16px;padding:24px 20px;width:100%;max-width:480px;border:1px solid var(--line)';
+
+  const icon = document.createElement('div');
+  icon.style.cssText='font-size:36px;margin-bottom:12px;text-align:center';
+  icon.textContent='💰';
+
+  const title = document.createElement('div');
+  title.style.cssText='font-size:18px;font-weight:700;margin-bottom:6px;text-align:center';
+  title.textContent='Looks like you got paid!';
+
+  const amt = document.createElement('div');
+  amt.style.cssText='font-size:28px;font-weight:700;color:var(--accent);text-align:center;font-family:Space Mono,monospace;margin-bottom:8px';
+  amt.textContent='+'+fmt(pay.amount);
+
+  const sub = document.createElement('div');
+  sub.style.cssText='font-size:13px;color:var(--ink-3);text-align:center;margin-bottom:20px;line-height:1.5';
+  sub.textContent='Your Spending account jumped from '+fmt(pay.prevBalance)+' to '+fmt(pay.newBalance)+'. Want to see where to move it?';
+
+  const yesBtn = document.createElement('button');
+  yesBtn.style.cssText='width:100%;background:var(--accent);color:#000;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;margin-bottom:10px';
+  yesBtn.textContent='Yes — show me the plan';
+
+  const noBtn = document.createElement('button');
+  noBtn.style.cssText='width:100%;background:transparent;color:var(--ink-3);padding:10px;border-radius:12px;font-size:13px;font-weight:500;border:1px solid var(--line);cursor:pointer';
+  noBtn.textContent='Not now';
+
+  yesBtn.addEventListener('click',()=>{
+    overlay.remove();
+    // Launch payday flow pre-filled with the detected amount
+    const flow = paydayFlow(pay.amount);
+    render(flow);
+  });
+
+  noBtn.addEventListener('click',()=>overlay.remove());
+
+  sheet.append(icon,title,amt,sub,yesBtn,noBtn);
+  overlay.append(sheet);
+  document.body.appendChild(overlay);
 }
 async function connectBarclays(){
   const res = await fetch(window.FF_BANKING_URL+'/auth-url');
@@ -531,9 +602,9 @@ function authScreen(){
   return wrap;
 }
 
-function paydayFlow(){
-  let step = 0;
-  let income = 0;
+function paydayFlow(prefillIncome){
+  let step = prefillIncome ? 1 : 0;
+  let income = prefillIncome || 0;
   let newBalances = {};
   const prev = {...(appData?.balances||{})};
   const wrap = el('div',{class:'screen'});
