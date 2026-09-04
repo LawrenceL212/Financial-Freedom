@@ -274,6 +274,81 @@ input::placeholder{color:var(--ink-4)}
 window.FF_WORKER_URL  = null; // AI chat worker — set to your Cloudflare Worker URL
 window.FF_BANKING_URL = 'https://ff-banking.lawrencelechuga2.workers.dev';
 
+// ── TrueLayer Banking Helpers ──
+async function getBankingToken(){
+  if(!currentUser) return null;
+  const snap = await db.ref('users/'+currentUser.uid+'/bankingToken').once('value');
+  return snap.val();
+}
+async function saveBankingToken(tokenData){
+  const expires_at = Date.now() + (tokenData.expires_in||3600)*1000;
+  const t = {access_token:tokenData.access_token, refresh_token:tokenData.refresh_token, expires_at};
+  await db.ref('users/'+currentUser.uid+'/bankingToken').set(t);
+  return t;
+}
+async function getValidAccessToken(){
+  let token = await getBankingToken();
+  if(!token) return null;
+  if(token.expires_at - Date.now() < 300000){
+    try {
+      const res = await fetch(window.FF_BANKING_URL+'/refresh',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({refresh_token:token.refresh_token})});
+      if(res.ok){ token = await saveBankingToken(await res.json()); }
+      else { await db.ref('users/'+currentUser.uid+'/bankingToken').remove(); return null; }
+    } catch(e){ return null; }
+  }
+  return token.access_token;
+}
+async function fetchBankingAccounts(){
+  const t = await getValidAccessToken();
+  if(!t) return null;
+  const res = await fetch(window.FF_BANKING_URL+'/accounts',{headers:{'Authorization':'Bearer '+t}});
+  if(!res.ok) return null;
+  return (await res.json()).accounts;
+}
+async function syncBankingBalances(){
+  const bankAccounts = await fetchBankingAccounts();
+  if(!bankAccounts||!bankAccounts.length) return false;
+  const appAccts = appData.accounts||[];
+  if(!appAccts.length) return false;
+  let changed=false;
+  const updated = appAccts.map(a=>{
+    const role=inferRole(a);
+    let match=null;
+    if(role==='spending')          match=bankAccounts.find(b=>b.account_type==='TRANSACTION');
+    if(role==='goals'||role==='card_pot') match=bankAccounts.find(b=>b.account_type==='SAVINGS'&&!match);
+    if(role==='card')              match=bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
+    if(match&&match.balance!=null&&Math.abs(match.balance-a.balance)>0.01){
+      changed=true;
+      return {...a,balance:match.balance,updatedAt:new Date().toISOString(),syncedFromBank:true};
+    }
+    return a;
+  });
+  if(changed){ appData.accounts=updated; await save({...appData,accounts:updated}); }
+  return changed;
+}
+async function connectBarclays(){
+  const res = await fetch(window.FF_BANKING_URL+'/auth-url');
+  const {url} = await res.json();
+  sessionStorage.setItem('ff_banking_connecting','1');
+  window.location.href = url;
+}
+async function handleBankingCallback(){
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if(!code||!sessionStorage.getItem('ff_banking_connecting')) return;
+  sessionStorage.removeItem('ff_banking_connecting');
+  window.history.replaceState({},'',window.location.pathname);
+  const res = await fetch(window.FF_BANKING_URL+'/exchange',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({code})});
+  if(!res.ok) throw new Error('Token exchange failed');
+  await saveBankingToken(await res.json());
+  await syncBankingBalances();
+  if(window._setTab) window._setTab('home');
+}
+
 // Prevent Back-Forward Cache from freezing Firebase WebSocket connections.
 // When the browser restores a BFCache snapshot, Firebase's persistent
 // WebSocket is dead and reads return undefined. Force a reload instead.
