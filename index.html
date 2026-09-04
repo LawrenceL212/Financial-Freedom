@@ -1861,8 +1861,9 @@ function overviewScreen(){
     // dueGap = missing for the NEXT payment; uncoveredCard = total debt not backed by the pot
     const dueGap = Math.max(0, dueAmount - pots.cardPot.balance);
     const uncoveredCard = Math.max(0, cardOwed - pots.cardPot.balance);
-    // What is genuinely available for goals once card debt is honoured
-    const trueGoals = Math.max(0, pots.goals.balance - uncoveredCard);
+    // trueGoals is informational only — Florasii balance is what it is
+    // The card debt is a separate obligation, not taken from Florasii
+    const trueGoals = pots.goals.balance;
 
     const now = new Date();
     const thisMonthStr = now.toISOString().slice(0,7);
