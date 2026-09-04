@@ -1944,17 +1944,37 @@ function settingsScreen(){
     }
     for(const s of subs){
       const sid = s.id;
-      const row = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid var(--border)'}});
+      const row = el('div',{style:{padding:'12px 0',borderBottom:'1px solid var(--border)'}});
+      const top = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}});
+
       const info = el('div',{style:{flex:'1'}},
-        el('div',{style:{fontSize:'14px',fontWeight:'500'}},s.name),
-        s.billingDay?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},'Bills on day '+s.billingDay+(s.lastPaidDate?' · last paid '+s.lastPaidDate.slice(0,10):'')):el('span')
-      );
-      const right = el('div',{style:{display:'flex',alignItems:'center',gap:'14px'}});
-      right.append(el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',fontWeight:'700'}},fmt(s.amount)));
-      const btn = el('button',{style:{background:'var(--red-dim)',color:'var(--red)',padding:'5px 10px',borderRadius:'8px',fontSize:'12px',fontWeight:'600',border:'1px solid var(--red)',whiteSpace:'nowrap'}},'Remove');
-      btn.addEventListener('click',()=>{ subs=subs.filter(x=>x.id!==sid); renderSubs(); });
-      right.append(btn);
-      row.append(info, right);
+        el('div',{style:{fontSize:'14px',fontWeight:'500'}},s.name));
+      
+      const right = el('div',{style:{display:'flex',alignItems:'center',gap:'10px'}});
+      right.append(el('div',{class:'num',style:{fontSize:'14px',fontWeight:'700'}},fmt(s.amount)));
+      const removeBtn = el('button',{style:{background:'var(--red-dim)',color:'var(--red)',padding:'5px 10px',borderRadius:'8px',fontSize:'12px',fontWeight:'600',border:'1px solid var(--red)'}}, 'Remove');
+      removeBtn.addEventListener('click',()=>{ subs=subs.filter(x=>x.id!==sid); renderSubs(); });
+      right.append(removeBtn);
+      top.append(info, right);
+      row.append(top);
+
+      // Billing day row — always visible, inline edit
+      const dayRow = el('div',{style:{display:'flex',alignItems:'center',gap:'8px',marginTop:'6px'}});
+      dayRow.append(el('div',{style:{fontSize:'11px',color:'var(--ink-3)',minWidth:'80px'}},'Billing day:'));
+      const dayInp = el('input',{inputmode:'numeric',placeholder:'e.g. 9',
+        value: s.billingDay ? String(s.billingDay) : '',
+        style:{width:'70px',padding:'4px 8px',fontSize:'12px',borderRadius:'8px',
+          background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)'}});
+      dayInp.addEventListener('change',()=>{
+        const d = parseInt(dayInp.value);
+        subs = subs.map(x=>x.id===sid?{...x,billingDay:(d>=1&&d<=31)?d:null}:x);
+      });
+      const dayHint = el('div',{style:{fontSize:'11px',color:s.billingDay?'var(--accent)':'var(--warn)'}},
+        s.billingDay
+          ? '✓ bills day '+s.billingDay+(s.lastPaidDate?' · last paid '+s.lastPaidDate.slice(0,10):'')
+          : '⚠ add day so payday plan can time this correctly');
+      dayRow.append(dayInp, dayHint);
+      row.append(dayRow);
       subList.append(row);
     }
   }
@@ -1990,12 +2010,15 @@ function settingsScreen(){
   renderSubs();
 
   const newName = el('input',{placeholder:'Name',style:{flex:'2'}});
-  const newAmt = el('input',{placeholder:'£',inputmode:'decimal',style:{flex:'1'}});
-  const addBtn = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'12px',padding:'0 16px',fontWeight:'700',whiteSpace:'nowrap'}},'Add');
+  const newAmt  = el('input',{placeholder:'£',inputmode:'decimal',style:{flex:'1',maxWidth:'70px'}});
+  const newDay  = el('input',{placeholder:'Day (1-31)',inputmode:'numeric',style:{flex:'1',maxWidth:'90px'}});
+  const addBtn  = el('button',{style:{background:'var(--green)',color:'#000',borderRadius:'12px',padding:'0 16px',fontWeight:'700',whiteSpace:'nowrap'}},'Add');
   addBtn.addEventListener('click',()=>{
     if(!newName.value||!newAmt.value) return;
-    subs.push({id:uid(),name:newName.value.trim(),amount:parseFloat(newAmt.value)||0});
-    newName.value=''; newAmt.value='';
+    const day = parseInt(newDay.value);
+    subs.push({id:uid(), name:newName.value.trim(), amount:parseFloat(newAmt.value)||0,
+      billingDay: (day>=1&&day<=31)?day:null});
+    newName.value=''; newAmt.value=''; newDay.value='';
     renderSubs();
   });
   const saveSubBtn = el('button',{class:'btn-ghost',style:{marginTop:'12px'}},'Save subscriptions');
@@ -2044,7 +2067,8 @@ function settingsScreen(){
     el('div',{class:'section-hdr'},'Subscriptions'),
     el('div',{class:'card'},
       subList,
-      el('div',{style:{display:'flex',gap:'8px',marginTop:'14px'}}, newName, newAmt, addBtn),
+      el('div',{style:{display:'flex',gap:'8px',marginTop:'14px',flexWrap:'wrap'}}, newName, newAmt, newDay, addBtn),
+      el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'4px'}},'Name · Monthly amount · Billing day of month'),
       saveSubBtn
     ),
     signOutBtn
@@ -6733,6 +6757,39 @@ function calendarScreen(){
 
 function accountsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
+
+  // ── Barclays sync banner ──
+  const syncBanner = el('div',{class:'card',style:{marginBottom:'var(--s3)'}});
+  (async()=>{
+    const token = await getValidAccessToken().catch(()=>null);
+    if(token){
+      const lastSync = (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
+      const lastStr = lastSync ? 'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}) : 'Connected';
+      const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
+      syncBtn.addEventListener('click',async()=>{
+        syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
+        const changed = await syncBankingBalances().catch(()=>false);
+        syncBtn.textContent = changed?'✓ Updated':'✓ Already up to date';
+        setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; }, 2000);
+        if(changed) renderAccounts();
+      });
+      syncBanner.append(
+        el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          el('div',{},
+            el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays connected'),
+            el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},lastStr)),
+          syncBtn));
+    } else {
+      const connectBtn = el('button',{class:'btn-primary',style:{width:'100%'}},'🏦 Connect Barclays — sync balances automatically');
+      connectBtn.addEventListener('click',()=>connectBarclays());
+      syncBanner.append(
+        el('div',{style:{marginBottom:'10px'}},
+          el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
+          el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},'Connect once and your balances update automatically every time you open the app.')),
+        connectBtn);
+    }
+  })().catch(()=>{});
+  content.append(syncBanner);
   const TYPES = [
     {key:'current',      label:'Spending', icon:'🏦', sign:1},
     {key:'savings',      label:'Savings Account',  icon:'💰', sign:1},
@@ -7672,6 +7729,124 @@ auth.onAuthStateChanged(async user => {
     appData.profile = {displayName, email:user.email};
   }
   mainScreen();
+  // Sync banking balances if connected
+  if(window.FF_BANKING_URL){
+    getValidAccessToken().then(t=>{ if(t) syncBankingBalances().catch(()=>{}); }).catch(()=>{});
+  }
+
+  // ── Card settlement detection ──
+  // Check if a card payment was due recently and prompt the user to confirm
+  // whether it has cleared. Runs once per session, only after the due date.
+  (async()=>{
+    try {
+      const stmtSnap = await db.ref('users/'+user.uid+'/statements').once('value');
+      const cardStmts = Object.values(stmtSnap.val()||{})
+        .filter(s=>(s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')
+                 && s.statementBalance!=null && s.paymentDue)
+        .sort((a,b)=>(b.periodEnd||'').localeCompare(a.periodEnd||''));
+      const latest = cardStmts[0];
+      if(!latest) return;
+
+      const due = new Date(latest.paymentDue);
+      if(isNaN(due)) return;
+      const now = new Date();
+      const daysPast = Math.floor((now - due) / 86400000);
+
+      // Only prompt if due date was 0-7 days ago
+      if(daysPast < 0 || daysPast > 7) return;
+
+      // Already confirmed cleared? Check a flag in appData
+      const clearedKey = 'cardCleared_'+latest.statementId;
+      if(appData[clearedKey]) return;
+
+      // Check if a matching debit already exists (auto-detect)
+      const txSnap = await db.ref('users/'+user.uid+'/transactions').once('value');
+      const txns = Object.values(txSnap.val()||{});
+      const alreadyCleared = txns.some(t=>
+        t.direction==='debit' && t.sourceType!=='credit_card' &&
+        Math.abs(t.amount - latest.statementBalance) < 1 &&
+        Math.abs(new Date(t.postingDate) - due) / 86400000 <= 5
+      );
+
+      if(alreadyCleared){
+        // Auto-detected — update silently without prompting
+        const accts = appData.accounts||[];
+        if(accts.length){
+          const updated = accts.map(a=>{
+            if(a.type==='credit_card')
+              return {...a, balance:Math.max(0,(a.balance||0)-latest.statementBalance),
+                updatedAt:now.toISOString()};
+            if(inferRole(a)==='card_pot')
+              return {...a, balance:Math.max(0,(a.balance||0)-latest.statementBalance),
+                updatedAt:now.toISOString()};
+            return a;
+          });
+          await save({...appData, accounts:updated, [clearedKey]:true});
+        }
+        return;
+      }
+
+      // Not auto-detected — show prompt after a short delay so the app loads first
+      setTimeout(()=>{
+        if(mySession !== sessionId) return; // user switched accounts
+
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9000;display:flex;align-items:flex-end;justify-content:center;padding:20px';
+
+        const sheet = document.createElement('div');
+        sheet.style.cssText = 'background:var(--surface);border-radius:20px 20px 16px 16px;padding:24px 20px;width:100%;max-width:480px;border:1px solid var(--line)';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:17px;font-weight:700;margin-bottom:8px';
+        title.textContent = '💳 Card payment due '+latest.paymentDue;
+
+        const body = document.createElement('div');
+        body.style.cssText = 'font-size:13px;color:var(--ink-2);line-height:1.6;margin-bottom:20px';
+        body.textContent = 'Your '+fmt(latest.statementBalance)+' Barclaycard payment '+(daysPast===0?'is due today':daysPast===1?'was due yesterday':'was due '+daysPast+' days ago')+'. Has it left your account?';
+
+        const yesBtn = document.createElement('button');
+        yesBtn.style.cssText = 'width:100%;background:var(--accent);color:#000;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer;margin-bottom:10px';
+        yesBtn.textContent = 'Yes — update my balances';
+
+        const noBtn = document.createElement('button');
+        noBtn.style.cssText = 'width:100%;background:var(--surface-2);color:var(--ink-2);padding:12px;border-radius:12px;font-size:14px;font-weight:600;border:1px solid var(--line);cursor:pointer';
+        noBtn.textContent = 'Not yet — remind me later';
+
+        yesBtn.addEventListener('click', async()=>{
+          overlay.remove();
+          const accts = appData.accounts||[];
+          if(accts.length){
+            const updated = accts.map(a=>{
+              if(a.type==='credit_card')
+                return {...a, balance:Math.max(0,(a.balance||0)-latest.statementBalance),
+                  updatedAt:now.toISOString()};
+              if(inferRole(a)==='card_pot')
+                return {...a, balance:Math.max(0,(a.balance||0)-latest.statementBalance),
+                  updatedAt:now.toISOString()};
+              return a;
+            });
+            await save({...appData, accounts:updated, [clearedKey]:true});
+          } else {
+            // Legacy balances fallback
+            const b = {...(appData.balances||{})};
+            b.creditCard = Math.max(0,(b.creditCard||0)-latest.statementBalance);
+            b.personalSavings = Math.max(0,(b.personalSavings||0)-latest.statementBalance);
+            await save({...appData, balances:b, [clearedKey]:true});
+          }
+          // Refresh home screen
+          if(window._setTab) window._setTab('home');
+        });
+
+        noBtn.addEventListener('click', ()=>{ overlay.remove(); });
+
+        sheet.append(title, body, yesBtn, noBtn);
+        overlay.append(sheet);
+        document.body.appendChild(overlay);
+      }, 2000);
+
+    } catch(e){ console.error('Card settlement check failed:', e); }
+  })();
+
   // Silently update subscription billing dates from all existing transactions
   db.ref('users/'+user.uid+'/transactions').limitToLast(500).once('value').then(snap=>{
     // By the time this resolves the user may have signed out or switched
