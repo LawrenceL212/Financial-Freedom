@@ -275,6 +275,56 @@ window.FF_WORKER_URL  = null; // AI chat worker — set to your Cloudflare Worke
 window.FF_BANKING_URL = 'https://ff-banking.lawrencelechuga2.workers.dev';
 
 // ── TrueLayer Banking Helpers ──
+
+// ── Beryl transport cost calculator ──
+function calcBerylCost(fortnightStart){
+  const w = appData.berylWallet || {};
+  const minsRemaining      = w.minutes || 0;
+  const unlockExpiry       = w.unlockExpiry ? new Date(w.unlockExpiry) : null;
+  const minsPerDay         = w.minutesPerDay || 10;
+  const workDays           = w.workDaysPerFortnight || 10;
+  const busPerDay          = 1; // £1 bus home each work day
+  const now                = fortnightStart || new Date();
+  const fortnightEnd       = new Date(now.getTime() + 14*86400000);
+
+  const minsNeeded = minsPerDay * workDays; // 100 mins
+  const busCost    = busPerDay * workDays;  // £10
+
+  // Do we need to buy minutes?
+  let minutesCost = 0;
+  let bundleNote  = '';
+  if(minsRemaining >= minsNeeded){
+    bundleNote = 'Using existing '+minsRemaining+' mins ('+minsNeeded+' needed)';
+  } else {
+    const shortfall = minsNeeded - minsRemaining;
+    // Best value bundle that covers the shortfall
+    const bundles = [{mins:50,cost:5.5},{mins:100,cost:9},{mins:200,cost:16},{mins:400,cost:28}];
+    const best = bundles.find(b=>b.mins>=shortfall) || bundles[bundles.length-1];
+    // Actually always recommend 400 if shortfall > 50 (best value)
+    const buy = shortfall > 50 ? bundles[3] : bundles.find(b=>b.mins>=shortfall);
+    minutesCost = buy.cost;
+    bundleNote  = 'Buy '+buy.mins+'-min bundle (£'+buy.cost+')';
+  }
+
+  // Do we need a new unlock this fortnight?
+  let unlockCost = 0;
+  let unlockNote = '';
+  if(!unlockExpiry || unlockExpiry <= fortnightEnd){
+    unlockCost = 6;
+    unlockNote = unlockExpiry
+      ? 'Unlock expires '+unlockExpiry.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' — renew £6'
+      : 'No active unlock — buy £6';
+  } else {
+    unlockNote = 'Unlock valid until '+unlockExpiry.toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  }
+
+  return {
+    total: Math.round((busCost + minutesCost + unlockCost)*100)/100,
+    busCost, minutesCost, unlockCost,
+    bundleNote, unlockNote, minsNeeded, minsRemaining,
+  };
+}
+
 async function getBankingToken(){
   if(!currentUser) return null;
   const snap = await db.ref('users/'+currentUser.uid+'/bankingToken').once('value');
@@ -578,7 +628,6 @@ async function syncBankingBalances(){
 }
 
 function showMoneyAllocationPlan(){
-  // Calculate what transfers to make based on current balances and goals
   const accounts  = appData.accounts||[];
   const subs      = appData.subscriptions||[];
   const now       = new Date();
@@ -594,7 +643,7 @@ function showMoneyAllocationPlan(){
   const florBal   = florasii?.balance  || 0;
   const cardBal   = card?.balance      || 0;
 
-  // What's the next DDR amount?
+  // What Spending must keep — the bare minimum for the next 14 days
   const subsThisFortnight = subs.filter(s=>{
     if(!s.billingDay) return false;
     const day = parseInt(s.billingDay);
@@ -603,122 +652,127 @@ function showMoneyAllocationPlan(){
     const billDate = thisMonth >= now ? thisMonth : nextMonth;
     return billDate <= nextPay;
   });
-  const subBuffer = Math.round(subsThisFortnight.reduce((s,x)=>s+x.amount,0)*100)/100;
-  const transportBudget = (appData.transportBudget||20)*2;
+  const subBuffer       = Math.round(subsThisFortnight.reduce((s,x)=>s+x.amount,0)*100)/100;
+  const berylCost = calcBerylCost();
+  const transportBudget = berylCost.total;
+  const minimumSpending = Math.round((subBuffer + transportBudget)*100)/100;
 
-  // What Savings SHOULD have = next card DDR
-  const savingsTarget = cardBal; // full card balance is what will be due
-  const savingsShortfall = Math.max(0, savingsTarget - potBal);
-  const savingsSurplus   = Math.max(0, potBal - savingsTarget);
+  // What Savings needs for the card DDR
+  const savingsNeeded    = cardBal;
+  const savingsShortfall = Math.max(0, savingsNeeded - potBal);
+  const savingsSurplus   = Math.max(0, potBal - savingsNeeded);
 
-  // What's available to move from Spending after keeping essentials
-  const spendingKeep = subBuffer + transportBudget + 50; // keep £50 buffer
-  const spendingFree = Math.max(0, spendBal - spendingKeep);
+  // Available to move from Spending
+  const spendingFree = Math.max(0, spendBal - minimumSpending);
 
-  // Transfers needed
+  // Priority: Card DDR first, then Florasii gets everything else
   const transfers = [];
 
   if(savingsShortfall > 0){
     const canMove = Math.min(savingsShortfall, spendingFree);
-    if(canMove > 0){
-      transfers.push({
-        from: spending?.name||'Spending',
-        to:   cardPot?.name||'Savings',
-        amount: canMove,
-        reason: 'Cover Oct card DDR ('+fmt(cardBal)+' due ~1 Oct)',
-        urgent: true,
-      });
-    } else {
-      transfers.push({
-        from: null, to: null, amount: savingsShortfall,
-        reason: '⚠ Need '+fmt(savingsShortfall)+' more in Savings for card DDR — not enough in Spending',
-        urgent: true, impossible: true,
-      });
-    }
+    transfers.push({
+      from: spending?.name||'Spending',
+      to:   cardPot?.name||'Savings',
+      amount: Math.round(canMove*100)/100,
+      reason: 'Covers Oct DDR · '+fmt(cardBal)+' due ~1 Oct',
+      urgent: true,
+      impossible: canMove < savingsShortfall,
+      gap: canMove < savingsShortfall ? savingsShortfall - canMove : 0,
+    });
   }
 
-  const afterSavings = spendingFree - (transfers[0]?.amount||0);
-  if(afterSavings > 0 && !transfers[0]?.impossible){
-    // Goals get what's left (applying the Florasii > subs+personal rule)
-    const discretionary = afterSavings;
-    const florAmount = Math.ceil((discretionary+subBuffer)/2*100)/100;
-    const florasiiMove = Math.min(florAmount, afterSavings);
-    if(florasiiMove > 1){
+  const movedToSavings = transfers.find(t=>t.to===(cardPot?.name||'Savings'))?.amount||0;
+  const remainingFree  = Math.max(0, spendingFree - movedToSavings);
+
+  if(remainingFree > 0){
+    transfers.push({
+      from: spending?.name||'Spending',
+      to:   florasii?.name||'Florasii',
+      amount: Math.round(remainingFree*100)/100,
+      reason: 'Hong Kong · '+fmt(florBal+remainingFree)+' total after transfer',
+      urgent: false,
+    });
+  } else if(savingsShortfall === 0 && spendBal > minimumSpending){
+    // Savings already covered — move everything over minimum to Florasii
+    const toFlorasii = Math.round((spendBal - minimumSpending)*100)/100;
+    if(toFlorasii > 0){
       transfers.push({
         from: spending?.name||'Spending',
         to:   florasii?.name||'Florasii',
-        amount: Math.round(florasiiMove*100)/100,
-        reason: 'Hong Kong · '+fmt(florBal+florasiiMove)+' total saved',
+        amount: toFlorasii,
+        reason: 'Hong Kong · '+fmt(florBal+toFlorasii)+' total after transfer',
         urgent: false,
       });
     }
   }
 
-  // What accounts should look like after
+  // Projected balances after all transfers
+  const totalOut = transfers.filter(t=>!t.impossible).reduce((s,t)=>s+t.amount,0);
   const projected = {
-    spending: Math.round((spendBal - transfers.filter(t=>t.from&&!t.impossible).reduce((s,t)=>s+t.amount,0))*100)/100,
-    savings:  Math.round((potBal   + (transfers.find(t=>t.to===(cardPot?.name||'Savings'))?.amount||0))*100)/100,
-    florasii: Math.round((florBal  + (transfers.find(t=>t.to===(florasii?.name||'Florasii'))?.amount||0))*100)/100,
+    spending: Math.round((spendBal - totalOut)*100)/100,
+    savings:  Math.round((potBal + movedToSavings)*100)/100,
+    florasii: Math.round((florBal + (transfers.find(t=>t.to===(florasii?.name||'Florasii'))?.amount||0))*100)/100,
     card:     -cardBal,
   };
 
-  // Build the overlay
+  // Build UI
   const overlay = document.createElement('div');
   overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9000;display:flex;align-items:flex-end;justify-content:center;padding:0';
   const sheet = document.createElement('div');
   sheet.style.cssText='background:var(--surface);border-radius:20px 20px 0 0;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto';
 
-  const title = document.createElement('div');
-  title.style.cssText='font-size:17px;font-weight:700;margin-bottom:4px';
-  title.textContent='💡 Sort my money';
-  const sub = document.createElement('div');
-  sub.style.cssText='font-size:12px;color:var(--ink-3);margin-bottom:16px;line-height:1.5';
-  sub.textContent='Based on your current balances, make these transfers in Barclays now:';
-  sheet.append(title, sub);
+  sheet.innerHTML='<div style="font-size:17px;font-weight:700;margin-bottom:4px">💡 Sort my money</div>'+
+    '<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px;line-height:1.5">'+
+    'Spending keeps exactly what\'s needed for the next 14 days (subs '+fmt(subBuffer)+' + transport '+fmt(transportBudget)+'). Everything else goes to Florasii.</div>';
+
+  // Minimum spending breakdown
+  const minRow = document.createElement('div');
+  minRow.style.cssText='background:var(--surface-2);border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:12px;color:var(--ink-3)';
+  minRow.innerHTML='<div style="font-weight:600;color:var(--ink-2);margin-bottom:6px">Spending keeps: '+fmt(minimumSpending)+'</div>'+
+    subsThisFortnight.map(s=>'<div>📋 '+s.name+' · '+fmt(s.amount)+'</div>').join('')+
+    '<div>🚲 Transport budget · '+fmt(transportBudget)+'</div>';
+  sheet.append(minRow);
 
   if(transfers.length === 0){
-    const ok = document.createElement('div');
-    ok.style.cssText='text-align:center;padding:24px;color:var(--accent)';
-    ok.innerHTML='<div style="font-size:32px;margin-bottom:8px">✅</div><div style="font-weight:700">Everything is where it should be</div>';
-    sheet.append(ok);
+    sheet.innerHTML+='<div style="text-align:center;padding:20px;color:var(--accent)"><div style="font-size:32px;margin-bottom:8px">✅</div><div style="font-weight:700">Everything is already where it should be</div></div>';
   } else {
+    sheet.innerHTML+='<div style="font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:8px">Transfer now</div>';
     for(const t of transfers){
-      const card2 = document.createElement('div');
-      card2.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-bottom:10px;border-left:3px solid '+(t.impossible?'var(--danger)':t.urgent?'var(--warn)':'var(--accent)');
+      const c = document.createElement('div');
+      c.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-bottom:10px;border-left:3px solid '+(t.impossible?'var(--danger)':t.urgent?'var(--warn)':'var(--accent)');
       if(t.impossible){
-        card2.innerHTML='<div style="font-weight:700;color:var(--danger);margin-bottom:4px">'+t.reason+'</div>';
+        c.innerHTML='<div style="font-weight:700;color:var(--danger);margin-bottom:4px">'+t.from+' → '+t.to+' · can only move '+fmt(t.amount)+'</div>'+
+          '<div style="font-size:12px;color:var(--ink-3)">'+fmt(t.gap)+' still short — needs extra shifts or wait for next pay</div>';
       } else {
-        card2.innerHTML=
-          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'+
+        c.innerHTML='<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">'+
           '<div style="font-weight:700;font-size:15px">'+t.from+' → '+t.to+'</div>'+
-          '<div style="font-family:Space Mono,monospace;font-weight:700;font-size:18px;color:'+(t.urgent?'var(--warn)':'var(--accent)')+'">'+fmt(t.amount)+'</div>'+
-          '</div>'+
+          '<div style="font-family:Space Mono,monospace;font-weight:700;font-size:18px;color:'+(t.urgent?'var(--warn)':'var(--accent)')+'">'+fmt(t.amount)+'</div></div>'+
           '<div style="font-size:12px;color:var(--ink-3)">'+t.reason+'</div>';
       }
-      sheet.append(card2);
+      sheet.append(c);
     }
   }
 
-  // Projected balances
-  const projDiv = document.createElement('div');
-  projDiv.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-top:8px;margin-bottom:16px';
-  projDiv.innerHTML='<div style="font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px">Your Barclays app should show</div>';
+  // After-state
+  const proj = document.createElement('div');
+  proj.style.cssText='background:var(--surface-2);border-radius:14px;padding:14px;margin-top:4px;margin-bottom:16px';
+  proj.innerHTML='<div style="font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px">Your Barclays app should show</div>';
   for(const [label,val,col] of [
     [spending?.name||'Spending', projected.spending, 'var(--ink)'],
     [florasii?.name||'Florasii', projected.florasii, 'var(--accent)'],
     [cardPot?.name||'Savings',   projected.savings,  'var(--info)'],
     [card?.name||'Barclaycard',  projected.card,     'var(--danger)'],
   ]){
-    projDiv.innerHTML+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:13px">'+
+    proj.innerHTML+='<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--line-soft);font-size:13px">'+
       '<span style="color:var(--ink-2)">'+label+'</span>'+
       '<span style="font-family:Space Mono,monospace;font-weight:700;color:'+col+'">'+
       (val<0?'-':'')+fmt(Math.abs(val))+'</span></div>';
   }
-  sheet.append(projDiv);
+  sheet.append(proj);
 
   const doneBtn = document.createElement('button');
   doneBtn.style.cssText='width:100%;background:var(--accent);color:#000;padding:14px;border-radius:12px;font-size:15px;font-weight:700;border:none;cursor:pointer';
-  doneBtn.textContent='Got it — I\'ll make these transfers';
+  doneBtn.textContent='Got it — making the transfers now';
   doneBtn.addEventListener('click',()=>overlay.remove());
   sheet.append(doneBtn);
 
@@ -854,7 +908,8 @@ const DEFAULT_DATA = {
   balances:{current:0,creditCard:0,florasii:0,personalSavings:0}, // legacy — kept for migration
   accounts:[], // user-defined accounts
   paychecks:[],
-  subscriptions:[]
+  subscriptions:[],
+  berylWallet:{minutes:0, unlockExpiry:null, minutesPerDay:10, workDaysPerFortnight:10}
 };
 
 // ── Account helpers ──
@@ -2747,6 +2802,55 @@ function settingsScreen(){
   });
 
   renderSubs();
+
+  // ── Beryl wallet ──
+  const bw = appData.berylWallet||{};
+  const berylSection = el('div',{style:{marginTop:'var(--s4)'}});
+  berylSection.append(el('div',{class:'t-eyebrow',style:{marginBottom:'var(--s3)'}},'🚲 Beryl Wallet'));
+
+  const fldStyle2 = {background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',
+    borderRadius:'10px',padding:'10px 12px',fontSize:'15px',outline:'none',width:'100%'};
+
+  const minsInp   = el('input',{inputmode:'numeric',placeholder:'e.g. 113',value:String(bw.minutes||''),style:fldStyle2});
+  const expiryInp = el('input',{type:'date',value:bw.unlockExpiry?bw.unlockExpiry.slice(0,10):'',style:fldStyle2});
+  const saveBerylBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px'}},'Save Beryl wallet');
+
+  saveBerylBtn.addEventListener('click',async()=>{
+    const mins = parseInt(minsInp.value)||0;
+    const expiry = expiryInp.value || null;
+    const updated = {...(appData.berylWallet||{}), minutes:mins, unlockExpiry:expiry};
+    await save({...appData, berylWallet:updated});
+    saveBerylBtn.textContent='Saved ✓';
+    setTimeout(()=>saveBerylBtn.textContent='Save Beryl wallet',2000);
+  });
+
+  const berylPreview = el('div',{style:{fontSize:'12px',color:'var(--ink-3)',marginTop:'8px',lineHeight:'1.6'}});
+  const updatePreview = ()=>{
+    const cost = calcBerylCost();
+    berylPreview.innerHTML =
+      '🚌 Bus home: £'+cost.busCost+'<br>'+
+      '🔋 Minutes: '+cost.bundleNote+'<br>'+
+      '🔓 Unlock: '+cost.unlockNote+'<br>'+
+      '<strong>Total this fortnight: £'+cost.total+'</strong>';
+  };
+  minsInp.addEventListener('input', updatePreview);
+  expiryInp.addEventListener('change', updatePreview);
+  updatePreview();
+
+  const mkLbl = (t,h) => el('div',{style:{marginBottom:'12px'}},
+    el('div',{style:{fontSize:'12px',color:'var(--ink-2)',marginBottom:'5px',fontWeight:'600'}},t),
+    el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginBottom:'5px'}},h));
+
+  berylSection.append(
+    mkLbl('Minutes remaining','How many Beryl minutes do you have right now?'),
+    minsInp,
+    el('div',{style:{height:'10px'}}),
+    mkLbl('Unlock expiry','When does your current monthly unlock expire?'),
+    expiryInp,
+    berylPreview,
+    saveBerylBtn
+  );
+  content.append(berylSection);
 
   const newName = el('input',{placeholder:'Name',style:{flex:'2'}});
   const newAmt  = el('input',{placeholder:'£',inputmode:'decimal',style:{flex:'1',maxWidth:'70px'}});
@@ -8524,7 +8628,37 @@ auth.onAuthStateChanged(async user => {
       if(imported > 0) showDailyCheckin(imported);
     };
     // Sync immediately on login
-    runSync();
+    runSync().then(()=>{
+      // After sync, check if money needs sorting
+      setTimeout(()=>{
+        const accts = appData.accounts||[];
+        const cardPot = accts.find(a=>inferRole(a)==='card_pot');
+        const card    = accts.find(a=>a.type==='credit_card');
+        const spending = accts.find(a=>inferRole(a)==='spending');
+        const cardBal  = card?.balance||0;
+        const potBal   = cardPot?.balance||0;
+        const spendBal = spending?.balance||0;
+        const key = 'ff_sort_shown_'+new Date().toISOString().slice(0,10);
+        // Show if Savings doesn't cover card OR Spending has more than minimum needed
+        const berylCost = calcBerylCost();
+        const subs = appData.subscriptions||[];
+        const now = new Date();
+        const nextPay = new Date(now.getTime()+14*86400000);
+        const subBuffer = subs.filter(s=>{
+          if(!s.billingDay) return false;
+          const day=parseInt(s.billingDay);
+          const d=new Date(now.getFullYear(),now.getMonth(),day);
+          const d2=new Date(now.getFullYear(),now.getMonth()+1,day);
+          return (d>=now?d:d2)<=nextPay;
+        }).reduce((s,x)=>s+x.amount,0);
+        const minimumSpending = subBuffer + berylCost.total;
+        const needsAttention = (potBal < cardBal*0.9) || (spendBal > minimumSpending*1.1);
+        if(needsAttention && !sessionStorage.getItem(key)){
+          sessionStorage.setItem(key,'1');
+          setTimeout(()=>showMoneyAllocationPlan(), 1500);
+        }
+      }, 3000);
+    });
     // Then every 30 minutes while app is open
     setInterval(runSync, 30*60*1000);
   }
