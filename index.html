@@ -7356,10 +7356,19 @@ function accountsScreen(){
     const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
     syncBtn.addEventListener('click',async()=>{
       syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
-      const changed = await syncBankingBalances().catch(()=>false);
-      syncBtn.textContent=changed?'✓ Updated':'✓ Up to date';
-      setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; },2000);
-      if(changed) renderAccounts();
+      try {
+        const [balChanged, txnImported] = await Promise.all([
+          syncBankingBalances().catch(()=>false),
+          syncBankingTransactions().catch(()=>0),
+        ]);
+        syncBtn.textContent = (balChanged||txnImported>0)
+          ? '✓ Updated'+(txnImported>0?' · '+txnImported+' new transactions':'')
+          : '✓ Already up to date';
+        if(balChanged) renderAccounts();
+      } catch(e){
+        syncBtn.textContent = 'Sync failed';
+      }
+      setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; },3000);
     });
     syncBanner.innerHTML='';
     syncBanner.append(
@@ -7398,7 +7407,7 @@ function accountsScreen(){
     for(const a of accounts){
       const typeInfo = TYPES.find(t=>t.key===a.type)||TYPES[5];
       const card = el('div',{class:'card',style:{marginBottom:'8px'}});
-      const balanceInp = el('input',{inputmode:'decimal',value:a.balance.toFixed(2),style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',background:'none',border:'none',color:a.type==='credit_card'?'var(--red)':'var(--green)',padding:'0',width:'120px',textAlign:'right',outline:'none'}});
+      const balanceInp = el('input',{inputmode:'decimal',value:(a.balance||0).toFixed(2),style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',fontSize:'18px',background:'none',border:'none',color:a.type==='credit_card'?'var(--red)':'var(--green)',padding:'0',width:'120px',textAlign:'right',outline:'none'}});
       balanceInp.addEventListener('change',async()=>{
         const val = parseFloat(balanceInp.value)||0;
         const stamp = new Date().toISOString();
