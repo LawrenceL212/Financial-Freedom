@@ -262,6 +262,25 @@ input::placeholder{color:var(--ink-4)}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
 }
+/* ── JARVIS bubble: on every screen, above the nav ── */
+#jarvis-orb{position:fixed;right:16px;bottom:calc(96px + env(safe-area-inset-bottom));
+  width:58px;height:58px;border-radius:50%;border:1px solid var(--accent-edge);
+  background:radial-gradient(circle at 50% 45%,rgba(0,230,118,.16),rgba(10,10,11,.92) 70%);
+  box-shadow:0 0 22px rgba(0,230,118,.22),0 6px 18px rgba(0,0,0,.5);
+  z-index:8500;padding:0;cursor:pointer;-webkit-tap-highlight-color:transparent;
+  transition:transform .15s}
+#jarvis-orb:active{transform:scale(.92)}
+#jarvis-orb canvas{width:100%;height:100%;display:block;border-radius:50%}
+#jarvis-sheet{position:fixed;inset:0;z-index:9500;background:rgba(0,0,0,.6);
+  display:flex;align-items:flex-end;justify-content:center}
+#jarvis-sheet .panel{width:100%;max-width:560px;height:82dvh;background:var(--bg);
+  border:1px solid var(--line);border-bottom:none;border-radius:20px 20px 0 0;
+  display:flex;flex-direction:column;overflow:hidden}
+#jarvis-sheet .head{display:flex;align-items:center;gap:10px;padding:14px 16px;
+  border-bottom:1px solid var(--line)}
+#jarvis-sheet .head b{flex:1;font-size:15px}
+#jarvis-sheet .head button{background:none;border:none;color:var(--ink-3);font-size:22px;cursor:pointer;padding:0 4px}
+#jarvis-sheet .body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
 </style>
 </head>
 <body>
@@ -333,25 +352,48 @@ async function getBankingToken(){
   const snap = await db.ref('users/'+currentUser.uid+'/bankingToken').once('value');
   return snap.val();
 }
-async function saveBankingToken(tokenData){
+async function saveBankingToken(tokenData, previous){
   const expires_at = Date.now() + (tokenData.expires_in||3600)*1000;
-  const t = {access_token:tokenData.access_token, refresh_token:tokenData.refresh_token, expires_at};
+  // A refresh response may omit refresh_token; keep the one we had rather
+  // than saving undefined and losing the connection on the next refresh.
+  const t = {access_token:tokenData.access_token,
+             refresh_token:tokenData.refresh_token || previous?.refresh_token, expires_at};
   await db.ref('users/'+currentUser.uid+'/bankingToken').set(t);
   return t;
 }
-async function getValidAccessToken(){
-  let token = await getBankingToken();
+// One refresh at a time. Refresh tokens are single-use, so two parts of the
+// app refreshing together meant the second was refused -- and the refusal
+// deleted the connection, which is why Barclays kept asking to reconnect.
+let _bankingTokenPromise = null;
+function getValidAccessToken(){
+  if(!_bankingTokenPromise)
+    _bankingTokenPromise = _refreshBankingToken().finally(()=>{ _bankingTokenPromise = null; });
+  return _bankingTokenPromise;
+}
+async function _refreshBankingToken(){
+  const token = await getBankingToken();
   if(!token) return null;
-  if(token.expires_at - Date.now() < 300000){
+  if(token.expires_at - Date.now() >= 300000) return token.access_token;
+  for(let attempt=0; attempt<3; attempt++){
     try {
       const res = await fetch(window.FF_BANKING_URL+'/refresh',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({refresh_token:token.refresh_token})});
-      if(res.ok){ token = await saveBankingToken(await res.json()); }
-      else { await db.ref('users/'+currentUser.uid+'/bankingToken').remove(); return null; }
-    } catch(e){ return null; }
+      if(res.ok) return (await saveBankingToken(await res.json(), token)).access_token;
+      const body = await res.json().catch(()=>({}));
+      if(body.error === 'invalid_grant'){
+        // Another device may have refreshed first -- use its token if so.
+        const latest = await getBankingToken();
+        if(latest && latest.refresh_token !== token.refresh_token) return latest.access_token;
+        // Only now has the bank really withdrawn access (e.g. 90-day consent).
+        await db.ref('users/'+currentUser.uid+'/bankingToken').remove();
+        return null;
+      }
+    } catch(e){}
+    // Network blip or worker error: keep the connection and try again.
+    await new Promise(r=>setTimeout(r, 1500*(attempt+1)));
   }
-  return token.access_token;
+  return null;
 }
 async function fetchBankingAccounts(){
   const t = await getValidAccessToken();
@@ -7615,15 +7657,24 @@ function accountsScreen(){
   const connectBtn = el('button',{class:'btn-primary',style:{width:'100%',marginTop:'10px'}},
     '🏦 Connect Barclays — sync balances automatically');
   connectBtn.addEventListener('click',()=>connectBarclays());
+  // Neutral until we know -- showing Connect first made an existing
+  // connection look lost on every visit.
   syncBanner.append(
-    el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
-    el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},
-      'Connect once and your balances update automatically every time you open the app.'),
-    connectBtn);
+    el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays'),
+    el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},'Checking connection…'));
   content.append(syncBanner);
-  // Check if already connected and update banner async
-  getValidAccessToken().then(token=>{
-    if(!token) return;
+  // A saved connection counts as connected even if a refresh just failed;
+  // only a connection the bank has withdrawn (token removed) shows Connect.
+  getBankingToken().then(token=>{
+    if(!token){
+      syncBanner.innerHTML='';
+      syncBanner.append(
+        el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
+        el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},
+          'Connect once and your balances update automatically every time you open the app.'),
+        connectBtn);
+      return;
+    }
     const lastSync = appData.lastBankSync || (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
     const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
     const lastSyncEl = el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},
@@ -8383,6 +8434,7 @@ function debtScreen(){
 }
 
 function mainScreen(startTab='home'){
+  mountJarvisBubble();
   const wrap = el('div',{class:'screen'});
   const body = el('div',{style:{flex:'1',overflowY:'auto'}});
   let tab = startTab;
@@ -8558,13 +8610,85 @@ function mainScreen(startTab='home'){
 
 
 // ── boot ──
+
+// ═══════════════════════════════════════════════════════════════
+// JARVIS BUBBLE — ask about your finances from any screen.
+// Opens the same Ask My Finances chat (answered by JARVIS); one
+// conversation per login, kept while you move between screens.
+// ═══════════════════════════════════════════════════════════════
+let _jarvisChat = null;   // {uid, node}
+function mountJarvisBubble(){
+  if(!currentUser || document.getElementById('jarvis-orb')) return;
+  const orb = document.createElement('button');
+  orb.id = 'jarvis-orb';
+  orb.setAttribute('aria-label','Ask JARVIS about your finances');
+  const cv = document.createElement('canvas');
+  orb.append(cv);
+  document.body.append(orb);
+  orb.addEventListener('click', openJarvisSheet);
+  drawJarvisOrb(cv);
+}
+function removeJarvisBubble(){
+  document.getElementById('jarvis-orb')?.remove();
+  document.getElementById('jarvis-sheet')?.remove();
+  _jarvisChat = null;
+}
+// A small neural map: nodes drifting on orbits, linked when close.
+function drawJarvisOrb(cv){
+  const dpr = Math.min(window.devicePixelRatio||1, 2), S = 58;
+  cv.width = S*dpr; cv.height = S*dpr;
+  const g = cv.getContext('2d'); g.scale(dpr,dpr);
+  const nodes = Array.from({length:11},(_,i)=>({
+    r: 6 + (i%4)*5, a: i*2.4, sp: (0.004 + (i%3)*0.003) * (i%2?1:-1), tilt: 0.55 + (i%5)*0.1}));
+  function frame(t){
+    if(!cv.isConnected) return;
+    if(document.visibilityState==='visible' && !document.getElementById('jarvis-sheet')){
+      g.clearRect(0,0,S,S);
+      const c = S/2, pulse = 1 + Math.sin(t/700)*0.08;
+      const pts = nodes.map(n=>{ n.a += n.sp;
+        return [c + Math.cos(n.a)*n.r*pulse, c + Math.sin(n.a)*n.r*n.tilt*pulse]; });
+      g.lineWidth = 0.6;
+      for(let i=0;i<pts.length;i++) for(let j=i+1;j<pts.length;j++){
+        const d = Math.hypot(pts[i][0]-pts[j][0], pts[i][1]-pts[j][1]);
+        if(d<14){ g.strokeStyle = 'rgba(0,230,118,'+(0.55*(1-d/14)).toFixed(3)+')';
+          g.beginPath(); g.moveTo(pts[i][0],pts[i][1]); g.lineTo(pts[j][0],pts[j][1]); g.stroke(); }
+      }
+      for(const [x,y] of pts){ g.fillStyle='rgba(120,255,190,.9)'; g.beginPath(); g.arc(x,y,1.3,0,7); g.fill(); }
+      g.fillStyle = 'rgba(0,230,118,.95)'; g.beginPath(); g.arc(c,c,2.6*pulse,0,7); g.fill();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+function openJarvisSheet(){
+  if(document.getElementById('jarvis-sheet')) return;
+  if(!_jarvisChat || _jarvisChat.uid !== currentUser?.uid)
+    _jarvisChat = {uid: currentUser.uid, node: askScreen()};
+  const sheet = document.createElement('div');
+  sheet.id = 'jarvis-sheet';
+  const panel = document.createElement('div'); panel.className = 'panel';
+  const head = document.createElement('div'); head.className = 'head';
+  const title = document.createElement('b'); title.textContent = 'JARVIS';
+  const close = document.createElement('button'); close.textContent = '×';
+  close.setAttribute('aria-label','Close');
+  head.append(title, close);
+  const body = document.createElement('div'); body.className = 'body';
+  body.append(_jarvisChat.node);
+  panel.append(head, body); sheet.append(panel);
+  document.body.append(sheet);
+  const shut = ()=>{ _jarvisChat.node.remove(); sheet.remove(); };
+  close.addEventListener('click', shut);
+  sheet.addEventListener('click', e=>{ if(e.target===sheet) shut(); });
+  setTimeout(()=>_jarvisChat.node.querySelector('input,textarea')?.focus(), 150);
+}
+
 auth.onAuthStateChanged(async user => {
   const mySession = ++sessionId;   // supersedes anything the previous user started
   currentUser = user;
   appData = null;                  // drop the previous user's data immediately
   resetUserDerived();              // and anything computed from it
   if(window._setTab) window._setTab = null;
-  if(!user){ render(authScreen()); return; }
+  if(!user){ removeJarvisBubble(); render(authScreen()); return; }
   // Handle TrueLayer OAuth callback — must check before loading Firebase data
   if(window.location.search.includes('code=')){
     render(el('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',
@@ -8627,7 +8751,9 @@ auth.onAuthStateChanged(async user => {
   mainScreen();
   // Auto-sync banking balances and transactions
   if(window.FF_BANKING_URL){
+    let lastRun = 0;
     const runSync = async()=>{
+      lastRun = Date.now();
       const t = await getValidAccessToken().catch(()=>null);
       if(!t) return;
       const [, imported] = await Promise.all([
@@ -8670,6 +8796,12 @@ auth.onAuthStateChanged(async user => {
     });
     // Then every 30 minutes while app is open
     setInterval(runSync, 30*60*1000);
+    // And each time the app is reopened -- a home-screen app resumes from
+    // the background without logging in again, so login alone isn't enough.
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible' && Date.now()-lastRun > 60*1000)
+        runSync();
+    });
   }
 
   // ── Card settlement detection ──
