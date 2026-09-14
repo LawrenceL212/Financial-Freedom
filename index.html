@@ -6760,7 +6760,10 @@ function hoursScreen(){
   const yearSel = el('select',{style:{flex:'1',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 10px',fontSize:'13px'}});
   const monthSel = el('select',{style:{flex:'1',background:'var(--surface2)',border:'1px solid var(--border)',color:'var(--text)',borderRadius:'10px',padding:'8px 10px',fontSize:'13px'}});
 
-  const years = ['all','2025','2026','2027'];
+  // The years he actually has hours in, not a fixed list that offered 2027
+  // before it had any and would never offer 2028.
+  const years = ['all', ...[...new Set((appData.hoursLog||[])
+    .map(w=>String(w.label||'').split('/')[2]).filter(y=>/^\d{4}$/.test(y||'')))].sort()];
   const months = ['all','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   years.forEach(y => { const o = el('option',{value:y},y==='all'?'All years':y); yearSel.append(o); });
   months.forEach((m,i) => { const o = el('option',{value:i===0?'all':String(i)},m==='all'?'All months':m); monthSel.append(o); });
