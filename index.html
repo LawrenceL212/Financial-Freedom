@@ -271,7 +271,10 @@ input::placeholder{color:var(--ink-4)}
 // Set this to your Cloudflare Worker URL to enable Ask My Finances.
 // The Anthropic API key lives ONLY in the Worker — never here.
 // See ff_worker/README.md for setup instructions.
-window.FF_WORKER_URL  = null; // AI chat worker — set to your Cloudflare Worker URL
+// Ask My Finances is answered by JARVIS, running on Lawrence's PC. It
+// verifies the Firebase login token and answers only for his account.
+// Reachable wherever JARVIS is -- his PC, or his phone on Tailscale.
+window.FF_WORKER_URL  = 'https://100.99.20.44:8001/ff/ask';
 window.FF_BANKING_URL = 'https://ff-banking.lawrencelechuga2.workers.dev';
 
 // ── TrueLayer Banking Helpers ──
