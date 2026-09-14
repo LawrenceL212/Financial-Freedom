@@ -8803,6 +8803,14 @@ auth.onAuthStateChanged(async user => {
         runSync();
     });
   }
+  // Hours can arrive from JARVIS (read off the WorkSapp rota) while the app
+  // sits in the background. Re-read them on return -- otherwise the next
+  // save would write the old copy back over them.
+  document.addEventListener('visibilitychange', async ()=>{
+    if(document.visibilityState!=='visible' || currentUser?.uid!==user.uid || !appData) return;
+    const snap = await db.ref('users/'+user.uid+'/hoursLog').once('value').catch(()=>null);
+    if(snap && appData && currentUser?.uid===user.uid) appData.hoursLog = snap.val()||[];
+  });
 
   // ── Card settlement detection ──
   // Check if a card payment was due recently and prompt the user to confirm
