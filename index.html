@@ -402,6 +402,18 @@ input::placeholder{color:var(--ink-4)}
 .wk-note{font-size:11px;color:var(--ink-3);margin-top:3px}
 .wk-split{color:var(--warn)}
 .wk-hrs{font:700 13px 'Space Mono',monospace;color:var(--accent);white-space:nowrap}
+/* Monthly budget */
+.mb-row{display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line-soft)}
+.mb-row:last-child{border-bottom:none}
+.mb-in{min-width:0;background:transparent;border:1px solid transparent;border-radius:8px;padding:8px 6px;font-size:14px;color:var(--ink)}
+.mb-in:focus{border-color:var(--accent-edge);background:rgba(255,255,255,.03);outline:none}
+.mb-label{flex:1 1 40%}
+.mb-small{flex:0 0 22%;font-size:12.5px;color:var(--ink-2)}
+.mb-amt{flex:0 0 24%;text-align:right;font-family:'Space Mono',monospace;font-weight:700}
+.mb-tick{flex:0 0 30px;height:30px;border-radius:8px;border:1px solid var(--line);background:transparent;color:#00110A;font-weight:800;cursor:pointer}
+.mb-tick.on{background:var(--accent);border-color:var(--accent);box-shadow:0 0 10px rgba(0,230,118,.4)}
+.mb-del{flex:0 0 22px;background:none;border:none;color:var(--ink-4);font-size:18px;cursor:pointer}
+.mb-add{background:none;border:1px dashed var(--line);color:var(--ink-3);border-radius:10px;padding:8px;width:100%;margin-top:8px;font-size:13px;cursor:pointer}
 </style>
 </head>
 <body>
@@ -2112,7 +2124,7 @@ function renderReminders(reminders, container){
         el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},r.body)));
     card.append(top);
     if(r.action==='payday'){
-      card.addEventListener('click',()=>render(paydayFlow()));
+      card.addEventListener('click',()=>render(userSettings().style==='monthly' ? payPage() : paydayFlow()));
     }
     container.append(card);
   }
@@ -8052,6 +8064,272 @@ function hoursDayRows(week){
   return box;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// MONTHLY BUDGET — for people who budget a month at a time.
+// One sheet per month, the way a monthly budget spreadsheet works: the
+// money that came in, where the pay was sent (allocated by hand, to
+// whichever accounts and purposes she chooses), a bills checklist ticked
+// off as each is paid, daily spending, loans and credit, savings pots --
+// and the month's result carried into the next. The app does the sums.
+// Stored as users/{uid}/budgetMonths/{YYYY-MM}.
+// ═══════════════════════════════════════════════════════════════
+const MB_SECTIONS = [
+  ['income',  'Money in',           'Pay, money from family, anything coming in'],
+  ['alloc',   'Where the pay goes', 'Money you move to other accounts or set aside -- tick when it’s done'],
+  ['bills',   'Bills',              'Tick each one when it’s paid'],
+  ['loans',   'Loans & credit',     'This month’s payment, and what’s left to pay'],
+  ['dailies', 'Daily spending',     'Everyday spending this month'],
+  ['pots',    'Savings pots',       'Money put aside for people and plans'],
+];
+const mbKey = d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+const mbLabel = key=>{ const [y,m]=key.split('-').map(Number); return new Date(y,m-1,1).toLocaleDateString('en-GB',{month:'long',year:'numeric'}); };
+const mbShift = (key,n)=>{ const [y,m]=key.split('-').map(Number); return mbKey(new Date(y,m-1+n,1)); };
+const mbNum = v=>{ const n=parseFloat(String(v??'').replace(/[£,\s]/g,'')); return isFinite(n)?n:0; };
+function mbBlank(){ return {income:[],alloc:[],bills:[],loans:[],dailies:[],pots:[]}; }
+function mbGet(key){
+  const m=((appData.budgetMonths||{})[key])||null;
+  if(!m) return null;
+  const out=mbBlank();
+  for(const [k] of MB_SECTIONS) out[k]=Array.isArray(m[k])?m[k]:Object.values(m[k]||{});
+  return {...m,...out};
+}
+function mbTotals(m){
+  const sum=(l,f)=>(l||[]).filter(f||(()=>true)).reduce((s,x)=>s+mbNum(x.amount),0);
+  const inn=sum(m.income), alloc=sum(m.alloc), bills=sum(m.bills)+sum(m.loans)+sum(m.dailies);
+  // Daily spending budgeted but not yet spent counts as still to pay.
+  const unpaid=sum(m.bills,x=>!x.paid)+sum(m.loans,x=>!x.paid)+(m.dailiesPaid===false?sum(m.dailies):0);
+  const net=inn-alloc-bills;
+  return {inn, alloc, allocPending:sum(m.alloc,x=>!x.done), bills, unpaid, net,
+          forward:net+unpaid, pots:sum(m.pots), dailies:sum(m.dailies)};
+}
+async function mbSave(key, month){
+  const all={...(appData.budgetMonths||{}), [key]:{...month, updatedAt:new Date().toISOString()}};
+  await save({...appData, budgetMonths:all});
+}
+// Next month starts from this one: the same bills, loans, allocations and
+// pots, nothing ticked, and what this month forwarded as the first line in.
+function mbNextFrom(m){
+  const t=mbTotals(m), copy=l=>(l||[]).map(x=>({...x,id:uid(),paid:false,done:false}));
+  return {income:[{id:uid(),label:'Balance brought forward',amount:Math.round(t.forward*100)/100,carried:true}],
+          alloc:copy(m.alloc), bills:copy(m.bills), loans:copy(m.loans), dailies:[], dailiesPaid:true, pots:copy(m.pots)};
+}
+
+function monthlyBudgetScreen(startKey){
+  const content=el('div',{class:'content',style:{paddingBottom:'100px'}});
+  let key=startKey||mbKey(new Date());
+  let month=mbGet(key);
+  let timer=null;
+  const queueSave=()=>{ clearTimeout(timer); timer=setTimeout(()=>mbSave(key,month), 600); };
+
+  // The month at a glance -- rebuilt in place after every edit.
+  function buildHud(){
+    const t=mbTotals(month);
+    const hud=hudPanel('This month', mbLabel(key).toUpperCase());
+    hud.classList.add('mb-hud');
+    hud.append(hudKpis([
+      ['Money in',_pK(t.inn),'this month'],
+      ['Bills',_pK(t.bills),t.unpaid>0?_pK(t.unpaid)+' still to pay':'all paid',t.unpaid>0?'var(--warn)':'var(--accent)'],
+      ['Left',_pK(t.net),'after bills & allocations',t.net<0?'var(--danger)':'var(--accent)']]));
+    const rows=[];
+    if(t.unpaid>0) rows.push({tone:'warn',glyph:'⏱',html:'<strong>'+fmt(t.unpaid)+'</strong> of bills not ticked off yet.'});
+    if(t.allocPending>0) rows.push({tone:'info',glyph:'⇄',html:'<strong>'+fmt(t.allocPending)+'</strong> still to move to other accounts.'});
+    rows.push({tone:t.forward<0?'bad':'good',glyph:'→',html:'Balance forwarded to next month: <strong>'+fmt(t.forward)+'</strong> (what’s left, plus what’s held for unpaid bills).'});
+    hud.append(...hudRows(rows));
+    return hud;
+  }
+
+  function draw(){
+    content.innerHTML='';
+    // Month switcher
+    const prev=el('button',{class:'btn-quiet',style:{fontSize:'18px',padding:'6px 12px'}},'‹');
+    const next=el('button',{class:'btn-quiet',style:{fontSize:'18px',padding:'6px 12px'}},'›');
+    prev.addEventListener('click',()=>{ clearTimeout(timer); if(month) mbSave(key,month); key=mbShift(key,-1); month=mbGet(key); draw(); });
+    next.addEventListener('click',()=>{ clearTimeout(timer); if(month) mbSave(key,month); key=mbShift(key,1); month=mbGet(key); draw(); });
+    content.append(el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'var(--s3)'}},
+      prev, el('div',{class:'t-title'},mbLabel(key)), next));
+
+    if(!month){
+      const before=mbGet(mbShift(key,-1));
+      const start=el('div',{class:'hud',style:{textAlign:'center'}});
+      start.append(el('div',{class:'hud-eyebrow',style:{justifyContent:'center'}},el('span',{class:'hud-live'}),'New month'),
+        el('div',{class:'t-body',style:{margin:'var(--s3) 0',position:'relative'}},
+          before ? 'Start '+mbLabel(key)+' from '+mbLabel(mbShift(key,-1))+': the same bills, loans, allocations and pots, nothing ticked yet, and '+fmt(mbTotals(before).forward)+' brought forward.'
+                 : 'Start '+mbLabel(key)+' with a blank sheet.'));
+      const b=el('button',{class:'btn-primary'},'Start '+mbLabel(key));
+      b.addEventListener('click',async()=>{ month=before?mbNextFrom(before):mbBlank(); await mbSave(key,month); draw(); });
+      start.append(b);
+      content.append(start);
+      return;
+    }
+
+    // The month at a glance
+    content.append(buildHud());
+
+    for(const [k,title,hint] of MB_SECTIONS) content.append(section(k,title,hint));
+
+    // Carry forward
+    const nextKey=mbShift(key,1);
+    const carry=el('button',{class:'btn-primary',style:{marginTop:'var(--s3)'}},
+      mbGet(nextKey)?'Open '+mbLabel(nextKey)+' →':'Start '+mbLabel(nextKey)+' with what’s forwarded →');
+    carry.addEventListener('click',async()=>{
+      clearTimeout(timer); await mbSave(key,month);
+      if(!mbGet(nextKey)) await mbSave(nextKey, mbNextFrom(month));
+      key=nextKey; month=mbGet(key); draw(); window.scrollTo(0,0);
+    });
+    content.append(carry);
+  }
+
+  function section(k,title,hint){
+    const list=month[k]||(month[k]=[]);
+    const card=el('div',{class:'card'});
+    const total=list.reduce((s,x)=>s+mbNum(x.amount),0);
+    card.append(el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline'}},
+      el('div',{class:'t-section'},title), el('div',{class:'num',style:{fontWeight:'700'}},fmt(total))),
+      el('div',{class:'t-meta',style:{margin:'2px 0 var(--s2)'}},hint));
+    const body=el('div',{});
+    if(k==='dailies'){
+      // Spent already, or a budget still to spend this month
+      const spent=()=>month.dailiesPaid!==false;
+      const t=el('button',{class:'hud-toggle'+(spent()?' on':''),style:{marginBottom:'6px'}},spent()?'✓ Spent':'Still to spend');
+      t.addEventListener('click',()=>{ month.dailiesPaid=!spent(); t.classList.toggle('on',spent()); t.textContent=spent()?'✓ Spent':'Still to spend'; refreshTotals(); });
+      card.append(t);
+    }
+    const refreshTotals=()=>{
+      queueSave();
+      const old=content.querySelector('.mb-hud'); if(old) old.replaceWith(buildHud());
+      card.querySelector('.num').textContent=fmt(list.reduce((x,i)=>x+mbNum(i.amount),0));
+    };
+    const row=item=>{
+      const r=el('div',{class:'mb-row'});
+      const label=el('input',{class:'mb-in mb-label',value:item.label||'',placeholder:'Name'});
+      label.addEventListener('input',()=>{ item.label=label.value; queueSave(); });
+      r.append(label);
+      if(k==='alloc'){
+        const to=el('input',{class:'mb-in mb-small',value:item.to||'',placeholder:'To account',list:'mb-accounts'});
+        to.addEventListener('input',()=>{ item.to=to.value; queueSave(); });
+        r.append(to);
+      }
+      if(k==='bills'){
+        const due=el('input',{class:'mb-in mb-small',value:item.due||'',placeholder:'Due'});
+        due.addEventListener('input',()=>{ item.due=due.value; queueSave(); });
+        r.append(due);
+      }
+      if(k==='loans'){
+        const bal=el('input',{class:'mb-in mb-small',inputmode:'decimal',value:item.balance!=null?String(item.balance):'',placeholder:'Left'});
+        bal.addEventListener('input',()=>{ item.balance=bal.value===''?null:mbNum(bal.value); queueSave(); });
+        r.append(bal);
+      }
+      const amt=el('input',{class:'mb-in mb-amt',inputmode:'decimal',value:item.amount!=null&&item.amount!==''?String(item.amount):'',placeholder:'£'});
+      amt.addEventListener('input',()=>{ item.amount=amt.value===''?'':mbNum(amt.value); refreshTotals(); });
+      r.append(amt);
+      if(k==='bills'||k==='loans'||k==='alloc'){
+        const flag=k==='alloc'?'done':'paid';
+        const tick=el('button',{class:'mb-tick'+(item[flag]?' on':''),title:k==='alloc'?'Moved':'Paid'},item[flag]?'✓':'');
+        tick.addEventListener('click',()=>{ item[flag]=!item[flag]; tick.classList.toggle('on',item[flag]); tick.textContent=item[flag]?'✓':''; refreshTotals(); });
+        r.append(tick);
+      }
+      const del=el('button',{class:'mb-del',title:'Remove'},'×');
+      del.addEventListener('click',()=>{ const i=list.indexOf(item); if(i>=0) list.splice(i,1); r.remove(); refreshTotals(); });
+      r.append(del);
+      return r;
+    };
+    list.forEach(item=>body.append(row(item)));
+    const add=el('button',{class:'mb-add'},'+ Add');
+    add.addEventListener('click',()=>{ const item={id:uid(),label:'',amount:''}; list.push(item); const r=row(item); body.append(r); r.querySelector('input').focus(); });
+    card.append(body, add);
+    return card;
+  }
+
+  // Suggestions for "to account": her own accounts
+  const dl=el('datalist',{id:'mb-accounts'});
+  for(const a of (appData.accounts||[])) dl.append(el('option',{value:a.name}));
+  draw();
+  content.append(dl);
+  return content;
+}
+
+// ── Pay: worked out the way a payslip does, then added to the month ──
+// The pay calculator as a page of its own, with a way back.
+function payPage(){
+  const wrap=el('div',{class:'screen'});
+  const back=el('button',{style:{background:'none',color:'var(--ink-3)',fontSize:'14px',padding:'16px'}},'\u2190 Back');
+  back.addEventListener('click',()=>mainScreen('home'));
+  wrap.append(back, monthlyPayScreen());
+  return wrap;
+}
+
+function monthlyPayScreen(){
+  const s=userSettings();
+  // Start from last time's figures -- or, the first time, from the pay
+  // breakdown of the latest month (an imported spreadsheet carries one).
+  const fromMonths=()=>{
+    const key=Object.keys(appData.budgetMonths||{}).filter(k=>(appData.budgetMonths[k]||{}).pay).sort().pop();
+    const p=key?appData.budgetMonths[key].pay:null;
+    if(!p) return {};
+    const a=x=>x&&x.amount!=null?Math.abs(x.amount):'';
+    return {basicHours:p.basic&&p.basic.hours||'', rate:p.basic&&p.basic.rate||'',
+            nightHours:p.night&&p.night.hours||'', holidayRate:p.holiday&&p.holiday.rate||'',
+            salaryLoan:a(p.salaryLoan), pension:a(p.pension), tax:a(p.tax), ni:a(p.ni)};
+  };
+  const last=(appData.settings&&appData.settings.payTemplate)||fromMonths();
+  const content=el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const hud=hudPanel('Pay', (s.employer||'').toUpperCase());
+  hud.append(el('div',{class:'t-body',style:{marginTop:'var(--s3)',position:'relative'}},
+    'Work out this month’s pay from your hours, then send it to your budget. Last month’s figures are filled in -- change what’s different.'));
+  content.append(hud);
+  const card=el('div',{class:'card'});
+  const f={};
+  const line=(key,label,def,help)=>{
+    const i=el('input',{inputmode:'decimal',value:String(last[key]??def??''),style:{marginTop:'4px'}});
+    i.addEventListener('input',calc); f[key]=i;
+    card.append(el('div',{style:{marginBottom:'var(--s3)'}},el('div',{class:'t-label'},label),i,help?el('div',{class:'t-meta',style:{marginTop:'3px'}},help):null));
+  };
+  const out=el('div',{class:'hud-kpis'});
+  function calc(){
+    const v=k=>mbNum(f[k]&&f[k].value);
+    const earned=(v('basicHours')+v('adjHours')+v('nightHours'))*v('rate')+v('holidayDays')*v('holidayRate')+v('otherPay');
+    const deducted=v('salaryLoan')+v('pension')+v('tax')+v('ni')+v('otherDeductions');
+    const net=Math.round((earned-deducted)*100)/100;
+    out.innerHTML='';
+    out.append(...[['Earned',_pK(earned)],['Deductions',_pK(deducted)],['Take-home',fmt(net),'var(--accent)']]
+      .map(([l,v2,c])=>el('div',{class:'hud-kpi'},el('span',{},l),el('b',{style:{color:c||'var(--ink)'}},v2))));
+    return net;
+  }
+  card.append(el('div',{class:'t-section',style:{marginBottom:'var(--s3)'}},'Hours'));
+  line('basicHours','Contracted hours',151.67);
+  line('rate','Hourly rate (£)',s.hourlyRate||'');
+  line('adjHours','Adjustment hours (+/-)','', 'Last month’s extra or short hours');
+  line('nightHours','Night / extra hours','');
+  line('holidayDays','Holiday days','');
+  line('holidayRate','Holiday pay per day (£)','');
+  line('otherPay','Other pay (£)','');
+  card.append(el('div',{class:'t-section',style:{margin:'var(--s4) 0 var(--s3)'}},'Taken off'));
+  line('salaryLoan','Salary loan','');
+  line('pension','Pension','');
+  line('tax','Tax','');
+  line('ni','National Insurance','');
+  line('otherDeductions','Other deductions','');
+  card.append(out);
+  const monthSel=el('select',{style:{width:'100%',marginTop:'var(--s3)',background:'var(--surface-2)',border:'1px solid var(--line)',color:'var(--ink)',borderRadius:'12px',padding:'12px 14px',fontSize:'15px'}});
+  const now=new Date();
+  for(const n of [0,1,-1]){ const k=mbKey(new Date(now.getFullYear(),now.getMonth()+n,1)); monthSel.append(el('option',{value:k},'Add to '+mbLabel(k))); }
+  const go=el('button',{class:'btn-primary',style:{marginTop:'var(--s3)'}},'Add pay to my budget →');
+  go.addEventListener('click',async()=>{
+    const net=calc(), key=monthSel.value;
+    const tpl={}; for(const k of Object.keys(f)) tpl[k]=f[k].value;
+    const month=mbGet(key)||(mbGet(mbShift(key,-1))?mbNextFrom(mbGet(mbShift(key,-1))):mbBlank());
+    month.income=[...(month.income||[]),{id:uid(),label:'Pay'+(s.employer?' — '+s.employer:''),amount:net,pay:tpl}];
+    const settings={...(appData.settings||{}), payTemplate:tpl};
+    const all={...(appData.budgetMonths||{}),[key]:{...month,updatedAt:new Date().toISOString()}};
+    await save({...appData, settings, budgetMonths:all});
+    render(el('div',{})); mainScreen('home');
+  });
+  card.append(monthSel, go);
+  content.append(card);
+  setTimeout(calc,0);
+  return content;
+}
+
 function calendarScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const now = new Date();
@@ -9582,9 +9860,10 @@ function mainScreen(startTab='home'){
 
     if(t==='home'){
       const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'9px 16px',borderRadius:'10px',fontWeight:'700',fontSize:'13px'}},'I got paid');
-      payBtn2.addEventListener('click',()=>render(paydayFlow()));
+      payBtn2.addEventListener('click',()=>render(userSettings().style==='monthly' ? payPage() : paydayFlow()));
       makeHeader('Financial Freedom', payBtn2);
-      const ov = overviewScreen(); ov.prepend(jarvisHomePanel());
+      const ov = userSettings().style==='monthly' ? monthlyBudgetScreen() : overviewScreen();
+      if(userSettings().style!=='monthly') ov.prepend(jarvisHomePanel());
       body.append(header, ov); // always re-renders fresh from appData
 
     } else if(t==='money'||t==='_accounts'||t==='_transactions'||t==='_analytics'){
@@ -9647,7 +9926,7 @@ function mainScreen(startTab='home'){
   planBtn.addEventListener('click',()=>{  setTab('plan');  setTimeout(scrollActiveTab,50); });
   workBtn.addEventListener('click',()=>{  setTab('work');  setTimeout(scrollActiveTab,50); });
   moreBtn.addEventListener('click',()=>{  setTab('more');  setTimeout(scrollActiveTab,50); });
-  payBtn.addEventListener('click',()=>render(paydayFlow()));
+  payBtn.addEventListener('click',()=>render(userSettings().style==='monthly' ? payPage() : paydayFlow()));
 
   const nav = el('div',{class:'nav'}, homeBtn, moneyBtn, payBtn, planBtn, feature('workHours')?workBtn:null, moreBtn);
   wrap.append(body, nav);
