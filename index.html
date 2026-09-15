@@ -7091,9 +7091,83 @@ function trendsScreen(){
   return content;
 }
 
+// ── Work, for monthly pay ──
+// Paid once a month, at the end of it, for that month's hours -- and the
+// rota comes out in halves (the first two weeks before the month starts,
+// the rest mid-month). So the Work tab adds up each CALENDAR month from the
+// days logged, in those two halves, against the contracted hours on her
+// payslip, and estimates the take-home as her Pay page would: hours x rate,
+// less her usual salary loan, pension, tax and NI.
+function usualPayslip(){
+  const n=x=>Math.abs(parseFloat(x)||0);
+  const t=appData.settings&&appData.settings.payTemplate;
+  if(t) return {contracted:n(t.basicHours), deductions:n(t.salaryLoan)+n(t.pension)+n(t.tax)+n(t.ni)+n(t.otherDeductions)};
+  const key=Object.keys(appData.budgetMonths||{}).filter(k=>(appData.budgetMonths[k]||{}).pay).sort().pop();
+  const p=key?appData.budgetMonths[key].pay:null;
+  if(!p) return {contracted:0, deductions:0};
+  const a=x=>x&&x.amount!=null?Math.abs(x.amount):0;
+  return {contracted:n(p.basic&&p.basic.hours), deductions:a(p.salaryLoan)+a(p.pension)+a(p.tax)+a(p.ni)};
+}
+function monthlyWorkCards(weeks, filterYear, filterMonth){
+  const S=userSettings(), RATE=payRate(), usual=usualPayslip();
+  const days=['mon','tue','wed','thu','fri','sat','sun'], months={};
+  for(const w of weeks){
+    const monday=_pLabel(w.label);
+    if(isNaN(monday)) continue;
+    days.forEach((d,i)=>{
+      const h=parseFloat(w[d])||0;
+      if(!h) return;
+      const day=_pAdd(monday,i), key=day.getFullYear()*100+day.getMonth();
+      const m=months[key]||(months[key]={first:0,second:0,start:new Date(day.getFullYear(),day.getMonth(),1)});
+      if(day.getDate()<=14) m.first+=h; else m.second+=h;
+    });
+  }
+  const out=[];
+  for(const key of Object.keys(months).sort().reverse()){
+    const m=months[key], y=m.start.getFullYear(), mo=m.start.getMonth();
+    if(filterYear!=='all' && String(y)!==filterYear) continue;
+    if(filterMonth!=='all' && String(mo+1)!==filterMonth) continue;
+    const total=Math.round((m.first+m.second)*100)/100;
+    const last=new Date(y,mo+1,0).getDate();
+    const payday=new Date(y,mo,Math.min(S.payDayOfMonth||28,last));
+    // A half whose rota is not out yet counts as half her contracted hours,
+    // said on the card -- left at nought, the estimate read as a pay cut.
+    const half=usual.contracted/2;
+    const assumed=usual.contracted?[m.first?null:'1–14',m.second?null:'15–'+last].filter(Boolean):[];
+    const planned=total+assumed.length*half;
+    const gross=planned*RATE, takeHome=Math.max(0,gross-usual.deductions);
+    const monthName=m.start.toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+    const short=m.start.toLocaleDateString('en-GB',{month:'short'});
+    const over=usual.contracted?Math.round((total-usual.contracted)*100)/100:null;
+    // el(), not card.append(): the DOM's append prints a skipped line as "null".
+    const card=el('div',{class:'card',style:{marginBottom:'10px'}},
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:'12px'}},
+        el('div',{},
+          el('div',{style:{fontWeight:'600',fontSize:'15px'}},monthName),
+          el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(total)+' worked · paid '+_pShort(payday))),
+        RATE?el('div',{style:{textAlign:'right'}},
+          el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(takeHome)),
+          el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},'estimated take-home')):null),
+      el('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px',margin:'12px 0 8px'}},
+        ...[['1–14 '+short, m.first],['15–'+last+' '+short, m.second]].map(([label,h])=>
+          el('div',{style:{background:'var(--surface2)',borderRadius:'10px',padding:'8px 10px'}},
+            el('div',{style:{fontSize:'11px',color:'var(--text3)'}},label),
+            el('div',{style:{fontFamily:"'Space Mono',monospace",fontSize:'14px',marginTop:'2px'}},h?_hm(h):'not in yet')))),
+      over!==null?el('div',{style:{fontSize:'12px',color:over>=0?'var(--green)':'var(--text2)'}},
+        (over>=0?'+':'−')+_hm(Math.abs(over))+(over>=0?' over':' under')+' your '+usual.contracted+' contracted hours'):null,
+      assumed.length&&RATE?el('div',{style:{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}},
+        'Rota for '+assumed.join(' and ')+' '+short+' not in yet — counted as '+_hm(half*assumed.length)+' (your contracted hours) until it is.'):null,
+      RATE?el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'4px'}},
+        _hm(planned)+' × '+fmt(RATE)+' = '+fmt(gross)+(usual.deductions?' − usual deductions '+fmt(usual.deductions):'')):null);
+    out.push(card);
+  }
+  return out;
+}
+
 function hoursScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const RATE = payRate();
+  const MONTHLY = userSettings().payCycle==='monthly';
 
   // ── Clock in / clock out ──
   // Active shift stored in Firebase so it survives page reloads.
@@ -7330,6 +7404,10 @@ function hoursScreen(){
       return true;
     });
 
+    if(MONTHLY){
+      histWrap.append(...monthlyWorkCards(sorted, filterYear, filterMonth));
+      if(filtered.length) histWrap.append(el('div',{class:'section-hdr'},'Weeks'));
+    }
     if(filtered.length === 0){
       histWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'20px',color:'var(--text2)',fontSize:'13px'}},'No pay periods match this filter.'));
     }
@@ -7345,7 +7423,7 @@ function hoursScreen(){
       const labelDiv = el('div',{},
         el('div',{style:{fontWeight:'600',fontSize:'14px'}},
           _pDay(_pLabel(w1.label))+' – '+_pDay(_pAdd(_pLabel(w1.label),w2?13:6))+(w2?'':' (in progress)')),
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked · paid '+_pShort(_pAdd(_pLabel(w1.label),userSettings().payLagDays||18)))
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked'+(MONTHLY?'':' · paid '+_pShort(_pAdd(_pLabel(w1.label),userSettings().payLagDays||18))))
       );
       const payDiv = el('div',{style:{textAlign:'right'}},
         el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(predicted)),
@@ -7493,6 +7571,9 @@ function hoursScreen(){
         renderAll();
       });
 
+      // Monthly pay: these cards are for entering and editing weeks; the
+      // pay is worked out per month above, so no fortnightly pay here.
+      if(MONTHLY){ payDiv.style.display='none'; actualWrap.style.display='none'; delBtn.textContent='Remove these weeks'; }
       card.append(header, breakdown, editRow, actualWrap, delBtn);
       histWrap.append(card);
     }
