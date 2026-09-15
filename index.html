@@ -1412,6 +1412,23 @@ function setupScreen(firstRun){
   const lag=el('input',{type:'number',value:s.payLagDays?String(s.payLagDays):'',placeholder:'e.g. 18'});
   const employer=el('input',{value:s.employer||'',placeholder:'e.g. Aldi'});
   const goalsName=el('input',{value:s.goalsPotName||'',placeholder:'e.g. Savings'});
+  // Only the questions that apply. Everyone saw every question, and "days
+  // from the start of a pay period to payday" -- which only means anything
+  // for rota work paid in arrears -- sat in front of someone on a monthly
+  // salary with no way to know what it wanted.
+  const payDayRow=field('Which day of the month does your pay arrive?', payDay, 'If it moves (e.g. the last Friday), put the usual date.');
+  const rateRow=field('What do you take home per hour?', rate, 'After tax, roughly. Used to estimate your next pay from the hours you work.');
+  const lagRow=field('How many days after a pay period starts are you paid for it?', lag,
+    'Look at a payslip. If it covers 1–14 March and the money arrives 19 March, that’s 18 days (1 March + 18 = 19 March).');
+  const showRelevant=()=>{
+    const byHours=hourly.value==='yes';
+    payDayRow.hidden = cycle.value!=='monthly';
+    rateRow.hidden = !byHours;
+    lagRow.hidden = !byHours || cycle.value==='monthly';
+  };
+  cycle.addEventListener('change',showRelevant);
+  hourly.addEventListener('change',showRelevant);
+  showRelevant();
   const flags={...s.features};
   const toggle=(key,label,help)=>{
     const b=el('button',{type:'button',class:'hud-toggle'+(flags[key]?' on':''),style:{padding:'8px 12px',fontSize:'13px'}},
@@ -1422,10 +1439,10 @@ function setupScreen(firstRun){
   box.append(
     field('How do you like to budget?', style, 'Forecast shows where your money is heading day by day. Monthly budget works like a spreadsheet: each month\'s pay, the bills you tick off, and what carries over.'),
     field('How often are you paid?', cycle),
-    field('Which day of the month does pay land?', payDay, 'For monthly pay.'),
-    field('How is your pay worked out?', hourly),
-    field('Hourly take-home', rate, 'Only if you are paid by the hour.'),
-    field('Days from the start of a pay period to payday', lag, 'Hourly pay only -- e.g. a fortnight paid 18 days after it starts.'),
+    payDayRow,
+    field('How is your pay worked out?', hourly, 'Contracted hours paid the same each time count as a set amount.'),
+    rateRow,
+    lagRow,
     field('Employer', employer, 'Its name on your bank statement marks your pay as income.'),
     field('What do you call your savings pot?', goalsName),
     el('div',{class:'t-label',style:{margin:'var(--s4) 0 8px'}},'Extras'),
@@ -1438,7 +1455,8 @@ function setupScreen(firstRun){
     const emp=employer.value.trim();
     const settings={...s,
       style:style.value, payCycle:cycle.value, payDayOfMonth:parseInt(payDay.value)||28,
-      hourly:hourly.value==='yes', payLagDays:parseInt(lag.value)||null,
+      // A hidden question's answer is not kept: it did not apply.
+      hourly:hourly.value==='yes', payLagDays:lagRow.hidden?null:(parseInt(lag.value)||null),
       employer:emp, employerPattern:emp?_escRe(emp.toUpperCase()):'',
       goalsPotName:goalsName.value.trim()||'Savings', features:flags};
     const hr=parseFloat(rate.value);
