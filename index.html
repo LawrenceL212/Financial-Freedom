@@ -480,46 +480,68 @@ function calcBerylCost(fortnightStart){
   };
 }
 
-async function getBankingToken(){
-  if(!currentUser) return null;
-  const snap = await db.ref('users/'+currentUser.uid+'/bankingToken').once('value');
-  return snap.val();
+// ── Bank connections: one per bank ─────────────────────────────────
+// A person may bank in several places -- a current account at one, credit
+// cards at three others -- and each bank is its own consent with its own
+// tokens. The first connection ever made lives at the old path
+// (bankingToken, id 'legacy'), so an existing link carries on untouched;
+// every bank linked since has its own under bankConnections/{id}.
+const LEGACY_BANK = 'legacy';
+const bankPath = id => 'users/'+currentUser.uid+(id===LEGACY_BANK ? '/bankingToken' : '/bankConnections/'+id);
+
+async function bankConnections(){
+  if(!currentUser) return [];
+  const [legacy, many] = await Promise.all([
+    db.ref(bankPath(LEGACY_BANK)).once('value'),
+    db.ref('users/'+currentUser.uid+'/bankConnections').once('value')]);
+  const out = [];
+  if(legacy.val()) out.push({id:LEGACY_BANK, ...legacy.val()});
+  for(const [id, c] of Object.entries(many.val()||{})) if(c) out.push({id, ...c});
+  return out;
 }
-async function saveBankingToken(tokenData, previous){
+// Kept for the places that only ask "is any bank linked?".
+async function getBankingToken(id){
+  if(!currentUser) return null;
+  if(id) return (await db.ref(bankPath(id)).once('value')).val();
+  return (await bankConnections()).find(c=>c.access_token) || null;
+}
+async function saveBankingToken(tokenData, previous, id=LEGACY_BANK){
   const expires_at = Date.now() + (tokenData.expires_in||3600)*1000;
   // A refresh response may omit refresh_token; keep the one we had rather
   // than saving undefined and losing the connection on the next refresh.
   const t = {access_token:tokenData.access_token,
-             refresh_token:tokenData.refresh_token || previous?.refresh_token, expires_at};
-  await db.ref('users/'+currentUser.uid+'/bankingToken').set(t);
+             refresh_token:tokenData.refresh_token || previous?.refresh_token || null, expires_at, expired:null};
+  await db.ref(bankPath(id)).update(t);
   return t;
 }
-// One refresh at a time. Refresh tokens are single-use, so two parts of the
-// app refreshing together meant the second was refused -- and the refusal
-// deleted the connection, which is why Barclays kept asking to reconnect.
-let _bankingTokenPromise = null;
-function getValidAccessToken(){
-  if(!_bankingTokenPromise)
-    _bankingTokenPromise = _refreshBankingToken().finally(()=>{ _bankingTokenPromise = null; });
-  return _bankingTokenPromise;
+// One refresh at a time PER BANK. Refresh tokens are single-use, so two
+// parts of the app refreshing together meant the second was refused -- and
+// the refusal deleted the connection, which is why Barclays kept asking to
+// reconnect.
+const _bankingTokenPromises = {};
+function getValidAccessToken(id=LEGACY_BANK){
+  if(!_bankingTokenPromises[id])
+    _bankingTokenPromises[id] = _refreshBankingToken(id).finally(()=>{ delete _bankingTokenPromises[id]; });
+  return _bankingTokenPromises[id];
 }
-async function _refreshBankingToken(){
-  const token = await getBankingToken();
-  if(!token) return null;
+async function _refreshBankingToken(id){
+  const token = await getBankingToken(id);
+  if(!token || !token.access_token) return null;
   if(token.expires_at - Date.now() >= 300000) return token.access_token;
   for(let attempt=0; attempt<3; attempt++){
     try {
       const res = await fetch(window.FF_BANKING_URL+'/refresh',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({refresh_token:token.refresh_token})});
-      if(res.ok) return (await saveBankingToken(await res.json(), token)).access_token;
+      if(res.ok) return (await saveBankingToken(await res.json(), token, id)).access_token;
       const body = await res.json().catch(()=>({}));
       if(body.error === 'invalid_grant'){
         // Another device may have refreshed first -- use its token if so.
-        const latest = await getBankingToken();
+        const latest = await getBankingToken(id);
         if(latest && latest.refresh_token !== token.refresh_token) return latest.access_token;
-        // Only now has the bank really withdrawn access (e.g. 90-day consent).
-        await db.ref('users/'+currentUser.uid+'/bankingToken').remove();
+        // Only now has the bank really withdrawn access (e.g. 90-day
+        // consent). Kept, marked, so the app can say WHICH bank to re-approve.
+        await db.ref(bankPath(id)).update({access_token:null, refresh_token:null, expired:true});
         return null;
       }
     } catch(e){}
@@ -528,8 +550,8 @@ async function _refreshBankingToken(){
   }
   return null;
 }
-async function fetchBankingAccounts(){
-  const t = await getValidAccessToken();
+async function fetchBankingAccounts(id=LEGACY_BANK){
+  const t = await getValidAccessToken(id);
   if(!t) return null;
   const res = await fetch(window.FF_BANKING_URL+'/accounts',{headers:{'Authorization':'Bearer '+t}});
   if(!res.ok) return null;
@@ -646,8 +668,8 @@ function showDailyCheckin(importedCount){
 }
 
 async function syncBankingTransactions(){
-  const accessToken = await getValidAccessToken();
-  if(!accessToken) return 0;
+  const conns = (await bankConnections()).filter(c=>c.access_token);
+  if(!conns.length) return 0;
 
   // Get account IDs stored from last balance sync
   const appAccts = appData.accounts||[];
@@ -657,6 +679,7 @@ async function syncBankingTransactions(){
   const lastSync = appData.lastTransactionSync
     ? appData.lastTransactionSync.slice(0,10)
     : new Date(Date.now()-90*86400000).toISOString().slice(0,10);
+  const ninetyDaysAgo = new Date(Date.now()-90*86400000).toISOString().slice(0,10);
 
   // Get existing transaction IDs to avoid duplicates
   const existingSnap = await db.ref('users/'+currentUser.uid+'/transactions').once('value');
@@ -664,13 +687,26 @@ async function syncBankingTransactions(){
   const existingBankIds = new Set(
     Object.values(existing).map(t=>t.bankTransactionId).filter(Boolean));
 
+  // Paying a linked card from the current account is money moving between
+  // her own accounts: the purchases are already counted on the card.
+  const cardBanks = [...new Set(appAccts.filter(a=>a.type==='credit_card'&&a.provider&&a.bankAccountId)
+    .map(a=>a.provider.toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim()).filter(Boolean))];
+
   let imported = 0;
   const writes = {};
 
   for(const acct of syncableAccounts){
     try {
+      const conn = acct.bankConnection || LEGACY_BANK;
+      const accessToken = await getValidAccessToken(conn);
+      if(!accessToken) continue;
+      const isCard = acct.type==='credit_card';
+      // A newly linked account starts with its last 90 days, not from the
+      // last time some OTHER bank was synced.
+      const from = (acct.bankLinkedAt && (!appData.lastTransactionSync || acct.bankLinkedAt > appData.lastTransactionSync))
+        ? ninetyDaysAgo : lastSync;
       const res = await fetch(
-        window.FF_BANKING_URL+'/transactions?account_id='+acct.bankAccountId+'&from='+lastSync,
+        window.FF_BANKING_URL+'/transactions?account_id='+acct.bankAccountId+'&from='+from+(isCard?'&kind=card':''),
         {headers:{'Authorization':'Bearer '+accessToken}});
       if(!res.ok) continue;
       const {transactions} = await res.json();
@@ -681,12 +717,15 @@ async function syncBankingTransactions(){
 
         const amount = Math.abs(t.amount||0);
         if(!amount) continue;
-        const direction = (t.amount||0) < 0 ? 'debit' : 'credit';
+        // Banks sign card transactions differently; the type says it plainly.
+        const direction = t.transaction_type==='CREDIT' ? 'credit'
+          : t.transaction_type==='DEBIT' ? 'debit'
+          : ((t.amount||0) < 0 ? 'debit' : 'credit');
         const date = (t.timestamp||'').slice(0,10);
         if(!date) continue;
 
         // Use best available merchant name
-        const merchantName = t.meta?.provider_merchant_name 
+        const merchantName = t.meta?.provider_merchant_name
           || t.merchant_name
           || null;
         const desc = merchantName || t.description || '';
@@ -694,7 +733,7 @@ async function syncBankingTransactions(){
         const normDesc = (merchantName||rawDesc).toUpperCase().replace(/[^A-Z0-9 ]/g,'').trim();
 
         // Detect income first — takes priority over transfer detection
-        const isIncome = direction==='credit' && (
+        const isIncome = !isCard && direction==='credit' && (
           (employerRe() && employerRe().test(rawDesc)) ||
           /EMPLOYER|SALARY|PAYROLL|BGC/i.test(rawDesc)
         );
@@ -706,6 +745,9 @@ async function syncBankingTransactions(){
           || /B\/CARD FORWARD.*DDR/i.test(rawDesc)
           || /BARCLAYS CURRENT ACCOUNT/i.test(rawDesc)
           || (!merchantName && /^[0-9]{6}\s[0-9]{8}/i.test(rawDesc))
+          // A payment INTO a card, and a payment from the current account TO a linked card.
+          || (isCard && direction==='credit' && /PAYMENT|THANK YOU|DIRECT DEBIT|\bDD\b/i.test(rawDesc))
+          || (!isCard && direction==='debit' && cardBanks.some(b=>normDesc.includes(b)))
         );
 
         let category = 'Other';
@@ -716,6 +758,9 @@ async function syncBankingTransactions(){
           financialType = direction==='credit' ? 'TRANSFER_IN' : 'TRANSFER_OUT';
         } else if(isIncome){
           category = 'Income';
+          financialType = 'INCOME';
+        } else if(isCard && direction==='credit'){
+          category = 'Refund';
           financialType = 'INCOME';
         } else if(typeof AUTO_RULES !== 'undefined'){
           for(const [pat, cat, type] of [...AUTO_RULES, ...personalRules()]){
@@ -737,8 +782,9 @@ async function syncBankingTransactions(){
           normalisedMerchant: desc || rawDesc,
           category,
           financialType,
-          sourceType: acct.type==='credit_card'?'credit_card':'current_account',
-          sourceBank: 'Barclays',
+          sourceType: isCard?'credit_card':'current_account',
+          sourceBank: acct.provider || 'Barclays',
+          sourceAccount: acct.name || null,
           importedFromBank: true,
           needsReview: !isTransfer && !isIncome && category==='Other',
         };
@@ -752,6 +798,8 @@ async function syncBankingTransactions(){
     await db.ref('users/'+currentUser.uid+'/transactions').update(writes);
     // Into the in-memory copy too, so screens see them straight away.
     appData.transactions = {...(appData.transactions||{}), ...writes};
+  }
+  if(imported>0 || syncableAccounts.some(a=>a.bankLinkedAt && (!appData.lastTransactionSync || a.bankLinkedAt > appData.lastTransactionSync))){
     appData.lastTransactionSync = new Date().toISOString();
     await db.ref('users/'+currentUser.uid+'/lastTransactionSync').set(appData.lastTransactionSync);
   }
@@ -759,50 +807,103 @@ async function syncBankingTransactions(){
   return imported;
 }
 
-async function syncBankingBalances(){
-  const bankAccounts = await fetchBankingAccounts();
-  if(!bankAccounts||!bankAccounts.length) return false;
-  const appAccts = appData.accounts||[];
-  if(!appAccts.length) return false;
 
-  let changed=false;
-  let payDetected=null;
-
-  // Separate bank accounts by type
-  const bankTxn     = bankAccounts.find(b=>b.account_type==='TRANSACTION');
-  const bankSavings = bankAccounts.filter(b=>b.account_type==='SAVINGS')
-                        .sort((a,b)=>(b.balance||0)-(a.balance||0)); // highest balance first
-  const bankCard    = bankAccounts.find(b=>b.account_type==='CREDIT_CARD');
-
-  // bankSavings[0] = highest balance = Florasii (goals)
-  // bankSavings[1] = lower balance  = Personal Savings (card pot)
-
-  const updated = appAccts.map(a=>{
-    const role = inferRole(a);
-    let match = null;
-
-    if(role==='spending') match = bankTxn;
-    if(role==='card')     match = bankCard;
-    if(role==='goals')    match = bankSavings[0]; // Florasii — highest savings balance
-    if(role==='card_pot') match = bankSavings[1]; // Personal Savings — lower balance
-
-    if(match&&match.balance!=null&&Math.abs((match.balance||0)-(a.balance||0))>0.01){
-      if(role==='spending' && (match.balance||0)-(a.balance||0)>400){
-        payDetected={
-          amount: Math.round(((match.balance||0)-(a.balance||0))*100)/100,
-          prevBalance: a.balance, newBalance: match.balance,
-        };
-      }
-      changed=true;
-      return {...a, balance:match.balance, updatedAt:new Date().toISOString(),
-        syncedFromBank:true, bankAccountId:match.account_id};
+// How one bank's accounts and cards land in the app's accounts:
+//   1. an account already linked to it (by the bank's own account id);
+//   2. the first bank link's original rule -- current account to Spending,
+//      the card to the card, the savers by size -- for accounts not linked
+//      yet, so an existing setup relinks itself after a reconnect;
+//   3. anything left over from a bank linked since is ADDED, named after
+//      the bank: linking Capital One brings its card in without typing.
+const BANK_TYPE = {TRANSACTION:'current', SAVINGS:'savings', CREDIT_CARD:'credit_card'};
+function matchBankAccounts(appAccts, bankAccounts, conn){
+  const now = new Date().toISOString();
+  let changed = false, payDetected = null;
+  const claimed = new Set();
+  const cardInfo = m => m.kind==='card' ? {card:{limit:m.credit_limit??null, available:m.available??null,
+    statementBalance:m.last_statement_balance??null, statementDate:m.last_statement_date??null,
+    paymentDue:m.payment_due??null, paymentDueDate:m.payment_due_date??null}} : {};
+  const apply = (a, m, role) => {
+    claimed.add(m.account_id);
+    const moved = m.balance!=null && Math.abs((m.balance||0)-(a.balance||0))>0.01;
+    const relinked = a.bankAccountId!==m.account_id || a.bankConnection!==conn.id;
+    if(moved && role==='spending' && (m.balance||0)-(a.balance||0)>400){
+      payDetected = {amount:Math.round(((m.balance||0)-(a.balance||0))*100)/100,
+                     prevBalance:a.balance, newBalance:m.balance};
     }
-    return a;
+    const cardChanged = m.kind==='card' && JSON.stringify(cardInfo(m).card)!==JSON.stringify(a.card||null);
+    if(!moved && !relinked && !cardChanged) return a;
+    changed = true;
+    return {...a, ...(m.balance!=null?{balance:m.balance}:{}), updatedAt:now, syncedFromBank:true,
+      bankAccountId:m.account_id, bankConnection:conn.id, provider:m.provider_name||a.provider||null,
+      ...(a.bankAccountId!==m.account_id?{bankLinkedAt:now}:{}), ...cardInfo(m)};
+  };
+
+  // 1. already linked
+  const byId = new Map(bankAccounts.map(b=>[b.account_id,b]));
+  let accounts = appAccts.map(a=>{
+    const m = a.bankAccountId && byId.get(a.bankAccountId);
+    return m ? apply(a, m, inferRole(a)) : a;
   });
 
+  // 2. the original rule, for accounts not linked to another bank
+  const free = t => bankAccounts.filter(b=>b.account_type===t && !claimed.has(b.account_id));
+  const mine = a => !claimed.has(a.bankAccountId) && (!a.bankConnection || a.bankConnection===conn.id)
+                    && !(a.bankAccountId && a.bankConnection && a.bankConnection!==conn.id);
+  accounts = accounts.map(a=>{
+    if(a.bankAccountId && claimed.has(a.bankAccountId)) return a;
+    if(!mine(a)) return a;
+    const role = inferRole(a);
+    const savers = free('SAVINGS').sort((x,y)=>(y.balance||0)-(x.balance||0));
+    const m = role==='spending' ? free('TRANSACTION')[0]
+            : role==='card'     ? free('CREDIT_CARD')[0]
+            : role==='goals'    ? savers[0]
+            : role==='card_pot' ? savers[savers.length>1?1:0]
+            : null;
+    return m ? apply(a, m, role) : a;
+  });
+
+  // 3. a bank linked since: bring in what is left
+  if(conn.id!==LEGACY_BANK){
+    for(const m of bankAccounts){
+      if(claimed.has(m.account_id)) continue;
+      const bank = m.provider_name || conn.provider || 'Bank';
+      const shown = m.display_name || '';
+      const name = shown.toLowerCase().includes(bank.toLowerCase()) ? shown : (bank+' '+shown).trim();
+      const type = BANK_TYPE[m.account_type] || 'other';
+      accounts.push({id:uid(), name, type, balance:m.balance||0, currency:m.currency||'GBP',
+        ...(type==='savings'?{role:'goals'}:{}),
+        createdAt:now, updatedAt:now, syncedFromBank:true, autoAdded:true,
+        bankAccountId:m.account_id, bankConnection:conn.id, provider:bank, bankLinkedAt:now, ...cardInfo(m)});
+      claimed.add(m.account_id);
+      changed = true;
+    }
+  }
+  return {accounts, changed, payDetected};
+}
+
+async function syncBankingBalances(){
+  const conns = (await bankConnections()).filter(c=>c.access_token);
+  if(!conns.length) return false;
+  let accounts = [...(appData.accounts||[])], changed = false, payDetected = null;
+  for(const conn of conns){
+    const bankAccounts = await fetchBankingAccounts(conn.id);
+    if(!bankAccounts || !bankAccounts.length) continue;
+    // Remember which bank this connection is, so it can be named -- and a
+    // second link to the same bank recognised as a reconnect.
+    const first = bankAccounts.find(b=>b.provider_name) || {};
+    if(first.provider_name && (conn.provider!==first.provider_name || conn.provider_id!==first.provider_id)){
+      await db.ref(bankPath(conn.id)).update({provider:first.provider_name, provider_id:first.provider_id||null});
+    }
+    const r = matchBankAccounts(accounts, bankAccounts, {...conn, provider:first.provider_name||conn.provider});
+    accounts = r.accounts;
+    changed = changed || r.changed;
+    payDetected = payDetected || r.payDetected;
+  }
+
   if(changed){
-    appData.accounts=updated;
-    await save({...appData,accounts:updated,lastBankSync:new Date().toISOString()});
+    appData.accounts=accounts;
+    await save({...appData,accounts,lastBankSync:new Date().toISOString()});
   } else {
     // Always update the sync timestamp even if nothing changed
     appData.lastBankSync = new Date().toISOString();
@@ -1014,18 +1115,25 @@ function showPaydayDetectedPrompt(pay){
   overlay.append(sheet);
   document.body.appendChild(overlay);
 }
-async function connectBarclays(){
-  const res = await fetch(window.FF_BANKING_URL+'/auth-url');
+// Link a bank. `target` is the connection to renew ("Reconnect" -- the
+// 90-day re-approval, or to add cards to an older link); leave it out to
+// link another bank. withoutCards: for a bank that will not share cards.
+async function connectBank(target, withoutCards){
+  const res = await fetch(window.FF_BANKING_URL+'/auth-url'+(withoutCards?'?cards=0':''));
   const {url} = await res.json();
   localStorage.setItem('ff_banking_connecting','1');
+  localStorage.setItem('ff_banking_target', target||'new');
   window.location.href = url;
 }
+const connectBarclays = () => connectBank();       // older callers
 async function handleBankingCallback(){
   const params = new URLSearchParams(window.location.search);
   const code = params.get('code');
   if(!code) return;
   window.history.replaceState({},'',window.location.pathname);
   localStorage.removeItem('ff_banking_connecting');
+  const target = localStorage.getItem('ff_banking_target') || 'new';
+  localStorage.removeItem('ff_banking_target');
 
   try {
     // Exchange code for token
@@ -1034,7 +1142,24 @@ async function handleBankingCallback(){
       body:JSON.stringify({code})});
     if(!res.ok) throw new Error('Token exchange failed: '+(await res.text()));
     const tokenData = await res.json();
-    await saveBankingToken(tokenData);
+    const existing = await bankConnections();
+    // Every new link gets its own place; only the link that existed before
+    // several banks were possible lives at the old one.
+    const id = target!=='new' ? target : 'b'+Date.now().toString(36);
+    await saveBankingToken(tokenData, null, id);
+    await db.ref(bankPath(id)).update({connectedAt:new Date().toISOString()});
+
+    // Which bank was that? A second link to a bank already linked is a
+    // reconnect: its tokens replace the old ones rather than doubling up.
+    const accounts = await fetchBankingAccounts(id).catch(()=>null);
+    const bank = (accounts||[]).find(b=>b.provider_name) || {};
+    if(bank.provider_name) await db.ref(bankPath(id)).update({provider:bank.provider_name, provider_id:bank.provider_id||null});
+    const same = target==='new' && bank.provider_id && existing.find(c=>c.id!==id && c.provider_id===bank.provider_id);
+    if(same){
+      const fresh = (await db.ref(bankPath(id)).once('value')).val();
+      await db.ref(bankPath(same.id)).update({...fresh, expired:null});
+      await db.ref(bankPath(id)).remove();
+    }
 
     // Load appData first before syncing balances
     if(!appData && currentUser){
@@ -1044,6 +1169,7 @@ async function handleBankingCallback(){
     }
 
     await syncBankingBalances();
+    syncBankingTransactions().catch(()=>0);
     if(window._setTab) window._setTab('money');
     else mainScreen('money');
   } catch(e){
@@ -1505,7 +1631,7 @@ function resetUserDerived(){ userDerived = {}; }
 // account from appData -- so every save put back the login-time copy:
 // transactions synced since were wiped, and a refreshed Barclays token was
 // replaced by the used one, which Barclays refuses (the reconnect prompts).
-const SYNCED_ELSEWHERE = ['transactions','statements','bankingToken','activeShift',
+const SYNCED_ELSEWHERE = ['transactions','statements','bankingToken','bankConnections','activeShift',
                           'recurringPatterns','merchantRules','lastTransactionSync','jarvisBriefing','upcomingShifts','jarvisStatus'];
 async function save(data, expectedUid){
   if(!currentUser) return;                                   // never write signed out
@@ -9263,58 +9389,75 @@ function calendarScreen(){
 function accountsScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
 
-  // ── Barclays sync banner — renders immediately, updates async ──
+  // ── Your banks — renders immediately, fills in async ──
+  // One row per linked bank: what it brings in, when it last synced, and a
+  // Reconnect for the 90-day re-approval (or to add cards to an older link).
   const syncBanner = el('div',{class:'card',style:{marginBottom:'var(--s3)'}});
   const connectBtn = el('button',{class:'btn-primary',style:{width:'100%',marginTop:'10px'}},
     '🏦 Connect your bank — sync balances automatically');
-  connectBtn.addEventListener('click',()=>connectBarclays());
+  connectBtn.addEventListener('click',()=>connectBank());
   // Neutral until we know -- showing Connect first made an existing
   // connection look lost on every visit.
   syncBanner.append(
-    el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays'),
-    el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},'Checking connection…'));
+    el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Your banks'),
+    el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},'Checking connections…'));
   content.append(syncBanner);
-  // A saved connection counts as connected even if a refresh just failed;
-  // only a connection the bank has withdrawn (token removed) shows Connect.
-  getBankingToken().then(token=>{
-    if(!token){
-      syncBanner.innerHTML='';
+  const noCards = el('button',{style:{background:'none',color:'var(--ink-3)',fontSize:'11px',marginTop:'8px',padding:'0',textDecoration:'underline'}},
+    'Bank not in the list? Connect it without cards');
+  noCards.addEventListener('click',()=>connectBank(null, true));
+  bankConnections().then(conns=>{
+    syncBanner.innerHTML='';
+    if(!conns.length){
       syncBanner.append(
-        el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with your bank'),
+        el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with your banks'),
         el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},
-          'Connect once and your balances update automatically every time you open the app.'),
-        connectBtn);
+          'Connect each bank you use -- current accounts, savings and credit cards. Balances and transactions then update by themselves every time you open the app.'),
+        connectBtn, noCards);
       return;
     }
     const lastSync = appData.lastBankSync || (appData.accounts||[]).find(a=>a.syncedFromBank)?.updatedAt;
-    const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
     const lastSyncEl = el('div',{style:{fontSize:'11px',color:'var(--ink-3)',marginTop:'2px'}},
       lastSync?'Last synced '+new Date(lastSync).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'Connected');
+    const syncBtn = el('button',{class:'btn-ghost',style:{fontSize:'12px'}},'Sync now');
     syncBtn.addEventListener('click',async()=>{
       syncBtn.textContent='Syncing…'; syncBtn.disabled=true;
       try {
-        const [balChanged, txnImported] = await Promise.all([
-          syncBankingBalances().catch(()=>false),
-          syncBankingTransactions().catch(()=>0),
-        ]);
+        const balChanged = await syncBankingBalances().catch(()=>false);
+        const txnImported = await syncBankingTransactions().catch(()=>0);
         const now = new Date();
         lastSyncEl.textContent = 'Last synced '+now.toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
         syncBtn.textContent = (balChanged||txnImported>0)
           ? '✓ Updated'+(txnImported>0?' · '+txnImported+' new':'')
           : '✓ Up to date';
-        if(balChanged) renderAccounts();
+        if(balChanged){ accounts=[...(appData.accounts||[])]; renderAccounts(); }
       } catch(e){
         syncBtn.textContent = 'Sync failed';
       }
       setTimeout(()=>{ syncBtn.textContent='Sync now'; syncBtn.disabled=false; },3000);
     });
-    syncBanner.innerHTML='';
     syncBanner.append(
-      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
-        el('div',{},
-          el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Bank connected'),
-          lastSyncEl),
+      el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px'}},
+        el('div',{},el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Your banks'), lastSyncEl),
         syncBtn));
+    for(const c of conns){
+      const linked = (appData.accounts||[]).filter(a=>a.bankConnection===c.id || (c.id===LEGACY_BANK && !a.bankConnection && a.bankAccountId));
+      const cards = linked.filter(a=>a.type==='credit_card').length;
+      const needs = !c.access_token;
+      const again = el('button',{style:{background:'none',color:needs?'var(--accent)':'var(--ink-3)',fontSize:'12px',fontWeight:needs?'700':'400',padding:'4px 0'}},
+        needs?'Re-approve':'Reconnect');
+      again.addEventListener('click',()=>connectBank(c.id));
+      syncBanner.append(el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:'10px',
+        padding:'8px 0',borderTop:'1px solid var(--line-soft)'}},
+        el('div',{style:{minWidth:'0'}},
+          el('div',{style:{fontSize:'13px',fontWeight:'600'}},c.provider||(c.id===LEGACY_BANK?'Barclays':'Bank')),
+          el('div',{style:{fontSize:'11px',color:needs?'var(--danger)':'var(--ink-3)',marginTop:'1px'}},
+            needs ? 'The bank asks you to approve access again (every 90 days)'
+                  : linked.length+' account'+(linked.length===1?'':'s')+(cards?' · '+cards+' card'+(cards===1?'':'s'):''))),
+        again));
+    }
+    const another = el('button',{class:'btn-ghost',style:{width:'100%',marginTop:'8px',fontSize:'13px'}},'+ Connect another bank');
+    another.addEventListener('click',()=>connectBank());
+    syncBanner.append(another, noCards);
   }).catch(()=>{});
   const TYPES = [
     {key:'current',      label:'Spending', icon:'🏦', sign:1},
@@ -10429,12 +10572,12 @@ auth.onAuthStateChanged(async user => {
     let lastRun = 0;
     const runSync = async()=>{
       lastRun = Date.now();
-      const t = await getValidAccessToken().catch(()=>null);
-      if(!t) return;
-      const [, imported] = await Promise.all([
-        syncBankingBalances().catch(()=>{}),
-        syncBankingTransactions().catch(()=>0),
-      ]);
+      const linked = (await bankConnections().catch(()=>[])).some(c=>c.access_token);
+      if(!linked) return;
+      // Balances first: they link any new account or card, whose
+      // transactions are then fetched in the same run.
+      await syncBankingBalances().catch(()=>{});
+      const imported = await syncBankingTransactions().catch(()=>0);
       if(imported > 0) showDailyCheckin(imported);
     };
     // Sync immediately on login
