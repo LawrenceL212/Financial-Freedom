@@ -299,6 +299,11 @@ input::placeholder{color:var(--ink-4)}
 .hud-kpi span{display:block;font:700 9px 'Space Mono',monospace;color:var(--ink-3);letter-spacing:1.2px;text-transform:uppercase}
 .hud-kpi b{display:block;font:700 17px 'Space Mono',monospace;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hud-kpi small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hud-card{display:flex;justify-content:space-between;gap:10px;position:relative;margin:0 0 var(--s2);
+  padding:9px 11px;border-radius:10px;border:1px solid rgba(255,90,90,.28);background:linear-gradient(90deg,rgba(255,90,90,.08),rgba(255,90,90,.02))}
+.hud-card b{display:block;font:700 16px 'Space Mono',monospace;margin-top:3px;white-space:nowrap}
+.hud-card small{display:block;font-size:10.5px;color:var(--ink-3);margin-top:1px}
+.hud-card-label{display:block;font:700 9px 'Space Mono',monospace;color:var(--ink-3);letter-spacing:1.2px;text-transform:uppercase}
 .hud-chart{width:100%;height:auto;display:block;touch-action:pan-y;cursor:crosshair;position:relative}
 .hud-draw{stroke-dasharray:var(--len,2000);stroke-dashoffset:var(--len,2000);animation:hudDraw 1.4s var(--ease) forwards}
 @keyframes hudDraw{to{stroke-dashoffset:0}}
@@ -320,6 +325,9 @@ input::placeholder{color:var(--ink-4)}
 .ask-chip{border:1px solid var(--accent-edge);background:var(--accent-wash);color:var(--accent);border-radius:999px;
   padding:7px 12px;font-size:12px;cursor:pointer;text-align:left}
 .ask-chip:active{transform:scale(.97)}
+.ask-row{display:flex;gap:8px;margin-top:var(--s3);position:relative}
+.ask-row input{flex:1;min-width:0;background:rgba(255,255,255,.03);border:1px solid var(--accent-edge);border-radius:999px;padding:10px 14px;font-size:14px}
+.ask-go{flex:0 0 42px;height:42px;border-radius:50%;border:none;background:var(--accent);color:var(--accent-ink);font:700 18px 'Space Mono',monospace;cursor:pointer;box-shadow:0 0 14px rgba(0,230,118,.35)}
 /* Calendar: amounts and heat instead of dots */
 .cal-amt{font:700 9px 'Space Mono',monospace;text-align:center;margin-top:2px;line-height:1.15;white-space:nowrap;overflow:hidden}
 .cal-proj{font:400 8px 'Space Mono',monospace;text-align:center;margin-top:2px;white-space:nowrap}
@@ -1114,7 +1122,7 @@ function resetUserDerived(){ userDerived = {}; }
 // transactions synced since were wiped, and a refreshed Barclays token was
 // replaced by the used one, which Barclays refuses (the reconnect prompts).
 const SYNCED_ELSEWHERE = ['transactions','statements','bankingToken','activeShift',
-                          'recurringPatterns','merchantRules','lastTransactionSync'];
+                          'recurringPatterns','merchantRules','lastTransactionSync','jarvisBriefing'];
 async function save(data, expectedUid){
   if(!currentUser) return;                                   // never write signed out
   if(expectedUid && expectedUid !== currentUser.uid) return;  // stale caller, abandon
@@ -7302,15 +7310,20 @@ function buildPlanForecast(data, today){
   const newestDate=newest?new Date(newest+'T12:00'):null;
   const windowEnd=newestDate&&newestDate<today?newestDate:today;
   const from=_pAdd(windowEnd,-28);
-  const subKeys=subs.map(s=>String(s.name||'').toLowerCase().split(' ')[0]).filter(Boolean);
+  const subKeys=subs.map(s=>{ const w=String(s.name||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(Boolean);
+    return w[0]&&w[0].length>2 ? w[0] : w.slice(0,2).join(' '); }).filter(k=>k.length>2);
   const everyday=txns.filter(t=>{
     const d=_pTxnDate(t);
     if(t.direction!=='debit'||t.financialType!=='EXPENSE'||t.sourceType==='credit_card') return false;
     if(!d||d<_pYmd(from)||d>_pYmd(windowEnd)) return false;
     const m=String(t.normalisedMerchant||t.rawDescription||'').toLowerCase();
-    return !subKeys.some(k=>k.length>2&&m.includes(k));
+    return !subKeys.some(k=>m.includes(k));
   });
-  const burn=everyday.reduce((s,t)=>s+(t.amount||0),0)/28;
+  // One-off big purchases (flights, a phone) are not a daily pace: left
+  // out, and named in the briefing so it is clear why.
+  const ONE_OFF=150;
+  const oneOffs=everyday.filter(t=>t.amount>ONE_OFF);
+  const burn=everyday.filter(t=>t.amount<=ONE_OFF).reduce((s,t)=>s+(t.amount||0),0)/28;
   const staleDays=newestDate?Math.round((today-newestDate)/86400000):null;
 
   // Goal savings leave the account on each payday
@@ -7335,7 +7348,19 @@ function buildPlanForecast(data, today){
   const dueBeforePay=beforePay.flatMap(p=>p.evs.filter(e=>e.amount<0).map(e=>({...e,d:p.d})));
   const eve=nextPay?pts.find(p=>_pYmd(_pAdd(nextPay.date,-1))===p.key):null;
 
-  return {today,end,start,pts,paydays,nextPay,burn,everydayCount:everyday.length,staleDays,newest,
+  // The card, as far as the app knows it: the balance on the card account
+  // (typed in, unless the bank sync has card access), the next payment on
+  // the forecast, and what the card pot holds to cover it.
+  const cardAcct=(appData.accounts||[]).find(a=>a.type==='credit_card')||null;
+  const cardPay=pts.flatMap(p=>p.evs.filter(e=>e.kind==='card').map(e=>({...e,d:p.d})))[0]||null;
+  const card=pots.card.balance>0||cardAcct ? {
+    owed:pots.card.balance||0,
+    updated:cardAcct&&cardAcct.updatedAt?new Date(cardAcct.updatedAt):null,
+    synced:!!(cardAcct&&cardAcct.syncedFromBank),
+    due:cardPay?cardPay.d:null, dueAmount:cardPay?-cardPay.amount:null,
+    pot:pots.cardPot.balance||0, potName:pots.cardPot.names} : null;
+
+  return {today,end,start,pts,paydays,nextPay,burn,oneOffs,everydayCount:everyday.length,staleDays,newest,card,
           goals,goalPerPay,low,lowG,dueBeforePay,eve,typical:planTypicalPay(),
           proj:Object.fromEntries(pts.map(p=>[p.key,p.bal]))};
 }
@@ -7366,7 +7391,8 @@ function planBriefing(fc){
   if(fc.burn>0){
     const days=fc.nextPay?Math.max(0,Math.round((fc.nextPay.date-fc.today)/86400000)):7;
     say('info','≈', 'You usually spend about '+strong(fmt(fc.burn)+' a day')+' on everyday things'+
-      (fc.eve?' — at that pace you’ll have '+strong(fmt(fc.eve.bal))+' the day before payday':'')+'.');
+      (fc.eve?' — at that pace you’ll have '+strong(fmt(fc.eve.bal))+' the day before payday':'')+'.'+
+      (fc.oneOffs&&fc.oneOffs.length?' Left out as one-offs: '+fc.oneOffs.slice(0,3).map(t=>(t.normalisedMerchant||t.rawDescription)+' '+fmt(t.amount)).join(', ')+'.':''));
   }
   for(const g of fc.goals.filter(g=>g.active)){
     const ratio=fc.typical?g.perPay/fc.typical:0;
@@ -7378,6 +7404,14 @@ function planBriefing(fc){
       say(ratio>0.5?'warn':'good','◎', strong(g.name)+': '+fmt(g.perPay)+' a payday reaches '+fmt(g.target)+' by '+_pDay(g.deadline)+
         ' ('+Math.round(ratio*100)+'% of a typical paycheck).');
     }
+  }
+  if(fc.card && fc.card.owed>0){
+    const c=fc.card, covered=c.pot>=c.owed-0.5;
+    say(covered?'info':'warn','\u25A4', 'Credit card: '+strong(fmt(c.owed)+' owed')+
+      (c.synced?' (live from Barclays)':' — the figure you entered'+(c.updated?' on '+_pDay(c.updated):'')+
+        '; card spending isn\u2019t synced yet, so anything since then isn\u2019t counted')+
+      '. '+(c.due?'Payment ~'+strong(_pShort(c.due))+'. ':'')+
+      (covered?'Your '+c.potName+' ('+fmt(c.pot)+') covers it.':'Your '+c.potName+' holds '+fmt(c.pot)+' towards it.'));
   }
   const subs=(appData.subscriptions||[]).filter(s=>s.amount);
   if(subs.length){
@@ -7429,6 +7463,29 @@ function planChartSVG(fc, showGoals){
   return {svg:s, x, y, n, W, L, pw};
 }
 
+// Publish the briefing for JARVIS, so asking JARVIS for a briefing shows
+// exactly this -- Financial Freedom's own numbers and wording.
+function publishBriefing(fc){
+  if(!currentUser||!fc) return Promise.resolve();
+  const pay=fc.nextPay;
+  return db.ref('users/'+currentUser.uid+'/jarvisBriefing').set({
+    generatedAt:new Date().toISOString(),
+    now:Math.round(fc.start*100)/100,
+    nextPay:pay?{amount:Math.round(pay.amount*100)/100,date:_pYmd(pay.date),estimated:!!pay.estimated}:null,
+    lowest:{amount:Math.round(fc.low.bal*100)/100,date:_pYmd(fc.low.d)},
+    card:fc.card?{owed:fc.card.owed,due:fc.card.due?_pYmd(fc.card.due):null,synced:fc.card.synced,
+                  pot:fc.card.pot,potName:fc.card.potName}:null,
+    items:planBriefing(fc).map(b=>({tone:b.tone,glyph:b.glyph,html:b.html})),
+    series:fc.pts.map(p=>Math.round(p.bal)),
+    seriesStart:_pYmd(fc.today),
+    paydays:fc.pts.filter(p=>p.evs.some(e=>e.kind==='pay')).map(p=>p.i),
+  }).catch(()=>{});
+}
+function refreshBriefing(){
+  if(!currentUser) return;
+  loadPlanData().then(d=>publishBriefing(buildPlanForecast(d))).catch(()=>{});
+}
+
 function planForecastScreen(){
   const content=el('div',{class:'content',style:{paddingBottom:'100px'}});
   const hud=el('div',{class:'hud'});
@@ -7439,6 +7496,7 @@ function planForecastScreen(){
 
   loadPlanData().then(data=>{
     const fc=buildPlanForecast(data);
+    publishBriefing(fc);
     let showGoals=fc.goalPerPay>0;
     hud.innerHTML='';
     const stamp=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -7452,6 +7510,18 @@ function planForecastScreen(){
       kpi('Now',_pK(fc.start),'current account'),
       kpi('Next pay',fc.nextPay?'+'+_pK(fc.nextPay.amount):'—',fc.nextPay?_pShort(fc.nextPay.date):'no payday found','var(--accent)'),
       kpi('Lowest',_pK(fc.low.bal),_pShort(fc.low.d),fc.low.bal<0?'var(--danger)':fc.low.bal<100?'var(--warn)':'var(--ink)')));
+    if(fc.card){
+      const c=fc.card;
+      hud.append(el('div',{class:'hud-card'},
+        el('div',{},
+          el('span',{class:'hud-card-label'},'Credit card'),
+          el('b',{style:{color:c.owed>0?'var(--danger)':'var(--ink)'}},fmt(c.owed)),
+          el('small',{},c.synced?'owed · live from Barclays':'owed · entered '+(c.updated?_pDay(c.updated):'by you')+' · not synced')),
+        el('div',{style:{textAlign:'right'}},
+          el('span',{class:'hud-card-label'},'Payment'),
+          el('b',{},c.due?_pShort(c.due):'—'),
+          el('small',{style:{color:c.pot>=c.owed-0.5?'var(--accent)':'var(--warn)'}},c.potName+' '+fmt(c.pot)))));
+    }
 
     const chartWrap=el('div',{style:{position:'relative'}});
     const tip=el('div',{class:'hud-tip'});
@@ -7510,6 +7580,12 @@ function planForecastScreen(){
       chips.append(c);
     }
     brief.append(chips);
+    const askRow=el('form',{class:'ask-row'});
+    const askInp=el('input',{placeholder:'Ask JARVIS anything about this…',enterkeyhint:'send'});
+    const askGo=el('button',{type:'submit',class:'ask-go','aria-label':'Ask JARVIS'},'\u2192');
+    askRow.addEventListener('submit',e=>{ e.preventDefault(); const q=askInp.value.trim(); if(q){ askInp.value=''; openJarvisSheet(q); } });
+    askRow.append(askInp,askGo);
+    brief.append(askRow);
   }).catch(e=>{
     hud.innerHTML='';
     hud.append(el('div',{class:'hud-eyebrow'},'JARVIS · Forecast'),
@@ -9265,6 +9341,7 @@ auth.onAuthStateChanged(async user => {
     appData.profile = {displayName, email:user.email};
   }
   mainScreen();
+  setTimeout(refreshBriefing, 8000);
   // Auto-sync banking balances and transactions
   if(window.FF_BANKING_URL){
     let lastRun = 0;
@@ -9326,6 +9403,7 @@ auth.onAuthStateChanged(async user => {
     if(document.visibilityState!=='visible' || currentUser?.uid!==user.uid || !appData) return;
     const snap = await db.ref('users/'+user.uid+'/hoursLog').once('value').catch(()=>null);
     if(snap && appData && currentUser?.uid===user.uid) appData.hoursLog = snap.val()||[];
+    setTimeout(refreshBriefing, 6000);
   });
 
   // ── Card settlement detection ──
