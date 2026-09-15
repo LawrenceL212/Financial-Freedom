@@ -348,6 +348,43 @@ input::placeholder{color:var(--ink-4)}
 .goal-whatif b{font-family:'Space Mono',monospace;color:var(--ink)}
 .goal-ring{transition:stroke-dasharray .8s var(--ease)}
 @media (prefers-reduced-motion:reduce){.hud::after,.hud-live,.hud-ping,.cal-today{animation:none}.hud-draw{animation:none;stroke-dashoffset:0}.brief-row{animation:none;opacity:1}}
+/* ── JARVIS HUD layer: the Plan page's language on every tab ── */
+.card{position:relative;background:linear-gradient(180deg,rgba(0,230,118,.035),rgba(0,230,118,0) 42%),var(--surface);
+  box-shadow:0 0 0 1px rgba(0,230,118,.025) inset,0 8px 22px rgba(0,0,0,.25)}
+.card::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.012) 0 1px,transparent 1px 3px)}
+.card::after{content:'';position:absolute;top:8px;left:8px;width:9px;height:9px;pointer-events:none;
+  border-top:1px solid var(--accent-edge);border-left:1px solid var(--accent-edge)}
+.section-hdr{font-family:'Space Mono',monospace;color:var(--accent);display:flex;align-items:center;gap:8px;letter-spacing:2px}
+.section-hdr::before{content:'';flex:0 0 5px;height:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent)}
+.section-hdr::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--accent-edge),transparent)}
+.page-eyebrow{display:flex;align-items:center;gap:7px;font-family:'Space Mono',monospace;letter-spacing:2px}
+.page-eyebrow::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:hudPulse 2s infinite}
+.t-hero,.t-figure{font-family:'Space Mono',monospace;letter-spacing:-1px;text-shadow:0 0 22px rgba(0,230,118,.12)}
+.stat-chip{background:rgba(255,255,255,.025)}
+.stat-chip-value{font-family:'Space Mono',monospace}
+.nav-btn.active svg{filter:drop-shadow(0 0 6px var(--accent))}
+.nav-pay-circle{box-shadow:0 0 20px rgba(0,230,118,.45)}
+.btn-primary{box-shadow:0 0 16px rgba(0,230,118,.22)}
+/* JARVIS panel parts */
+.hud-cap{display:flex;justify-content:space-between;font:700 9px 'Space Mono',monospace;letter-spacing:1.2px;text-transform:uppercase;
+  color:var(--ink-3);margin-top:var(--s2);position:relative}
+.hud-bars{display:flex;align-items:flex-end;gap:3px;height:56px;margin:6px 0 var(--s2);position:relative}
+.hud-bar{flex:1;min-width:2px;border-radius:3px 3px 1px 1px;background:linear-gradient(180deg,var(--accent),rgba(0,230,118,.22));
+  transform-origin:bottom;animation:hudBar .7s var(--ease) both}
+@keyframes hudBar{from{transform:scaleY(0)}}
+.hud-link{background:none;border:1px solid var(--accent-edge);color:var(--accent);border-radius:999px;padding:6px 12px;
+  font-size:12px;cursor:pointer;white-space:nowrap}
+.hud-shift{display:grid;grid-template-columns:1.3fr 1fr auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line-soft);
+  font-size:13px;color:var(--ink-2);position:relative}
+.hud-shift b{color:var(--ink);font-weight:600}
+.hud-shift span{font-family:'Space Mono',monospace;font-size:12px}
+.hud-conn{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line-soft);font-size:13px}
+.hud-conn:last-child{border-bottom:none}
+.hud-conn b{color:var(--ink);font-weight:600}
+.hud-conn span:last-child{color:var(--ink-3);font-size:12px}
+.hud-dot{width:8px;height:8px;border-radius:50%}
+@media (prefers-reduced-motion:reduce){.page-eyebrow::before{animation:none}.hud-bar{animation:none}}
 </style>
 </head>
 <body>
@@ -1122,7 +1159,7 @@ function resetUserDerived(){ userDerived = {}; }
 // transactions synced since were wiped, and a refreshed Barclays token was
 // replaced by the used one, which Barclays refuses (the reconnect prompts).
 const SYNCED_ELSEWHERE = ['transactions','statements','bankingToken','activeShift',
-                          'recurringPatterns','merchantRules','lastTransactionSync','jarvisBriefing'];
+                          'recurringPatterns','merchantRules','lastTransactionSync','jarvisBriefing','upcomingShifts','jarvisStatus'];
 async function save(data, expectedUid){
   if(!currentUser) return;                                   // never write signed out
   if(expectedUid && expectedUid !== currentUser.uid) return;  // stale caller, abandon
@@ -1362,6 +1399,7 @@ function paydayFlow(prefillIncome){
       show();
     });
     content.append(
+      jarvisPaydayHint(v=>{ inp.value=v.toFixed(2); btn.disabled=false; inp.focus(); }),
       el('div',{class:'step-num'},'Step 1 of 3'),
       el('div',{class:'step-title'},'You got paid 💰'),
       el('div',{class:'step-sub'},'How much landed in your account?'),
@@ -7594,6 +7632,205 @@ function planForecastScreen(){
   return content;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// JARVIS PANELS — the Plan page's HUD, at the top of every tab.
+// Each reads only what the app already holds (plus what JARVIS writes
+// back: the rota's upcoming shifts and when each sync last ran).
+// ═══════════════════════════════════════════════════════════════
+const _pAgo = iso=>{ if(!iso) return null; const m=Math.max(0,Math.round((Date.now()-new Date(iso))/60000));
+  return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+'h ago':Math.round(m/1440)+'d ago'; };
+
+function hudPanel(title, right){
+  const p=el('div',{class:'hud'});
+  p.append(el('div',{class:'hud-eyebrow',style:{justifyContent:'space-between'}},
+    el('span',{style:{display:'flex',alignItems:'center',gap:'8px'}},el('span',{class:'hud-live'}),'JARVIS · '+title),
+    el('span',{style:{color:'var(--ink-3)',letterSpacing:'1px'}},right||'')));
+  return p;
+}
+function hudKpis(items){
+  return el('div',{class:'hud-kpis'},...items.map(([l,v,s,c])=>
+    el('div',{class:'hud-kpi'},el('span',{},l),el('b',{style:{color:c||'var(--ink)'}},v),el('small',{},s||''))));
+}
+function hudSpark(values, marks, id){
+  const W=300, H=58, n=values.length-1; if(n<1) return el('div');
+  let lo=Math.min(0,...values), hi=Math.max(...values,1); const pad=(hi-lo)*.1||10; hi+=pad; if(lo<0) lo-=pad*.5;
+  const x=i=>i/n*W, y=v=>4+(hi-v)/(hi-lo)*(H-8);
+  const line=values.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)).join(' ');
+  const box=el('div',{style:{position:'relative',margin:'4px 0'}});
+  box.innerHTML='<svg class="hud-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" style="height:'+H+'px">'+
+    '<defs><linearGradient id="hs'+id+'" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#00E676" stop-opacity=".3"/><stop offset="1" stop-color="#00E676" stop-opacity="0"/></linearGradient></defs>'+
+    (lo<0?'<line x1="0" x2="'+W+'" y1="'+y(0)+'" y2="'+y(0)+'" stroke="#FF5A5A" stroke-dasharray="3 3" opacity=".7"/>':'')+
+    (marks||[]).map(i=>'<line x1="'+x(i)+'" x2="'+x(i)+'" y1="2" y2="'+(H-2)+'" stroke="#00E676" stroke-opacity=".35" stroke-dasharray="2 3"/>').join('')+
+    '<path d="'+line+' L'+W+' '+(H-4)+' L0 '+(H-4)+' Z" fill="url(#hs'+id+')"/>'+
+    '<path class="hud-draw" style="--len:900" d="'+line+'" fill="none" stroke="#00E676" stroke-width="2" stroke-linejoin="round" filter="drop-shadow(0 0 3px #00E676)"/></svg>';
+  return box;
+}
+function hudBars(values, labels, colorFor){
+  const max=Math.max(1,...values);
+  const wrap=el('div',{class:'hud-bars'});
+  values.forEach((v,i)=>{
+    const b=el('div',{class:'hud-bar',title:(labels&&labels[i]?labels[i]+': ':'')+v});
+    // Square-root scale: one big day (flights) no longer flattens the rest.
+    b.style.height=Math.max(3,Math.round(Math.sqrt(v/max)*100))+'%';
+    b.style.animationDelay=(i*25)+'ms';
+    if(colorFor) b.style.background=colorFor(v,max,i);
+    wrap.append(b);
+  });
+  return wrap;
+}
+function hudRows(items){
+  const tones={good:['var(--accent-wash)','var(--accent)'],warn:['var(--warn-wash)','var(--warn)'],
+               bad:['var(--danger-wash)','var(--danger)'],info:['var(--info-wash)','var(--info)']};
+  return items.map((b,i)=>{
+    const [bg,fg]=tones[b.tone]||tones.info;
+    const t=el('div',{}); t.innerHTML=b.html;
+    return el('div',{class:'brief-row',style:{animationDelay:(i*70)+'ms'}},
+      el('div',{class:'brief-ico',style:{background:bg,color:fg}},b.glyph), t);
+  });
+}
+function hudAsk(placeholder){
+  const f=el('form',{class:'ask-row'});
+  const i=el('input',{placeholder:placeholder||'Ask JARVIS…',enterkeyhint:'send'});
+  f.addEventListener('submit',e=>{ e.preventDefault(); const q=i.value.trim(); if(q){ i.value=''; openJarvisSheet(q); } });
+  f.append(i, el('button',{type:'submit',class:'ask-go','aria-label':'Ask JARVIS'},'→'));
+  return f;
+}
+function hudLink(label, tab){
+  const b=el('button',{class:'hud-link'},label+' →');
+  b.addEventListener('click',()=>window._setTab&&window._setTab(tab));
+  return b;
+}
+function hudLoading(p){ const m=el('div',{class:'t-meta',style:{marginTop:'var(--s3)',position:'relative'}},'Reading your accounts…'); p.append(m); return m; }
+const _pTime = ()=>new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+
+// ── Home: where you stand, in one look ──
+function jarvisHomePanel(){
+  const p=hudPanel('Status','LIVE '+_pTime()), wait=hudLoading(p);
+  loadPlanData().then(data=>{
+    const fc=buildPlanForecast(data); publishBriefing(fc); wait.remove();
+    p.append(hudKpis([
+      ['Now',_pK(fc.start),'current account'],
+      ['Next pay',fc.nextPay?'+'+_pK(fc.nextPay.amount):'—',fc.nextPay?_pShort(fc.nextPay.date):'','var(--accent)'],
+      ['Lowest',_pK(fc.low.bal),_pShort(fc.low.d),fc.low.bal<0?'var(--danger)':fc.low.bal<100?'var(--warn)':'var(--ink)']]));
+    p.append(hudSpark(fc.pts.map(x=>x.bal), fc.pts.filter(x=>x.evs.some(e=>e.kind==='pay')).map(x=>x.i), 'home'));
+    p.append(...hudRows(planBriefing(fc).slice(0,3)));
+    p.append(el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',position:'relative'}},
+      el('span',{class:'t-meta'},'6-week forecast · '+planBriefing(fc).length+' insights'), hudLink('Full briefing','plan')));
+    p.append(hudAsk('Ask JARVIS about your money…'));
+  }).catch(()=>{ wait.textContent='Could not read your accounts just now.'; });
+  return p;
+}
+
+// ── Money: the whole position, and where it is going ──
+function jarvisMoneyPanel(){
+  const p=hudPanel('Money','LIVE '+_pTime()), wait=hudLoading(p);
+  loadPlanData().then(({txns})=>{
+    wait.remove();
+    const pots=getPots();
+    const net=(pots.spending.balance||0)+(pots.cardPot.balance||0)+(pots.goals.balance||0)-(pots.card.balance||0);
+    const today=_pToday(), dom=today.getDate();
+    const ym=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+    const thisM=ym(today), lastD=new Date(today.getFullYear(),today.getMonth()-1,1), lastM=ym(lastD);
+    const spend=txns.filter(t=>t.direction==='debit'&&t.financialType==='EXPENSE');
+    const inMonth=(t,m,upTo)=>{ const d=_pTxnDate(t); return d.slice(0,7)===m && (!upTo||parseInt(d.slice(8,10))<=upTo); };
+    const now$=spend.filter(t=>inMonth(t,thisM)).reduce((s,t)=>s+t.amount,0);
+    const then$=spend.filter(t=>inMonth(t,lastM,dom)).reduce((s,t)=>s+t.amount,0);
+    const delta=then$>0?Math.round((now$-then$)/then$*100):null;
+    const byCat={}, byMerch={};
+    for(const t of spend.filter(t=>inMonth(t,thisM))){
+      const c=t.userCategory||t.category||'Other'; byCat[c]=(byCat[c]||0)+t.amount;
+      const m=t.normalisedMerchant||t.rawDescription||'?'; byMerch[m]=(byMerch[m]||0)+t.amount; }
+    const topCat=Object.entries(byCat).sort((a,b)=>b[1]-a[1])[0], topM=Object.entries(byMerch).sort((a,b)=>b[1]-a[1])[0];
+    p.append(hudKpis([
+      ['Net position',_pK(net),'minus the card',net<0?'var(--danger)':'var(--ink)'],
+      ['Spent in '+today.toLocaleDateString('en-GB',{month:'short'}),_pK(now$),delta==null?'this month':(delta>0?'▲':'▼')+Math.abs(delta)+'% vs '+lastD.toLocaleDateString('en-GB',{month:'short'}),delta>15?'var(--warn)':'var(--ink)'],
+      ['Top category',topCat?_pK(topCat[1]):'—',topCat?topCat[0]:'nothing yet']]));
+    // The last 30 days, a bar per day, redder the more went out
+    const days=[...Array(30)].map((_,i)=>_pAdd(today,i-29));
+    const perDay=days.map(d=>spend.filter(t=>_pTxnDate(t)===_pYmd(d)).reduce((s,t)=>s+t.amount,0));
+    p.append(el('div',{class:'hud-cap'},el('span',{},'Last 30 days'),el('span',{},'avg '+fmt(perDay.reduce((a,b)=>a+b,0)/30)+'/day')));
+    p.append(hudBars(perDay, days.map(_pDay), (v,max)=>'rgba(255,90,90,'+(0.25+0.7*v/max).toFixed(2)+')'));
+    const rows=[];
+    if(topM) rows.push({tone:'info',glyph:'★',html:'Biggest this month: <strong>'+topM[0]+'</strong> ('+fmt(topM[1])+').'});
+    if(pots.card.balance>0) rows.push({tone:'warn',glyph:'▤',html:'Credit card: <strong>'+fmt(pots.card.balance)+' owed</strong>; '+pots.cardPot.names+' holds '+fmt(pots.cardPot.balance)+' towards it.'});
+    if(delta!=null) rows.push({tone:delta>15?'warn':'good',glyph:'≈',html:'By this point last month you had spent <strong>'+fmt(then$)+'</strong>; this month <strong>'+fmt(now$)+'</strong>.'});
+    p.append(...hudRows(rows));
+    p.append(hudAsk('Ask JARVIS about your spending…'));
+  }).catch(()=>{ wait.textContent='Could not read your accounts just now.'; });
+  return p;
+}
+
+// ── Work: this fortnight, the next pay, and the rota ──
+function jarvisWorkPanel(){
+  const st=appData.jarvisStatus||{};
+  const p=hudPanel('Work', st.hoursSyncedAt?'WORKSAPP '+(_pAgo(st.hoursSyncedAt)||'').toUpperCase():'');
+  const RATE=appData.hourlyRate||14.5, today=_pToday();
+  const weeks=(appData.hoursLog||[]).filter(w=>w&&w.label).sort((a,b)=>_pLabel(a.label)-_pLabel(b.label));
+  let cur=null;
+  for(let i=0;i<weeks.length;i+=2){ const s=_pLabel(weeks[i].label); if(s<=today&&today<_pAdd(s,14)) cur={w1:weeks[i],w2:weeks[i+1]||null,start:s}; }
+  const curH=cur?(cur.w1.total||0)+(cur.w2?(cur.w2.total||0):0):0;
+  const next=planPaydays(today,_pAdd(today,30))[0]||null;
+  p.append(hudKpis([
+    ['This fortnight',curH.toFixed(1)+'h',cur?_pK(curH*RATE)+' so far':'no hours yet'],
+    ['Next pay',next?'+'+_pK(next.amount):'—',next?_pShort(next.date):'','var(--accent)'],
+    ['Per hour',fmt(RATE),'take-home']]));
+  const last=weeks.slice(-12), avg=last.length?last.reduce((s,w)=>s+(w.total||0),0)/last.length:0;
+  p.append(el('div',{class:'hud-cap'},el('span',{},'Hours, last '+last.length+' weeks'),el('span',{},'avg '+avg.toFixed(1)+'h/wk')));
+  p.append(hudBars(last.map(w=>w.total||0), last.map(w=>w.label),
+    (v,max,i)=>i===last.length-1?'linear-gradient(180deg,#5B9DFF,rgba(91,157,255,.25))':null));
+  const shifts=(appData.upcomingShifts||[]).filter(s=>s&&s.date&&new Date(s.date+'T'+(s.end||'23:59'))>=new Date()).slice(0,4);
+  if(shifts.length){
+    p.append(el('div',{class:'hud-cap',style:{marginTop:'var(--s3)'}},el('span',{},'Next shifts · from WorkSapp'),
+      el('span',{},shifts.reduce((s,x)=>s+(x.hours||0),0).toFixed(1)+'h · '+fmt(shifts.reduce((s,x)=>s+(x.hours||0),0)*RATE))));
+    for(const s of shifts){
+      const d=new Date(s.date+'T12:00');
+      p.append(el('div',{class:'hud-shift'},
+        el('b',{},d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})),
+        el('span',{},s.start+' – '+s.end),
+        el('span',{style:{color:'var(--accent)'}},(s.hours||0).toFixed(1)+'h')));
+    }
+  } else {
+    p.append(...hudRows([{tone:'info',glyph:'⇅',html:'Open WorkSapp in Chrome and the <strong>JARVIS Work Hours</strong> extension brings your rota in here.'}]));
+  }
+  return p;
+}
+
+// ── More: everything that feeds JARVIS, and when it last did ──
+function jarvisConnectionsPanel(){
+  const st=appData.jarvisStatus||{}, br=appData.jarvisBriefing||null;
+  const p=hudPanel('Connections','');
+  const row=(name,ok,detail)=>el('div',{class:'hud-conn'},
+    el('span',{class:'hud-dot',style:{background:ok?'var(--accent)':'var(--warn)',boxShadow:ok?'0 0 8px var(--accent)':'none'}}),
+    el('b',{},name), el('span',{},detail));
+  p.append(el('div',{style:{marginTop:'var(--s3)',position:'relative'}},
+    row('Barclays', !!appData.bankingToken, appData.bankingToken?'synced '+(_pAgo(appData.lastBankSync)||'—'):'not connected'),
+    row('WorkSapp hours', !!st.hoursSyncedAt, st.hoursSyncedAt?'synced '+_pAgo(st.hoursSyncedAt):'install the extension'),
+    row('Payslips', !!st.payslipsSyncedAt, st.payslipsSyncedAt?(st.payslipCount||0)+' payslips · '+_pAgo(st.payslipsSyncedAt):'not synced yet'),
+    row('JARVIS', !!window.FF_WORKER_URL, br&&br.generatedAt?'briefing '+_pAgo(br.generatedAt):'answers Ask My Finances')));
+  p.append(el('div',{class:'t-meta',style:{marginTop:'var(--s3)',position:'relative'}},
+    'Everything here feeds JARVIS — ask it anything, from this app or from JARVIS itself.'));
+  p.append(hudAsk('Ask JARVIS…'));
+  return p;
+}
+
+// ── Payday: what JARVIS expects this pay to be ──
+function jarvisPaydayHint(onUse){
+  const today=_pToday();
+  // Today's payday, or the next one -- judged from today, so a finished
+  // fortnight is not called an estimate.
+  const near=planPaydays(today,_pAdd(today,21))[0];
+  if(!near) return el('div');
+  const p=hudPanel('Payday', _pShort(near.date).toUpperCase());
+  p.style.marginBottom='var(--s5)';
+  p.append(el('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',gap:'10px',marginTop:'var(--s3)',position:'relative'}},
+    el('div',{},
+      el('div',{class:'t-meta'},'JARVIS expects'),
+      el('div',{style:{font:"700 26px 'Space Mono',monospace",color:'var(--accent)',textShadow:'0 0 18px rgba(0,230,118,.3)'}},fmt(near.amount)),
+      el('div',{class:'t-meta'},near.hours!=null?near.hours.toFixed(1)+'h × '+fmt(appData.hourlyRate||14.5)+'/h'+(near.estimated?' · estimated':''):'typical pay')),
+    (()=>{ const b=el('button',{class:'hud-link'},'Use this →'); b.addEventListener('click',()=>onUse(near.amount)); return b; })()));
+  return p;
+}
+
 function calendarScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
   const now = new Date();
@@ -9125,7 +9362,8 @@ function mainScreen(startTab='home'){
       const payBtn2 = el('button',{style:{background:'var(--green)',color:'#000',padding:'9px 16px',borderRadius:'10px',fontWeight:'700',fontSize:'13px'}},'I got paid');
       payBtn2.addEventListener('click',()=>render(paydayFlow()));
       makeHeader('Financial Freedom', payBtn2);
-      body.append(header, overviewScreen()); // always re-renders fresh from appData
+      const ov = overviewScreen(); ov.prepend(jarvisHomePanel());
+      body.append(header, ov); // always re-renders fresh from appData
 
     } else if(t==='money'||t==='_accounts'||t==='_transactions'||t==='_analytics'){
       if(t!=='money') moneySubTab = t.slice(1);
@@ -9134,9 +9372,10 @@ function mainScreen(startTab='home'){
         moneySubTab=id; setTab('_'+id);
       });
       body.append(header, subBar);
-      if(moneySubTab==='accounts')     body.append(accountsScreen());
-      else if(moneySubTab==='transactions') body.append(transactionsScreen());
-      else body.append(analyticsScreen());
+      const mv = moneySubTab==='accounts' ? accountsScreen()
+               : moneySubTab==='transactions' ? transactionsScreen() : analyticsScreen();
+      mv.prepend(jarvisMoneyPanel());
+      body.append(mv);
 
     } else if(t==='plan'||t==='_forecast'||t==='_calendar'||t==='_goals'){
       if(t!=='plan') planSubTab = t.slice(1);
@@ -9151,11 +9390,13 @@ function mainScreen(startTab='home'){
 
     } else if(t==='work'){
       makeHeader('Hours & Pay');
-      body.append(header, hoursScreen());
+      const hv = hoursScreen(); hv.prepend(jarvisWorkPanel());
+      body.append(header, hv);
 
     } else if(t==='more'){
       makeHeader('More');
-      body.append(header, moreScreen());
+      const mo = moreScreen(); mo.prepend(jarvisConnectionsPanel());
+      body.append(header, mo);
 
     // ── More sub-screens ──
     } else if(t==='_bulkcat'){    makeHeader('Sort Transactions'); body.append(header, bulkCategoriseScreen());
