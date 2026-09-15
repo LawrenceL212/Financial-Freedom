@@ -1408,7 +1408,7 @@ function setupScreen(firstRun){
   const cycle=select([['weekly','Weekly'],['fortnightly','Every two weeks'],['fourweekly','Every four weeks'],['monthly','Monthly']],s.payCycle);
   const payDay=el('input',{type:'number',min:'1',max:'31',value:String(s.payDayOfMonth||28)});
   const hourly=select([['no','A set amount each payday (salary)'],['yes','By the hours I work']], s.hourly?'yes':'no');
-  const rate=el('input',{inputmode:'decimal',value:appData.hourlyRate?String(appData.hourlyRate):'',placeholder:'Take-home per hour, e.g. 12.50'});
+  const rate=el('input',{inputmode:'decimal',value:appData.hourlyRate?String(appData.hourlyRate):'',placeholder:'e.g. 14.47'});
   const lag=el('input',{type:'number',value:s.payLagDays?String(s.payLagDays):'',placeholder:'e.g. 18'});
   const employer=el('input',{value:s.employer||'',placeholder:'e.g. Aldi'});
   const goalsName=el('input',{value:s.goalsPotName||'',placeholder:'e.g. Savings'});
@@ -1417,16 +1417,24 @@ function setupScreen(firstRun){
   // for rota work paid in arrears -- sat in front of someone on a monthly
   // salary with no way to know what it wanted.
   const payDayRow=field('Which day of the month does your pay arrive?', payDay, 'If it moves (e.g. the last Friday), put the usual date.');
-  const rateRow=field('What do you take home per hour?', rate, 'After tax, roughly. Used to estimate your next pay from the hours you work.');
+  const rateRow=field('What is your hourly rate?', rate, '');
+  const rateHelp=rateRow.querySelector('.t-meta')||rateRow.appendChild(el('div',{class:'t-meta',style:{marginTop:'5px'}}));
   const lagRow=field('How many days after a pay period starts are you paid for it?', lag,
     'Look at a payslip. If it covers 1–14 March and the money arrives 19 March, that’s 18 days (1 March + 18 = 19 March).');
   const showRelevant=()=>{
     const byHours=hourly.value==='yes';
     payDayRow.hidden = cycle.value!=='monthly';
     rateRow.hidden = !byHours;
+    // A monthly budget works pay out from the payslip (Pay page: rate x hours,
+    // then tax, NI, pension off), so it wants the rate BEFORE tax; the
+    // forecast estimates the next pay straight from hours, so take-home.
+    rateHelp.textContent = style.value==='monthly'
+      ? 'Before tax, as on the payslip. The Pay page takes off tax, NI, pension and anything else.'
+      : 'Take-home per hour, roughly (after tax). Used to estimate your next pay from the hours you work.';
     lagRow.hidden = !byHours || cycle.value==='monthly';
   };
   cycle.addEventListener('change',showRelevant);
+  style.addEventListener('change',showRelevant);
   hourly.addEventListener('change',showRelevant);
   showRelevant();
   const flags={...s.features};
@@ -8541,7 +8549,7 @@ function monthlyPayScreen(){
   }
   card.append(el('div',{class:'t-section',style:{marginBottom:'var(--s3)'}},'Hours'));
   line('basicHours','Contracted hours',151.67);
-  line('rate','Hourly rate (£)',s.hourlyRate||'');
+  line('rate','Hourly rate (£)',payRate()||'');
   line('adjHours','Adjustment hours (+/-)','', 'Last month’s extra or short hours');
   line('nightHours','Night / extra hours','');
   line('holidayDays','Holiday days','');
