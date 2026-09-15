@@ -617,8 +617,10 @@ async function syncBankingTransactions(){
 
   if(imported>0){
     await db.ref('users/'+currentUser.uid+'/transactions').update(writes);
+    // Into the in-memory copy too, so screens see them straight away.
+    appData.transactions = {...(appData.transactions||{}), ...writes};
     appData.lastTransactionSync = new Date().toISOString();
-    await save({...appData, lastTransactionSync:appData.lastTransactionSync});
+    await db.ref('users/'+currentUser.uid+'/lastTransactionSync').set(appData.lastTransactionSync);
   }
 
   return imported;
@@ -1047,11 +1049,21 @@ let sessionId = 0;
 let userDerived = {};
 function resetUserDerived(){ userDerived = {}; }
 
+// Parts of the account written directly, never through save(). appData
+// holds a copy of them from login, and save() used to set() the whole
+// account from appData -- so every save put back the login-time copy:
+// transactions synced since were wiped, and a refreshed Barclays token was
+// replaced by the used one, which Barclays refuses (the reconnect prompts).
+const SYNCED_ELSEWHERE = ['transactions','statements','bankingToken','activeShift',
+                          'recurringPatterns','merchantRules','lastTransactionSync'];
 async function save(data, expectedUid){
   if(!currentUser) return;                                   // never write signed out
   if(expectedUid && expectedUid !== currentUser.uid) return;  // stale caller, abandon
   appData = data;
-  await db.ref('users/'+currentUser.uid).set(data);
+  const out = {...data};
+  for(const k of SYNCED_ELSEWHERE) delete out[k];
+  // update(), not set(): replaces each key the app holds, leaves the rest.
+  await db.ref('users/'+currentUser.uid).update(out);
 }
 
 // ── screens ──
@@ -1982,9 +1994,18 @@ function overviewScreen(){
     const RATE = appData.hourlyRate||14.50;
     const parseLabel = l=>{const p=l.split('/');return new Date(`${p[2]}-${p[1]}-${p[0]}`);};
     const sortedH = [...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
-    const lastPair = sortedH.length>=2?{w1:sortedH[sortedH.length-2],w2:sortedH[sortedH.length-1]}:
-                     sortedH.length===1?{w1:sortedH[0],w2:null}:null;
-    const predictedPay = lastPair ? (lastPair.w1.total+(lastPair.w2?lastPair.w2.total:0))*RATE : 0;
+    // The next payday pays the fortnight that began 18 days before it
+    // (weeks of 31/08 and 07/09 -> Fri 18/09). Pair weeks as the Work
+    // screen does and take the first pair not yet paid -- not the last two
+    // weeks, which counted the week still in progress.
+    const pairsH = [];
+    for(let i=0;i<sortedH.length;i+=2) pairsH.push({w1:sortedH[i], w2:sortedH[i+1]||null});
+    const today0 = new Date(); today0.setHours(0,0,0,0);
+    const nextPair = pairsH.find(p=>{
+      const payday = parseLabel(p.w1.label); payday.setDate(payday.getDate()+18);
+      return payday >= today0;
+    }) || pairsH[pairsH.length-1] || null;
+    const predictedPay = nextPair ? (nextPair.w1.total+(nextPair.w2?nextPair.w2.total:0))*RATE : 0;
 
     // Avg savings per pay (from snapshot history)
     const avgFlorasiiPerPay = (()=>{
