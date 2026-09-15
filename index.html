@@ -550,7 +550,7 @@ function showDailyCheckin(importedCount){
 
   const sub = document.createElement('div');
   sub.style.cssText='font-size:12px;color:var(--ink-3);margin-bottom:16px';
-  sub.textContent=importedCount+' new transaction'+(importedCount===1?'':'s')+' from Barclays';
+  sub.textContent=importedCount+' new transaction'+(importedCount===1?'':'s')+' from your bank';
 
   sheet.append(title, sub);
 
@@ -558,7 +558,7 @@ function showDailyCheckin(importedCount){
     {label:'🍕 Fun',       cat:'Personal',       type:'EXPENSE'},
     {label:'🛒 Necessity', cat:'Groceries',       type:'EXPENSE'},
     {label:'🚌 Transport', cat:'Transport',       type:'EXPENSE'},
-    {label:'🌸 Florasii',  cat:'Florasii Trip',   type:'EXPENSE'},
+    ...(userSettings().customCategories||[]),
     {label:'📋 Sub',       cat:'Subscriptions',   type:'RECURRING_EXPENSE'},
     {label:'✅ Skip',      cat:null,              type:null},
   ];
@@ -683,7 +683,7 @@ async function syncBankingTransactions(){
 
         // Detect income first — takes priority over transfer detection
         const isIncome = direction==='credit' && (
-          /WAGAMAMA/i.test(rawDesc) ||
+          (employerRe() && employerRe().test(rawDesc)) ||
           /EMPLOYER|SALARY|PAYROLL|BGC/i.test(rawDesc)
         );
 
@@ -706,7 +706,7 @@ async function syncBankingTransactions(){
           category = 'Income';
           financialType = 'INCOME';
         } else if(typeof AUTO_RULES !== 'undefined'){
-          for(const [pat, cat, type] of AUTO_RULES){
+          for(const [pat, cat, type] of [...AUTO_RULES, ...personalRules()]){
             if(pat.test(normDesc)){
               category = cat; financialType = type; break;
             }
@@ -860,9 +860,9 @@ function showMoneyAllocationPlan(){
   if(remainingFree > 0){
     transfers.push({
       from: spending?.name||'Spending',
-      to:   florasii?.name||'Florasii',
+      to:   florasii?.name||userSettings().goalsPotName,
       amount: Math.round(remainingFree*100)/100,
-      reason: 'Hong Kong · '+fmt(florBal+remainingFree)+' total after transfer',
+      reason: activeGoalName()+' · '+fmt(florBal+remainingFree)+' total after transfer',
       urgent: false,
     });
   } else if(savingsShortfall === 0 && spendBal > minimumSpending){
@@ -871,9 +871,9 @@ function showMoneyAllocationPlan(){
     if(toFlorasii > 0){
       transfers.push({
         from: spending?.name||'Spending',
-        to:   florasii?.name||'Florasii',
+        to:   florasii?.name||userSettings().goalsPotName,
         amount: toFlorasii,
-        reason: 'Hong Kong · '+fmt(florBal+toFlorasii)+' total after transfer',
+        reason: activeGoalName()+' · '+fmt(florBal+toFlorasii)+' total after transfer',
         urgent: false,
       });
     }
@@ -884,7 +884,7 @@ function showMoneyAllocationPlan(){
   const projected = {
     spending: Math.round((spendBal - totalOut)*100)/100,
     savings:  Math.round((potBal + movedToSavings)*100)/100,
-    florasii: Math.round((florBal + (transfers.find(t=>t.to===(florasii?.name||'Florasii'))?.amount||0))*100)/100,
+    florasii: Math.round((florBal + (transfers.find(t=>t.to===(florasii?.name||userSettings().goalsPotName))?.amount||0))*100)/100,
     card:     -cardBal,
   };
 
@@ -896,7 +896,7 @@ function showMoneyAllocationPlan(){
 
   sheet.innerHTML='<div style="font-size:17px;font-weight:700;margin-bottom:4px">💡 Sort my money</div>'+
     '<div style="font-size:12px;color:var(--ink-3);margin-bottom:8px;line-height:1.5">'+
-    'Spending keeps exactly what\'s needed for the next 14 days (subs '+fmt(subBuffer)+' + transport '+fmt(transportBudget)+'). Everything else goes to Florasii.</div>';
+    'Spending keeps exactly what\'s needed for the next 14 days (subs '+fmt(subBuffer)+' + transport '+fmt(transportBudget)+'). Everything else goes to '+(florasii?.name||userSettings().goalsPotName)+'.</div>';
 
   // Minimum spending breakdown
   const minRow = document.createElement('div');
@@ -932,7 +932,7 @@ function showMoneyAllocationPlan(){
   proj.innerHTML='<div style="font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px">Your Barclays app should show</div>';
   for(const [label,val,col] of [
     [spending?.name||'Spending', projected.spending, 'var(--ink)'],
-    [florasii?.name||'Florasii', projected.florasii, 'var(--accent)'],
+    [florasii?.name||userSettings().goalsPotName, projected.florasii, 'var(--accent)'],
     [cardPot?.name||'Savings',   projected.savings,  'var(--info)'],
     [card?.name||'Barclaycard',  projected.card,     'var(--danger)'],
   ]){
@@ -1145,6 +1145,130 @@ function getPots(){
     goals:    mk('Goals',     of('goals'),     b.florasii||0),
     card:     mk('Card owed', of('card'),      b.creditCard||0),
   };
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// PER-PERSON SETTINGS
+// The app was written around one life -- fortnightly hourly pay from
+// Wagamama, a WorkSapp rota, a Beryl/bus budget, a savings pot covering
+// the credit card, a goals pot called Florasii. Those are now Lawrence's
+// SETTINGS (PRESET_LAWRENCE), and anyone else starts from neutral defaults
+// and describes their own in "Your setup".
+// ═══════════════════════════════════════════════════════════════
+const SETTINGS_DEFAULT = {
+  style:'forecast',            // 'forecast': look ahead from each payday | 'monthly': a budget sheet per month
+  payCycle:'monthly',          // weekly | fortnightly | fourweekly | monthly
+  payDayOfMonth:28,            // monthly pay: the day it lands
+  hourly:false,                // paid by the hour (hours drive the next pay)
+  payLagDays:null,             // hourly: payday = pay period start + this many days
+  employer:'', employerPattern:'',
+  transferPayees:'',           // bank lines that are money moving between family, not spending
+  goalsPotName:'Savings',
+  customCategories:[],
+  transportBudget:20,
+  features:{workHours:false, rotaSync:false, transport:false, cardPot:false},
+};
+const PRESET_LAWRENCE = {
+  style:'forecast', payCycle:'fortnightly', hourly:true, payLagDays:18,
+  employer:'Wagamama', employerPattern:'WAGAMAMA',
+  transferPayees:'MARY MALLETE|MALLETE NACIO|RAYMARK DOMINGO|AKSHAY BOBY|ANDRE MIGUEL',
+  goalsPotName:'Florasii',
+  customCategories:[{label:'🌸 Florasii', cat:'Florasii Trip', type:'EXPENSE'}],
+  transportBudget:20,
+  features:{workHours:true, rotaSync:true, transport:true, cardPot:true},
+};
+function userSettings(){
+  const s=(appData&&appData.settings)||{};
+  return {...SETTINGS_DEFAULT, ...s, features:{...SETTINGS_DEFAULT.features, ...(s.features||{})}};
+}
+const feature = k => !!userSettings().features[k];
+function payRate(){ return parseFloat(appData&&appData.hourlyRate)||0; }
+function employerRe(){
+  const p=userSettings().employerPattern;
+  try { return p ? new RegExp(p,'i') : null; } catch(e){ return null; }
+}
+// Rules only this person's statements need: their employer's pay is income,
+// payments to their own family are transfers. Appended AFTER the shared
+// rules, so a Wagamama meal still reads as eating out.
+function personalRules(){
+  const s=userSettings(), out=[];
+  const emp=employerRe();
+  if(emp) out.push([emp,'Income','INCOME']);
+  if(s.transferPayees){ try { out.push([new RegExp(s.transferPayees,'i'),'Transfer',null]); } catch(e){} }
+  return out;
+}
+function activeGoalName(){
+  return ((appData.goals||[]).find(g=>g.active!==false)||{}).name || 'your goal';
+}
+const _escRe = s=>String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+
+// ── Your setup ──
+function setupScreen(firstRun){
+  const s=userSettings();
+  const content=el('div',{class:'content',style:{paddingBottom:'100px'}});
+  const intro=hudPanel('Your setup', firstRun?'WELCOME':'');
+  intro.append(el('div',{class:'t-body',style:{marginTop:'var(--s3)',position:'relative'}},
+    firstRun
+      ? 'Tell the app how you are paid and how you like to budget -- every screen shapes itself around you. You can change this any time in More.'
+      : 'How you are paid and how you budget. Every screen follows this.'));
+  content.append(intro);
+
+  const box=el('div',{class:'card'});
+  const field=(label,input,help)=>el('div',{style:{marginBottom:'var(--s4)'}},
+    el('div',{class:'t-label',style:{marginBottom:'6px'}},label), input,
+    help?el('div',{class:'t-meta',style:{marginTop:'5px'}},help):null);
+  const select=(opts,val)=>{
+    const x=el('select',{style:{width:'100%',background:'var(--surface-2)',border:'1px solid var(--line)',color:'var(--ink)',
+      borderRadius:'12px',padding:'12px 14px',fontSize:'15px'}});
+    for(const [v,l] of opts){ const o=el('option',{value:v},l); if(String(v)===String(val)) o.selected=true; x.append(o); }
+    return x;
+  };
+  const style=select([['forecast','Forecast — look ahead from each payday'],['monthly','Monthly budget — one sheet per month, bills ticked off']],s.style);
+  const cycle=select([['weekly','Weekly'],['fortnightly','Every two weeks'],['fourweekly','Every four weeks'],['monthly','Monthly']],s.payCycle);
+  const payDay=el('input',{type:'number',min:'1',max:'31',value:String(s.payDayOfMonth||28)});
+  const hourly=select([['no','A set amount each payday (salary)'],['yes','By the hours I work']], s.hourly?'yes':'no');
+  const rate=el('input',{inputmode:'decimal',value:appData.hourlyRate?String(appData.hourlyRate):'',placeholder:'Take-home per hour, e.g. 12.50'});
+  const lag=el('input',{type:'number',value:s.payLagDays?String(s.payLagDays):'',placeholder:'e.g. 18'});
+  const employer=el('input',{value:s.employer||'',placeholder:'e.g. Aldi'});
+  const goalsName=el('input',{value:s.goalsPotName||'',placeholder:'e.g. Savings'});
+  const flags={...s.features};
+  const toggle=(key,label,help)=>{
+    const b=el('button',{type:'button',class:'hud-toggle'+(flags[key]?' on':''),style:{padding:'8px 12px',fontSize:'13px'}},
+      (flags[key]?'✓ ':'')+label);
+    b.addEventListener('click',()=>{ flags[key]=!flags[key]; b.classList.toggle('on',flags[key]); b.textContent=(flags[key]?'✓ ':'')+label; });
+    return el('div',{style:{marginBottom:'var(--s2)'}},b, el('div',{class:'t-meta',style:{marginTop:'3px'}},help));
+  };
+  box.append(
+    field('How do you like to budget?', style, 'Forecast shows where your money is heading day by day. Monthly budget works like a spreadsheet: each month\'s pay, the bills you tick off, and what carries over.'),
+    field('How often are you paid?', cycle),
+    field('Which day of the month does pay land?', payDay, 'For monthly pay.'),
+    field('How is your pay worked out?', hourly),
+    field('Hourly take-home', rate, 'Only if you are paid by the hour.'),
+    field('Days from the start of a pay period to payday', lag, 'Hourly pay only -- e.g. a fortnight paid 18 days after it starts.'),
+    field('Employer', employer, 'Its name on your bank statement marks your pay as income.'),
+    field('What do you call your savings pot?', goalsName),
+    el('div',{class:'t-label',style:{margin:'var(--s4) 0 8px'}},'Extras'),
+    toggle('workHours','Track hours and shifts','Adds the Work tab: hours, pay periods, clock in/out.'),
+    toggle('rotaSync','WorkSapp rota through JARVIS','Shifts and payslips arrive from the JARVIS browser extension.'),
+    toggle('transport','Weekly transport budget','A card tracking bus and bike spending against a weekly budget.'),
+    toggle('cardPot','A pot that covers the credit card','Sets money aside each payday for the card, and suggests transfers.'));
+  const saveBtn=el('button',{class:'btn-primary',style:{marginTop:'var(--s4)'}}, firstRun?'Start using the app':'Save');
+  saveBtn.addEventListener('click',async()=>{
+    const emp=employer.value.trim();
+    const settings={...s,
+      style:style.value, payCycle:cycle.value, payDayOfMonth:parseInt(payDay.value)||28,
+      hourly:hourly.value==='yes', payLagDays:parseInt(lag.value)||null,
+      employer:emp, employerPattern:emp?_escRe(emp.toUpperCase()):'',
+      goalsPotName:goalsName.value.trim()||'Savings', features:flags};
+    const hr=parseFloat(rate.value);
+    await save({...appData, settings, ...(hr>0?{hourlyRate:hr}:{})});
+    saveBtn.textContent='Saved ✓';
+    setTimeout(()=>mainScreen(), 500);
+  });
+  box.append(saveBtn);
+  content.append(box);
+  return content;
 }
 
 async function saveAccountBalance(accountId, newBalance){
@@ -1551,7 +1675,7 @@ function paydayFlow(prefillIncome){
       // Priority 5: Personal spending
       if(alloc.actualSpending > 0){
         content.append(mkRow('💸','Yours to spend','Food, life, fun', alloc.actualSpending,'var(--accent)',
-          'Florasii ('+fmt(alloc.totalGoalRequired)+') > subs ('+fmt(alloc.subBuffer)+') + spending ('+fmt(alloc.actualSpending)+') ✓'));
+          userSettings().goalsPotName+' ('+fmt(alloc.totalGoalRequired)+') > subs ('+fmt(alloc.subBuffer)+') + spending ('+fmt(alloc.actualSpending)+') ✓'));
       } else {
         content.append(el('div',{style:{background:'var(--surface2)',borderRadius:'12px',
           padding:'12px 14px',marginBottom:'8px',fontSize:'13px',color:'var(--ink-3)',lineHeight:'1.5'}},
@@ -1656,7 +1780,7 @@ function paydayFlow(prefillIncome){
         knownCardPot, 'card pot — covers the DDR');
 
       const fFlorasii = mkField(
-        (goalsAc?.name||'Florasii'),
+        (goalsAc?.name||userSettings().goalsPotName),
         knownFlorasii, 'goals savings');
 
       // Card field with statement context
@@ -2113,7 +2237,7 @@ function overviewScreen(){
     // Predicted next paycheck from hours
     const hoursLog = appData.hoursLog||[];
     const actualPay = appData.actualPay||{};
-    const RATE = appData.hourlyRate||14.50;
+    const RATE = payRate();
     const parseLabel = l=>{const p=l.split('/');return new Date(`${p[2]}-${p[1]}-${p[0]}`);};
     const sortedH = [...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
     // The next payday pays the fortnight that began 18 days before it
@@ -2127,7 +2251,8 @@ function overviewScreen(){
       const payday = parseLabel(p.w1.label); payday.setDate(payday.getDate()+18);
       return payday >= today0;
     }) || pairsH[pairsH.length-1] || null;
-    const predictedPay = nextPair ? (nextPair.w1.total+(nextPair.w2?nextPair.w2.total:0))*RATE : 0;
+    // Whatever this person's pay cycle says comes next (planPaydays).
+    const predictedPay = ((planPaydays(today0, _pAdd(today0,45))[0])||{}).amount||0;
 
     // Avg savings per pay (from snapshot history)
     const avgFlorasiiPerPay = (()=>{
@@ -2394,13 +2519,13 @@ function overviewScreen(){
       if(v && !isNaN(parseFloat(v))){ appData.transportBudget=parseFloat(v); save({...appData,transportBudget:parseFloat(v)}); renderIntelligence(); }
     });
     transCard.append(editTransBtn);
-    intelligenceWrap.append(el('div',{class:'section-hdr'},'Transport'), transCard);
+    if(feature('transport')) intelligenceWrap.append(el('div',{class:'section-hdr'},'Transport'), transCard);
 
     // ── SORT MY MONEY BUTTON ──
     const sortBtn = el('button',{class:'btn-primary',style:{width:'100%',marginBottom:'var(--s4)'}},
       '💡 Sort my money — see what to move');
     sortBtn.addEventListener('click',()=>showMoneyAllocationPlan());
-    intelligenceWrap.append(sortBtn);
+    if(feature('cardPot')) intelligenceWrap.append(sortBtn);
 
     // ── DIAGNOSIS ──
     // Ranks causes and states a verdict. Deliberately non-judgemental: a
@@ -2632,7 +2757,7 @@ function overviewScreen(){
           subsMonthly: subTotal,
           discretionaryMonthly: fmodel.monthlyDiscretionary,
           owedToUser: (appData.debts||[]).reduce((s,d)=>s+Math.max(0,(d.amount||0)-(d.paid||0)),0),
-          hourlyRate: appData.hourlyRate||14.50,
+          hourlyRate: payRate(),
         });
         if(scenarios.length){
           const sc = el('div',{style:{marginBottom:'12px'}});
@@ -3281,7 +3406,7 @@ function askScreen(){
     for(let i=0;i<sortedH.length;i+=2) pairs.push({w1:sortedH[i],w2:sortedH[i+1]});
     const latestPair = pairs[pairs.length-1];
     const currentPeriodHours = latestPair?(latestPair.w1.total+(latestPair.w2?latestPair.w2.total:0)):0;
-    const predictedNextPay = currentPeriodHours*(appData.hourlyRate||14.5);
+    const predictedNextPay = currentPeriodHours*(payRate());
 
     return {
       currentDate: now.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'}),
@@ -3707,7 +3832,6 @@ function classifyFinancialType(row, amount, subcat, memo){
 
 // ── Category suggester (deterministic) ──
 const CATEGORY_RULES = [
-  ['Wagamama', 'Income', 'Employment'],
   ['Barclaycard', 'Finance', 'Credit Card Payment'],
   ['Trading 212', 'Finance', 'Investment'],
   ['BH Live', 'Health & Fitness', 'Gym'],
@@ -3754,11 +3878,12 @@ function suggestCategory(merchant, financialType){
   // Then the detailed merchant rules
   if(typeof AUTO_RULES!=='undefined'){
     const hay = String(merchant||'').toUpperCase();
-    for(const [pat, category] of AUTO_RULES){
+    for(const [pat, category] of [...AUTO_RULES, ...personalRules()]){
       if(pat.test(hay)) return [category, null];
     }
   }
-  for(const [m, cat, sub] of CATEGORY_RULES){
+  const emp = userSettings().employer;
+  for(const [m, cat, sub] of [...CATEGORY_RULES, ...(emp?[[emp,'Income','Employment']]:[])]){
     if(merchant === m) return [cat, sub];
   }
   return ['Uncategorised', null];
@@ -5467,7 +5592,7 @@ function goalScenarios(assessment, ctx){
   const s = [];
   const gap = assessment.projectedShortfall;
   if(gap<=0) return s;
-  const {subsMonthly=0, discretionaryMonthly=0, owedToUser=0, hourlyRate=14.50} = ctx||{};
+  const {subsMonthly=0, discretionaryMonthly=0, owedToUser=0, hourlyRate=0} = ctx||{};
   const months = Math.max(1, assessment.monthsLeft);
 
   if(assessment.feasibleDate){
@@ -6058,8 +6183,6 @@ const AUTO_RULES = [
   [/THE PERFUME|PERFUME ?SHOP|LUSH |THE ?BODY ?SHOP|BARBER|HAIRDRESS|SALON/i,'Personal care','EXPENSE'],
 
   // Remaining merchants seen in your own statements
-  [/WAGAMAMA/i,                                                 'Income',              'INCOME'],
-  [/MARY MALLETE|MALLETE NACIO|RAYMARK DOMINGO|AKSHAY BOBY|ANDRE MIGUEL/i,'Transfer',   null],
   [/AA\/BSM|DRIVING SCH|BSM /i,                                 'Education',           'EXPENSE'],
   [/NOVELMATES|HONG KONG|AGODA|CATHAY|BOOKING\.COM|AIRBNB|EASYJET|RYANAIR/i,'Travel',   'EXPENSE'],
   [/UBR ?\*/i,                                                  'Transport',           'EXPENSE'],
@@ -6076,7 +6199,7 @@ function autoCategorise(txn){
   if(txn.financialType === 'INCOME') return {category:'Income', financialType:'INCOME'};
   if(txn.financialType === 'REFUND') return {category:'Refund', financialType:'REFUND'};
   const hay = ((txn.normalisedMerchant||'')+' '+(txn.rawDescription||'')+' '+(txn.rawMemo||'')).toUpperCase();
-  for(const [pat, category, ftype] of AUTO_RULES){
+  for(const [pat, category, ftype] of [...AUTO_RULES, ...personalRules()]){
     if(pat.test(hay)){
       return {category, financialType: ftype || txn.financialType};
     }
@@ -6462,7 +6585,7 @@ function trendsScreen(){
   const pairs=[];
   for(let i=0;i<sortedHours.length;i+=2) pairs.push({w1:sortedHours[i],w2:sortedHours[i+1]});
   const pairsWithActual=pairs.filter(({w1})=>actualPay[w1.id+'_actual']);
-  const predictedVals=pairsWithActual.map(({w1,w2})=>(w1.total+(w2?w2.total:0))*14.5);
+  const predictedVals=pairsWithActual.map(({w1,w2})=>(w1.total+(w2?w2.total:0))*payRate());
   const actualVals=pairsWithActual.map(({w1})=>actualPay[w1.id+'_actual']);
   const pairLabels=pairsWithActual.map(({w1})=>w1.label.slice(0,5));
   const predVsActualDiff=pairsWithActual.map((_,i)=>actualVals[i]-predictedVals[i]);
@@ -6650,7 +6773,7 @@ function trendsScreen(){
   const wiHoursInp = el('input',{inputmode:'decimal',placeholder:'Extra hours this period',style:{marginBottom:'10px'}});
   const wiResult = el('div',{style:{background:'var(--surface2)',borderRadius:'12px',padding:'14px',marginTop:'4px',display:'none'}});
   const wiBtn = el('button',{style:{background:'var(--amber)',color:'#000',borderRadius:'12px',padding:'13px',width:'100%',fontWeight:'700',fontSize:'14px'}},'Calculate');
-  const RATE = appData.hourlyRate||14.50;
+  const RATE = payRate();
   wiBtn.addEventListener('click',()=>{
     const extraH = parseFloat(wiHoursInp.value)||0;
     if(!extraH){ wiResult.style.display='none'; return; }
@@ -6706,7 +6829,7 @@ function trendsScreen(){
 
 function hoursScreen(){
   const content = el('div',{class:'content',style:{paddingBottom:'100px'}});
-  const RATE = appData.hourlyRate || 14.50;
+  const RATE = payRate();
 
   // ── Clock in / clock out ──
   // Active shift stored in Firebase so it survives page reloads.
@@ -6788,7 +6911,7 @@ function hoursScreen(){
       }
       week[dayKey]=Math.round(((week[dayKey]||0)+hoursWorked)*100)/100;
       week.total=Math.round(['mon','tue','wed','thu','fri','sat','sun'].reduce((s,d)=>s+(week[d]||0),0)*100)/100;
-      week.predicted=Math.round(week.total*(appData.hourlyRate||14.50)*100)/100;
+      week.predicted=Math.round(week.total*(payRate())*100)/100;
 
       await save({...appData,hoursLog:log});
       renderClockedOut();
@@ -6797,7 +6920,7 @@ function hoursScreen(){
       // Show a summary
       clockStatus.textContent='✓ Shift saved — '+hoursWorked.toFixed(2)+'h on '+
         dayKey.charAt(0).toUpperCase()+dayKey.slice(1)+
-        ' ('+fmt(hoursWorked*(appData.hourlyRate||14.50))+' earned)';
+        ' ('+fmt(hoursWorked*(payRate()))+' earned)';
     };
   }
 
@@ -6827,7 +6950,7 @@ function hoursScreen(){
   const rateInput = el('input',{inputmode:'decimal',value:String(RATE),style:{marginBottom:'8px'}});
   const saveRateBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'12px'}},'Save rate');
   saveRateBtn.addEventListener('click',async()=>{
-    const r = parseFloat(rateInput.value)||14.50;
+    const r = parseFloat(rateInput.value)||0;
     await save({...appData, hourlyRate:r});
     saveRateBtn.textContent='Saved ✓';
     setTimeout(()=>{saveRateBtn.textContent='Save rate'; renderAll();},1500);
@@ -6958,7 +7081,7 @@ function hoursScreen(){
       const labelDiv = el('div',{},
         el('div',{style:{fontWeight:'600',fontSize:'14px'}},
           _pDay(_pLabel(w1.label))+' – '+_pDay(_pAdd(_pLabel(w1.label),w2?13:6))+(w2?'':' (in progress)')),
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked · paid '+_pShort(_pAdd(_pLabel(w1.label),18)))
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked · paid '+_pShort(_pAdd(_pLabel(w1.label),userSettings().payLagDays||18)))
       );
       const payDiv = el('div',{style:{textAlign:'right'}},
         el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(predicted)),
@@ -7240,6 +7363,27 @@ async function loadPlanData(){
 }
 
 // Typical take-home: the median of his last six paydays.
+// Salaried and other pay cycles: paydays on the calendar, at typical pay.
+function cyclePaydays(today, end, S){
+  const typical=planTypicalPay(), list=[];
+  if(S.payCycle==='monthly'){
+    for(let m=0;m<3;m++){
+      const y=today.getFullYear(), mo=today.getMonth()+m, dim=new Date(y,mo+1,0).getDate();
+      const d=new Date(y,mo,Math.min(parseInt(S.payDayOfMonth)||28,dim));
+      if(d>=today && d<=end) list.push({date:d, start:null, hours:null, estimated:true, amount:typical});
+    }
+    return list;
+  }
+  const step={weekly:7,fortnightly:14,fourweekly:28}[S.payCycle]||14;
+  const paid=(appData.paychecks||[]).filter(p=>p.income>0)
+    .map(p=>new Date(String(p.date).slice(0,10)+'T12:00')).sort((a,b)=>a-b).pop();
+  if(!paid) return list;
+  let d=new Date(paid.getFullYear(),paid.getMonth(),paid.getDate());
+  while(d<today) d=_pAdd(d,step);
+  for(;d<=end;d=_pAdd(d,step)) list.push({date:d, start:null, hours:null, estimated:true, amount:typical});
+  return list;
+}
+
 function planTypicalPay(){
   const recent=(appData.paychecks||[]).filter(p=>p.income>0)
     .sort((a,b)=>String(a.date).localeCompare(String(b.date))).slice(-6)
@@ -7252,12 +7396,16 @@ function planTypicalPay(){
 // his typical pay, marked estimated. Beyond the hours log, fortnightly at
 // typical pay.
 function planPaydays(today, end){
-  const RATE=appData.hourlyRate||14.5, typical=planTypicalPay();
+  const S=userSettings(), LAG=S.payLagDays||18;
+  // Hours drive the pay only for hourly pay paid in pay periods; anyone
+  // else is paid on their calendar, at their typical pay.
+  if(!(S.hourly && S.payCycle==='fortnightly')) return cyclePaydays(today, end, S);
+  const RATE=payRate(), typical=planTypicalPay();
   const weeks=(appData.hoursLog||[]).filter(w=>w&&w.label).sort((a,b)=>_pLabel(a.label)-_pLabel(b.label));
   const list=[];
   for(let i=0;i<weeks.length;i+=2){
     const w1=weeks[i], w2=weeks[i+1]||null, start=_pLabel(w1.label);
-    const date=_pAdd(start,18);
+    const date=_pAdd(start,LAG);
     if(date<today || date>end) continue;
     const hours=(w1.total||0)+(w2?(w2.total||0):0);
     const complete=_pAdd(start,14)<=today;
@@ -7273,7 +7421,7 @@ function planPaydays(today, end){
   while(last && typical>0){
     last=_pAdd(last,14);
     if(last>end) break;
-    if(last>=today) list.push({date:last, start:_pAdd(last,-18), hours:null, estimated:true, amount:typical});
+    if(last>=today) list.push({date:last, start:_pAdd(last,-LAG), hours:null, estimated:true, amount:typical});
   }
   return list;
 }
@@ -7578,7 +7726,7 @@ function planForecastScreen(){
         el('div',{},
           el('span',{class:'hud-card-label'},'Credit card'),
           el('b',{style:{color:c.owed>0?'var(--danger)':'var(--ink)'}},fmt(c.owed)),
-          el('small',{},c.synced?'owed · live from Barclays':'owed · entered '+(c.updated?_pDay(c.updated):'by you')+' · not synced')),
+          el('small',{},c.synced?'owed · live from your bank':'owed · entered '+(c.updated?_pDay(c.updated):'by you')+' · not synced')),
         el('div',{style:{textAlign:'right'}},
           el('span',{class:'hud-card-label'},'Payment'),
           el('b',{},c.due?_pShort(c.due):'—'),
@@ -7788,7 +7936,7 @@ function jarvisMoneyPanel(){
 function jarvisWorkPanel(){
   const st=appData.jarvisStatus||{};
   const p=hudPanel('Work', st.hoursSyncedAt?'WORKSAPP '+(_pAgo(st.hoursSyncedAt)||'').toUpperCase():'');
-  const RATE=appData.hourlyRate||14.5, today=_pToday();
+  const RATE=payRate(), today=_pToday();
   const weeks=(appData.hoursLog||[]).filter(w=>w&&w.label).sort((a,b)=>_pLabel(a.label)-_pLabel(b.label));
   let cur=null;
   for(let i=0;i<weeks.length;i+=2){ const s=_pLabel(weeks[i].label); if(s<=today&&today<_pAdd(s,14)) cur={w1:weeks[i],w2:weeks[i+1]||null,start:s}; }
@@ -7833,7 +7981,7 @@ function jarvisConnectionsPanel(){
     el('b',{},name), el('span',{},detail));
   p.append(el('div',{style:{marginTop:'var(--s3)',position:'relative'}},
     row('Barclays', !!appData.bankingToken, appData.bankingToken?'synced '+(_pAgo(appData.lastBankSync)||'—'):'not connected'),
-    row('WorkSapp hours', !!st.hoursSyncedAt, st.hoursSyncedAt?'synced '+_pAgo(st.hoursSyncedAt):'install the extension'),
+    feature('rotaSync') && row('WorkSapp hours', !!st.hoursSyncedAt, st.hoursSyncedAt?'synced '+_pAgo(st.hoursSyncedAt):'install the extension'),
     row('Payslips', !!st.payslipsSyncedAt, st.payslipsSyncedAt?(st.payslipCount||0)+' payslips · '+_pAgo(st.payslipsSyncedAt):'not synced yet'),
     row('JARVIS', !!window.FF_WORKER_URL, br&&br.generatedAt?'briefing '+_pAgo(br.generatedAt):'answers Ask My Finances')));
   p.append(el('div',{class:'t-meta',style:{marginTop:'var(--s3)',position:'relative'}},
@@ -7855,7 +8003,7 @@ function jarvisPaydayHint(onUse){
     el('div',{},
       el('div',{class:'t-meta'},'JARVIS expects'),
       el('div',{style:{font:"700 26px 'Space Mono',monospace",color:'var(--accent)',textShadow:'0 0 18px rgba(0,230,118,.3)'}},fmt(near.amount)),
-      el('div',{class:'t-meta'},near.hours!=null?near.hours.toFixed(1)+'h × '+fmt(appData.hourlyRate||14.5)+'/h'+(near.estimated?' · estimated':''):'typical pay')),
+      el('div',{class:'t-meta'},near.hours!=null?near.hours.toFixed(1)+'h × '+fmt(payRate())+'/h'+(near.estimated?' · estimated':''):'typical pay')),
     (()=>{ const b=el('button',{class:'hud-link'},'Use this →'); b.addEventListener('click',()=>onUse(near.amount)); return b; })()));
   return p;
 }
@@ -7964,7 +8112,7 @@ function calendarScreen(){
     // 4. Hours-based predicted paychecks
     const hoursLog = appData.hoursLog || [];
     const actualPay = appData.actualPay || {};
-    const RATE = appData.hourlyRate || 14.50;
+    const RATE = payRate();
     const parseLabel = l => { const p=l.split('/'); return new Date(`${p[2]}-${p[1]}-${p[0]}`); };
     const sortedHours = [...hoursLog].sort((a,b)=>parseLabel(a.label)-parseLabel(b.label));
 
@@ -8070,7 +8218,7 @@ function calendarScreen(){
         direction: 'credit',
         financialType: 'INCOME',
         source: 'hours',
-        detail: (p.hours!=null ? p.hours.toFixed(1)+'h × £'+(appData.hourlyRate||14.50).toFixed(2)+'/hr' : 'typical pay')
+        detail: (p.hours!=null ? p.hours.toFixed(1)+'h × £'+(payRate()).toFixed(2)+'/hr' : 'typical pay')
           + (p.estimated ? ' · estimated' : ''),
       });
     }
@@ -8507,7 +8655,7 @@ function accountsScreen(){
   // ── Barclays sync banner — renders immediately, updates async ──
   const syncBanner = el('div',{class:'card',style:{marginBottom:'var(--s3)'}});
   const connectBtn = el('button',{class:'btn-primary',style:{width:'100%',marginTop:'10px'}},
-    '🏦 Connect Barclays — sync balances automatically');
+    '🏦 Connect your bank — sync balances automatically');
   connectBtn.addEventListener('click',()=>connectBarclays());
   // Neutral until we know -- showing Connect first made an existing
   // connection look lost on every visit.
@@ -8521,7 +8669,7 @@ function accountsScreen(){
     if(!token){
       syncBanner.innerHTML='';
       syncBanner.append(
-        el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with Barclays'),
+        el('div',{style:{fontWeight:'600',fontSize:'13px',marginBottom:'4px'}},'Sync with your bank'),
         el('div',{style:{fontSize:'12px',color:'var(--ink-3)',lineHeight:'1.5'}},
           'Connect once and your balances update automatically every time you open the app.'),
         connectBtn);
@@ -8553,7 +8701,7 @@ function accountsScreen(){
     syncBanner.append(
       el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
         el('div',{},
-          el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Barclays connected'),
+          el('div',{style:{fontWeight:'600',fontSize:'13px'}},'🔗 Bank connected'),
           lastSyncEl),
         syncBtn));
   }).catch(()=>{});
@@ -9394,6 +9542,7 @@ function mainScreen(startTab='home'){
       {icon:'🛡️', label:'Lifestyle',          sub:'Your priorities and commitments',    tab:'_lifestyle'},
       {icon:'💬', label:'Ask My Finances',    sub:'AI financial assistant',             tab:'_ask'},
       {icon:'📊', label:'Trends',             sub:'Historical charts and graphs',       tab:'_trends'},
+      {icon:'🧭', label:'Your setup',        sub:'How you are paid and how you budget',  tab:'_setup'},
       {icon:'⚙️', label:'Settings',           sub:'Subscriptions, profile, sign out',  tab:'_settings'},
     ];
     for(const item of items){
@@ -9418,7 +9567,7 @@ function mainScreen(startTab='home'){
     moneyBtn.className='nav-btn'+(['money','_accounts','_transactions','_analytics'].includes(t)?' active':'');
     planBtn.className ='nav-btn'+(['plan','_forecast','_calendar','_goals'].includes(t)?' active':'');
     workBtn.className ='nav-btn'+(t==='work'?' active':'');
-    moreBtn.className ='nav-btn'+(['more','_statements','_recurring','_merchants','_lifestyle','_ask','_trends','_settings','_bulkcat','_debts','_spending'].includes(t)?' active':'');
+    moreBtn.className ='nav-btn'+(['more','_statements','_recurring','_merchants','_lifestyle','_ask','_trends','_settings','_bulkcat','_debts','_spending','_setup'].includes(t)?' active':'');
 
     body.innerHTML='';
     const userLabel = (appData.profile?.displayName || currentUser?.email?.split('@')[0] || 'My') + '\'s Account';
@@ -9481,6 +9630,7 @@ function mainScreen(startTab='home'){
     } else if(t==='_lifestyle'){  makeHeader('Lifestyle');        body.append(header, lifestyleScreen());
     } else if(t==='_ask'){        makeHeader('Ask My Finances');  body.append(header, askScreen());
     } else if(t==='_trends'){     makeHeader('Trends');           body.append(header, trendsScreen());
+    } else if(t==='_setup'){       makeHeader('Your setup');       body.append(header, setupScreen(!appData.settings));
     } else if(t==='_settings'){   makeHeader('Settings');         body.append(header, settingsScreen());
     }
   }
@@ -9499,7 +9649,7 @@ function mainScreen(startTab='home'){
   moreBtn.addEventListener('click',()=>{  setTab('more');  setTimeout(scrollActiveTab,50); });
   payBtn.addEventListener('click',()=>render(paydayFlow()));
 
-  const nav = el('div',{class:'nav'}, homeBtn, moneyBtn, payBtn, planBtn, workBtn, moreBtn);
+  const nav = el('div',{class:'nav'}, homeBtn, moneyBtn, payBtn, planBtn, feature('workHours')?workBtn:null, moreBtn);
   wrap.append(body, nav);
   setTab(startTab);
   setTimeout(scrollActiveTab, 100);
@@ -9600,7 +9750,7 @@ auth.onAuthStateChanged(async user => {
     render(el('div',{style:{display:'flex',flexDirection:'column',alignItems:'center',
       justifyContent:'center',minHeight:'100dvh',color:'var(--text3)',fontSize:'14px',gap:'12px'}},
       el('div',{style:{fontSize:'32px'}},'🔗'),
-      el('div',{},'Connecting Barclays…')));
+      el('div',{},'Connecting your bank…')));
 
     // Wait for Firebase auth to be ready, then handle callback
     const unsubscribe = firebase.auth().onAuthStateChanged(async user => {
@@ -9654,7 +9804,13 @@ auth.onAuthStateChanged(async user => {
     await db.ref('users/'+user.uid+'/profile').set({displayName, email:user.email, createdAt: new Date().toISOString()});
     appData.profile = {displayName, email:user.email};
   }
-  mainScreen();
+  // Settings: an account from before they existed was Lawrence's, so it
+  // gets his life as settings; anyone new describes their own.
+  if(!appData.settings && ((appData.hoursLog||[]).length || (appData.paychecks||[]).length)){
+    appData.settings = {...PRESET_LAWRENCE};
+    db.ref('users/'+user.uid+'/settings').set(appData.settings).catch(()=>{});
+  }
+  mainScreen(appData.settings ? 'home' : '_setup');
   setTimeout(refreshBriefing, 8000);
   // Auto-sync banking balances and transactions
   if(window.FF_BANKING_URL){
@@ -9695,7 +9851,7 @@ auth.onAuthStateChanged(async user => {
         }).reduce((s,x)=>s+x.amount,0);
         const minimumSpending = subBuffer + berylCost.total;
         const needsAttention = (potBal < cardBal*0.9) || (spendBal > minimumSpending*1.1);
-        if(needsAttention && !sessionStorage.getItem(key)){
+        if(feature('cardPot') && needsAttention && !sessionStorage.getItem(key)){
           sessionStorage.setItem(key,'1');
           setTimeout(()=>showMoneyAllocationPlan(), 1500);
         }
