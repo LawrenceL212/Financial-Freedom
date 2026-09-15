@@ -1363,7 +1363,18 @@ function authScreen(){
     toggleBtn.textContent = mode==='signin'?'No account? Sign up':'Already have an account';
   });
 
-  content.append(heading, emailInput, passInput, errDiv, submitBtn, toggleBtn);
+  const forgotBtn = el('button',{class:'btn-ghost',style:{fontSize:'13px'}},'Forgot password?');
+  forgotBtn.addEventListener('click', async()=>{
+    const email = emailInput.value.trim();
+    if(!email){ errDiv.style.color='var(--red)'; errDiv.textContent='Type your email above, then tap Forgot password.'; return; }
+    try{
+      await auth.sendPasswordResetEmail(email);
+      errDiv.style.color='var(--accent)';
+      errDiv.textContent='If there\u2019s an account for '+email+', a reset link is on its way.';
+    }catch(e){ errDiv.style.color='var(--red)'; errDiv.textContent=e.message; }
+  });
+
+  content.append(heading, emailInput, passInput, errDiv, submitBtn, toggleBtn, forgotBtn);
   wrap.append(content);
   return wrap;
 }
@@ -3206,6 +3217,48 @@ function settingsScreen(){
     }
   });
 
+  // Account & password. An account someone else set up (a family member
+  // given a starting password) is theirs to secure: they confirm the
+  // password they were given, then choose their own. Firebase asks for the
+  // current one again before a change -- that is what reauthenticate is.
+  const pwStyle = {marginBottom:'8px'};
+  const curPw = el('input',{type:'password',placeholder:'Current password',autocomplete:'current-password',style:pwStyle});
+  const newPw = el('input',{type:'password',placeholder:'New password (at least 8 characters)',autocomplete:'new-password',style:pwStyle});
+  const newPw2 = el('input',{type:'password',placeholder:'New password again',autocomplete:'new-password',style:pwStyle});
+  const pwMsg = el('div',{style:{fontSize:'12.5px',minHeight:'18px',margin:'2px 0 8px',lineHeight:'1.5'}});
+  const pwBtn = el('button',{class:'btn-primary',style:{fontSize:'14px',padding:'12px'}},'Change password');
+  const say = (text, ok)=>{ pwMsg.style.color = ok ? 'var(--accent)' : 'var(--danger)'; pwMsg.textContent = text; };
+  pwBtn.addEventListener('click', async()=>{
+    if(!curPw.value) return say('Enter your current password first.');
+    if(newPw.value.length < 8) return say('Choose a new password of at least 8 characters.');
+    if(newPw.value !== newPw2.value) return say('The two new passwords don\u2019t match.');
+    if(newPw.value === curPw.value) return say('That\u2019s the same as your current password.');
+    pwBtn.disabled = true; pwBtn.textContent = 'Changing\u2026';
+    try{
+      const u = auth.currentUser;
+      await u.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(u.email, curPw.value));
+      await u.updatePassword(newPw.value);
+      curPw.value = newPw.value = newPw2.value = '';
+      say('Password changed \u2713 \u2014 use your new one next time you sign in.', true);
+    }catch(e){
+      const c = e.code || '';
+      say(/wrong-password|invalid-credential|invalid-login/.test(c) ? 'That current password isn\u2019t right.'
+        : /weak-password/.test(c) ? 'That password is too easy to guess \u2014 try a longer one.'
+        : /too-many-requests/.test(c) ? 'Too many tries \u2014 wait a few minutes, then try again.'
+        : 'Couldn\u2019t change it: ' + (e.message || c));
+    }
+    pwBtn.disabled = false; pwBtn.textContent = 'Change password';
+  });
+  const resetBtn = el('button',{class:'btn-ghost',style:{marginTop:'8px',fontSize:'13px'}},'Forgot it? Email me a reset link');
+  resetBtn.addEventListener('click', async()=>{
+    try{ await auth.sendPasswordResetEmail(auth.currentUser.email); say('Reset link sent to '+auth.currentUser.email+'.', true); }
+    catch(e){ say('Couldn\u2019t send the link: '+(e.message||e.code)); }
+  });
+  const accountCard = el('div',{class:'card'},
+    el('div',{style:{fontSize:'12px',color:'var(--text3)',marginBottom:'10px'}},
+      'Signed in as ', el('strong',{style:{color:'var(--ink)'}}, (auth.currentUser && auth.currentUser.email) || '')),
+    curPw, newPw, newPw2, pwMsg, pwBtn, resetBtn);
+
   const signOutBtn = el('button',{class:'btn-ghost',style:{marginTop:'32px'}},'Sign out');
   signOutBtn.addEventListener('click',()=>auth.signOut());
 
@@ -3230,6 +3283,8 @@ function settingsScreen(){
       profileInput,
       saveProfileBtn
     ),
+    el('div',{class:'section-hdr'},'Account & password'),
+    accountCard,
     el('div',{class:'section-hdr'},'Update Balances'),
     el('div',{class:'card'},
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Spending (£)'), curInput),
