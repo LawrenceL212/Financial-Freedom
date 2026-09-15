@@ -1089,6 +1089,174 @@ const el = (tag, props={}, ...kids) => {
   return e;
 };
 
+// ═══════════════════════════════════════════════════════════════
+// JARVIS's VOICE. Answers are spoken as well as shown, in the voice
+// chosen in JARVIS or in Settings here (one setting, kept by JARVIS). The
+// voice is made on his PC, so a balance read aloud never goes to a cloud
+// voice service. Sentence by sentence: the next is made while one plays.
+// ═══════════════════════════════════════════════════════════════
+const jarvisVoice = (() => {
+  const base = (window.FF_WORKER_URL || '').replace(/\/ff\/ask$/, '');
+  let settings = null, voices = [], run = 0, speaking = false;
+  const listeners = new Set();
+  // One element, unlocked by the first tap: iPhone Safari only lets a page
+  // make sound in answer to a touch, and a reply comes seconds after it.
+  const player = new Audio();
+  const SILENCE = 'data:audio/mpeg;base64,//OExAAAAAAAAAAAAFhpbmcAAAAPAAAABwAAAWgAJCQkJCQkJCQkJCQkJCRJSUlJSUlJSUlJSUlJSW1tbW1tbW1tbW1tbW1tkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2trbb29vb29vb29vb29vb2///////////////////AAAAPExBTUUzLjEwMAR4AAAAAAAAAAAVCCQEICEAAcwAAAFo3WBJTQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//MUxAAAAANIAAAAAExBTUUzLjEwMFVV//MUxAsAAANIAAAAAFVVVVVVVVVVVVVV//MUxBYAAANIAAAAAFVVVVVVVVVVVVVV//MUxCEAAANIAAAAAFVVVVVVVVVVVVVV//MUxCwAAANIAAAAAFVVVVVVVVVVVVVV//MUxDcAAANIAAAAAFVVVVVVVVVVVVVV//MUxEIAAANIAAAAAFVVVVVVVVVVVVVV';
+  const unlock = () => {
+    if (!player.src) { player.src = SILENCE; player.play().catch(() => {}); }
+    window.removeEventListener('pointerdown', unlock);
+  };
+  window.addEventListener('pointerdown', unlock);
+
+  const setSpeaking = on => { speaking = on; listeners.forEach(fn => fn(on)); };
+  async function authed(path, opts = {}) {
+    const token = await auth.currentUser.getIdToken();
+    return fetch(base + path, {...opts, headers: {...(opts.headers || {}), Authorization: 'Bearer ' + token}});
+  }
+  async function load() {
+    try {
+      const d = await (await authed('/ff/voice')).json();
+      settings = d.settings; voices = d.voices || [];
+    } catch (e) { settings = settings || {voice: 'bm_george', speed: 1, auto: true}; }
+    return {settings, voices};
+  }
+  async function save(change) {
+    const d = await (await authed('/ff/voice', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(change)})).json();
+    settings = d.settings || settings;
+    return settings;
+  }
+  function pieces(text) {
+    const t = String(text || '').replace(/```[\w-]*\n[\s\S]*?```/g, ' ').replace(/\s+/g, ' ').trim();
+    return t ? t.split(/(?<=[.!?])\s+(?=[A-Z0-9"'(£])/).filter(s => s.trim()) : [];
+  }
+  async function clip(text, voice) {
+    const r = await authed('/ff/speak', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text, voice})});
+    if (!r.ok) throw new Error('voice ' + r.status);
+    return URL.createObjectURL(await r.blob());
+  }
+  function play(url, mine) {
+    return new Promise(resolve => {
+      if (mine !== run) return resolve();
+      const done = () => { player.onended = player.onerror = null; URL.revokeObjectURL(url); resolve(); };
+      player.onended = done; player.onerror = done;
+      player.src = url;
+      player.play().catch(done);
+    });
+  }
+  function stop() {
+    run += 1;
+    player.pause(); if (player.onended) player.onended();
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    setSpeaking(false);
+  }
+  async function speak(text, voice) {
+    stop();
+    const mine = run, parts = pieces(text);
+    if (!parts.length || !base) return;
+    if (!settings) await load();
+    const chosen = voice || settings.voice;
+    setSpeaking(true);
+    try {
+      let next = clip(parts[0], chosen);
+      for (let i = 0; i < parts.length; i++) {
+        const url = await next;
+        if (mine !== run) return;
+        next = i + 1 < parts.length ? clip(parts[i + 1], chosen) : null;
+        if (next) next.catch(() => {});
+        await play(url, mine);
+        if (mine !== run) return;
+      }
+    } catch (e) {
+      // JARVIS unreachable: the phone's own voice, rather than silence.
+      if (mine === run && 'speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance(parts.join(' '));
+        u.lang = 'en-GB'; u.onend = () => setSpeaking(false);
+        speechSynthesis.speak(u); return;
+      }
+    }
+    if (mine === run) setSpeaking(false);
+  }
+  // An answer arrived: say it, unless he has turned speaking off.
+  async function answer(text) {
+    if (!settings) await load();
+    if (settings.auto !== false) speak(text);
+  }
+  return {load, save, speak, stop, answer, pieces,
+    get settings() { return settings; }, get voices() { return voices; },
+    get speaking() { return speaking; },
+    onSpeaking(fn) { listeners.add(fn); return () => listeners.delete(fn); }};
+})();
+
+// The speaker button beside Ask: tap to stop him mid-sentence, or to turn
+// speaking on and off.
+function jarvisVoiceToggle() {
+  const b = el('button', {class: 'btn-ghost', 'aria-label': 'JARVIS voice',
+    style: {width: '48px', flex: '0 0 48px', padding: '0', fontSize: '18px', marginTop: '0'}});
+  const paint = () => {
+    const on = !jarvisVoice.settings || jarvisVoice.settings.auto !== false;
+    b.textContent = jarvisVoice.speaking ? '■' : (on ? '🔊' : '🔇');
+    b.title = jarvisVoice.speaking ? 'Stop speaking' : (on ? 'Answers are spoken — tap to mute' : 'Muted — tap to hear answers');
+  };
+  b.addEventListener('click', async () => {
+    if (jarvisVoice.speaking) { jarvisVoice.stop(); return; }
+    const on = !jarvisVoice.settings || jarvisVoice.settings.auto !== false;
+    try { await jarvisVoice.save({auto: !on}); } catch (e) {}
+    paint();
+  });
+  const off = jarvisVoice.onSpeaking(() => { if (!b.isConnected) off(); else paint(); });
+  jarvisVoice.load().then(paint);
+  paint();
+  return b;
+}
+
+// Settings: which voice JARVIS speaks with, heard before it is chosen.
+function jarvisVoiceCard() {
+  const card = el('div', {class: 'card'});
+  const msg = el('div', {style: {fontSize: '12.5px', color: 'var(--text3)', minHeight: '18px', marginTop: '8px'}});
+  const PREVIEW = 'Good evening. Your next shift is tomorrow from 5 p.m. to 10 30 p.m.';
+  card.append(el('div', {style: {fontSize: '12px', color: 'var(--text3)'}}, 'Connecting to JARVIS…'));
+  jarvisVoice.load().then(({settings, voices}) => {
+    card.innerHTML = '';
+    if (!voices.length) {
+      card.append(el('div', {style: {fontSize: '13px', color: 'var(--text3)'}},
+        'JARVIS isn’t reachable right now — open this again when it is.'));
+      return;
+    }
+    const auto = el('input', {type: 'checkbox', id: 'voice-auto'});
+    auto.checked = settings.auto !== false;
+    auto.addEventListener('change', async () => {
+      await jarvisVoice.save({auto: auto.checked});
+      msg.textContent = auto.checked ? 'Answers will be spoken.' : 'Answers will be shown only.';
+    });
+    const pick = el('select', {id: 'voice-pick', style: {flex: '1', minWidth: '0'}});
+    const groups = {};
+    voices.forEach(v => {
+      const key = v.accent + ' · ' + v.gender;
+      if (!groups[key]) { groups[key] = el('optgroup', {label: key}); pick.append(groups[key]); }
+      const o = el('option', {value: v.id}, v.name + '  (' + v.grade + ')');
+      if (v.id === settings.voice) o.selected = true;
+      groups[key].append(o);
+    });
+    pick.addEventListener('change', async () => {
+      await jarvisVoice.save({voice: pick.value});
+      msg.textContent = 'JARVIS will speak as ' + pick.selectedOptions[0].textContent.split('  ')[0] + ' — here and in JARVIS.';
+      jarvisVoice.speak(PREVIEW, pick.value);
+    });
+    const hear = el('button', {class: 'btn-ghost', style: {marginTop: '0', width: 'auto', padding: '10px 14px'}}, 'Hear it');
+    hear.addEventListener('click', () => jarvisVoice.speak(PREVIEW, pick.value));
+    card.append(
+      el('label', {for: 'voice-auto', style: {display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: '12px', fontSize: '14px', marginBottom: '12px', cursor: 'pointer'}}, 'Speak JARVIS’s answers aloud', auto),
+      el('div', {style: {fontSize: '12px', color: 'var(--text3)', marginBottom: '6px'}}, 'Voice'),
+      el('div', {style: {display: 'flex', gap: '8px', alignItems: 'center'}}, pick, hear),
+      msg);
+  });
+  return card;
+}
+
 const DEFAULT_DATA = {
   balances:{current:0,creditCard:0,florasii:0,personalSavings:0}, // legacy — kept for migration
   accounts:[], // user-defined accounts
@@ -3285,6 +3453,8 @@ function settingsScreen(){
     ),
     el('div',{class:'section-hdr'},'Account & password'),
     accountCard,
+    el('div',{class:'section-hdr'},'JARVIS voice'),
+    jarvisVoiceCard(),
     el('div',{class:'section-hdr'},'Update Balances'),
     el('div',{class:'card'},
       el('div',{style:{marginBottom:'12px'}}, mkLabel('Spending (£)'), curInput),
@@ -3706,6 +3876,7 @@ ${JSON.stringify(ctx, null, 2)}${affordCtx}`;
       const data = await res.json();
       const reply = data.reply || 'Sorry, I couldn\'t process that. Try again.';
       addMessage('assistant', reply);
+      jarvisVoice.answer(reply);
     } catch(e) {
       addMessage('assistant','Connection error — please try again.');
     }
@@ -3718,7 +3889,7 @@ ${JSON.stringify(ctx, null, 2)}${affordCtx}`;
   inp.addEventListener('keydown',e=>{ if(e.key==='Enter') sendMessage(); });
 
   const inputRow = el('div',{style:{display:'flex',gap:'8px',position:'sticky',bottom:'0',background:'var(--bg)',paddingBottom:'max(16px,env(safe-area-inset-bottom))',paddingTop:'8px'}});
-  inputRow.append(inp, sendBtn);
+  inputRow.append(inp, sendBtn, jarvisVoiceToggle());
 
   content.append(
     el('div',{class:'section-hdr'},'Suggested'),
