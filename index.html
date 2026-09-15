@@ -375,7 +375,7 @@ input::placeholder{color:var(--ink-4)}
 @keyframes hudBar{from{transform:scaleY(0)}}
 .hud-link{background:none;border:1px solid var(--accent-edge);color:var(--accent);border-radius:999px;padding:6px 12px;
   font-size:12px;cursor:pointer;white-space:nowrap}
-.hud-shift{display:grid;grid-template-columns:1.3fr 1fr auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line-soft);
+.hud-shift{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line-soft);
   font-size:13px;color:var(--ink-2);position:relative}
 .hud-shift b{color:var(--ink);font-weight:600}
 .hud-shift span{font-family:'Space Mono',monospace;font-size:12px}
@@ -385,6 +385,23 @@ input::placeholder{color:var(--ink-4)}
 .hud-conn span:last-child{color:var(--ink-3);font-size:12px}
 .hud-dot{width:8px;height:8px;border-radius:50%}
 @media (prefers-reduced-motion:reduce){.page-eyebrow::before{animation:none}.hud-bar{animation:none}}
+/* Hours, readable */
+.wk-list{margin-bottom:var(--s3);position:relative}
+.wk-head{display:flex;justify-content:space-between;align-items:baseline;font:700 9.5px 'Space Mono',monospace;letter-spacing:1.2px;
+  text-transform:uppercase;color:var(--ink-3);padding:6px 0;border-bottom:1px solid var(--line)}
+.wk-head b{color:var(--accent);font-size:11px}
+.wk-day{display:grid;grid-template-columns:52px 1fr auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line-soft)}
+.wk-day:last-child{border-bottom:none}
+.wk-today{background:linear-gradient(90deg,var(--accent-wash),transparent);border-radius:8px;padding-left:6px;margin-left:-6px}
+.wk-date{display:flex;flex-direction:column;line-height:1.2}
+.wk-date b{font-size:13px;color:var(--ink);font-weight:700}
+.wk-date span{font-size:11px;color:var(--ink-3)}
+.wk-slots{display:flex;flex-wrap:wrap;gap:6px}
+.wk-slot{font:700 12.5px 'Space Mono',monospace;color:var(--ink);background:rgba(255,255,255,.04);border:1px solid var(--line);
+  border-radius:7px;padding:3px 7px;white-space:nowrap}
+.wk-note{font-size:11px;color:var(--ink-3);margin-top:3px}
+.wk-split{color:var(--warn)}
+.wk-hrs{font:700 13px 'Space Mono',monospace;color:var(--accent);white-space:nowrap}
 </style>
 </head>
 <body>
@@ -6939,8 +6956,9 @@ function hoursScreen(){
 
       const header = el('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'12px'}});
       const labelDiv = el('div',{},
-        el('div',{style:{fontWeight:'600',fontSize:'14px'}}, w1.label + (w2?' → '+w2.label:' (in progress)')),
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},totalH.toFixed(2)+'h total')
+        el('div',{style:{fontWeight:'600',fontSize:'14px'}},
+          _pDay(_pLabel(w1.label))+' – '+_pDay(_pAdd(_pLabel(w1.label),w2?13:6))+(w2?'':' (in progress)')),
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked · paid '+_pShort(_pAdd(_pLabel(w1.label),18)))
       );
       const payDiv = el('div',{style:{textAlign:'right'}},
         el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(predicted)),
@@ -6956,6 +6974,12 @@ function hoursScreen(){
       function renderBreakdown(){
         breakdown.innerHTML='';
         const days = ['mon','tue','wed','thu','fri','sat','sun'];
+        // Reading: one line per day worked. Editing: the grid, as before.
+        if(!editMode){
+          breakdown.append(hoursDayRows(w1));
+          if(w2) breakdown.append(hoursDayRows(w2));
+          return;
+        }
 
         // header row
         const hdrRow = el('div',{style:{display:'grid',gridTemplateColumns:'52px repeat(7,1fr)',gap:'4px',marginBottom:'4px'}});
@@ -7778,16 +7802,21 @@ function jarvisWorkPanel(){
   p.append(el('div',{class:'hud-cap'},el('span',{},'Hours, last '+last.length+' weeks'),el('span',{},'avg '+avg.toFixed(1)+'h/wk')));
   p.append(hudBars(last.map(w=>w.total||0), last.map(w=>w.label),
     (v,max,i)=>i===last.length-1?'linear-gradient(180deg,#5B9DFF,rgba(91,157,255,.25))':null));
-  const shifts=(appData.upcomingShifts||[]).filter(s=>s&&s.date&&new Date(s.date+'T'+(s.end||'23:59'))>=new Date()).slice(0,4);
+  const upcoming=(appData.upcomingShifts||[]).filter(s=>s&&s.date&&new Date(s.date+'T'+(s.end||'23:59'))>=new Date());
+  const firstDays=[...new Set(upcoming.map(s=>s.date))].slice(0,4);
+  const shifts=upcoming.filter(s=>firstDays.includes(s.date)).sort((a,b)=>a.date.localeCompare(b.date)||_mins(a.start)-_mins(b.start));
   if(shifts.length){
     p.append(el('div',{class:'hud-cap',style:{marginTop:'var(--s3)'}},el('span',{},'Next shifts · from WorkSapp'),
       el('span',{},shifts.reduce((s,x)=>s+(x.hours||0),0).toFixed(1)+'h · '+fmt(shifts.reduce((s,x)=>s+(x.hours||0),0)*RATE))));
-    for(const s of shifts){
-      const d=new Date(s.date+'T12:00');
+    const byDay={};
+    for(const s of shifts) (byDay[s.date]=byDay[s.date]||[]).push(s);
+    for(const [date,list] of Object.entries(byDay)){
+      const d=new Date(date+'T12:00'), hrs=list.reduce((a,x)=>a+(x.hours||0),0);
+      const gap=list.length>1?_mins(list[1].start)-_mins(list[0].end):0;
       p.append(el('div',{class:'hud-shift'},
         el('b',{},d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})),
-        el('span',{},s.start+' – '+s.end),
-        el('span',{style:{color:'var(--accent)'}},(s.hours||0).toFixed(1)+'h')));
+        el('span',{},list.map(x=>x.start+'\u2013'+x.end).join(' + ')+(gap>0?'  \u00b7 '+_hm(gap/60)+' break':'')),
+        el('span',{style:{color:'var(--accent)'}},_hm(hrs))));
     }
   } else {
     p.append(...hudRows([{tone:'info',glyph:'⇅',html:'Open WorkSapp in Chrome and the <strong>JARVIS Work Hours</strong> extension brings your rota in here.'}]));
@@ -7829,6 +7858,50 @@ function jarvisPaydayHint(onUse){
       el('div',{class:'t-meta'},near.hours!=null?near.hours.toFixed(1)+'h × '+fmt(appData.hourlyRate||14.5)+'/h'+(near.estimated?' · estimated':''):'typical pay')),
     (()=>{ const b=el('button',{class:'hud-link'},'Use this →'); b.addEventListener('click',()=>onUse(near.amount)); return b; })()));
   return p;
+}
+
+// ── Hours, readable: each day worked, its times, its breaks ──
+// 5.67 means nothing at a glance; "5h 40m" does. Split shifts show both
+// halves and the break between them. Times come from the WorkSapp rota
+// (JARVIS writes them into the week as `times`); days logged by hand show
+// their hours only.
+const _hm = h=>{ const m=Math.round((parseFloat(h)||0)*60); const hh=Math.floor(m/60), mm=m%60;
+  return hh&&mm ? hh+'h '+mm+'m' : hh ? hh+'h' : mm+'m'; };
+const _mins = t=>{ const [a,b]=String(t).split(':').map(Number); return a*60+(b||0); };
+function hoursDayRows(week){
+  const DAYS=['mon','tue','wed','thu','fri','sat','sun'];
+  const monday=_pLabel(week.label), today=_pYmd(_pToday());
+  const box=el('div',{class:'wk-list'});
+  box.append(el('div',{class:'wk-head'},
+    el('span',{},'Week of '+monday.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})),
+    el('b',{},_hm(week.total||0))));
+  const byHand=!week.times;
+  if(byHand) box.append(el('div',{class:'wk-note',style:{padding:'6px 0 2px'}},'Logged by hand — no shift times for this week'));
+  let any=false;
+  DAYS.forEach((d,i)=>{
+    const h=parseFloat(week[d])||0;
+    if(!h) return;
+    any=true;
+    const date=_pAdd(monday,i), times=(week.times&&week.times[d])?[...week.times[d]].sort((x,y)=>_mins(x[0])-_mins(y[0])):null;
+    const row=el('div',{class:'wk-day'+(_pYmd(date)===today?' wk-today':'')});
+    row.append(el('div',{class:'wk-date'},
+      el('b',{},date.toLocaleDateString('en-GB',{weekday:'short'})),
+      el('span',{},date.getDate()+' '+date.toLocaleDateString('en-GB',{month:'short'}))));
+    const mid=el('div',{class:'wk-times'});
+    if(times && times.length){
+      mid.append(el('div',{class:'wk-slots'},...times.map(([a,b])=>el('span',{class:'wk-slot'},a+'–'+b))));
+      if(times.length>1){
+        const gaps=times.slice(1).map((t,k)=>_mins(t[0])-_mins(times[k][1])).filter(g=>g>0);
+        mid.append(el('div',{class:'wk-note wk-split'},'Split shift'+(gaps.length?' · '+gaps.map(g=>_hm(g/60)).join(' + ')+' break':'')));
+      }
+    } else if(!byHand){
+      mid.append(el('div',{class:'wk-note'},'Logged by hand'));
+    }
+    row.append(mid, el('div',{class:'wk-hrs'},_hm(h)));
+    box.append(row);
+  });
+  if(!any) box.append(el('div',{class:'wk-note',style:{padding:'8px 0'}},'No hours this week yet'));
+  return box;
 }
 
 function calendarScreen(){
