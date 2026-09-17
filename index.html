@@ -878,7 +878,7 @@ function matchBankAccounts(appAccts, bankAccounts, conn){
       ...(a.bankAccountId!==m.account_id?{bankLinkedAt:now}:{}), ...cardInfo(m)};
   };
 
-  // 1. already linked
+  // 1. already linked -- including anything he pinned himself
   const byId = new Map(bankAccounts.map(b=>[b.account_id,b]));
   let accounts = appAccts.map(a=>{
     const m = a.bankAccountId && byId.get(a.bankAccountId);
@@ -889,18 +889,29 @@ function matchBankAccounts(appAccts, bankAccounts, conn){
   const free = t => bankAccounts.filter(b=>b.account_type===t && !claimed.has(b.account_id));
   const mine = a => !claimed.has(a.bankAccountId) && (!a.bankConnection || a.bankConnection===conn.id)
                     && !(a.bankAccountId && a.bankConnection && a.bankConnection!==conn.id);
-  accounts = accounts.map(a=>{
-    if(a.bankAccountId && claimed.has(a.bankAccountId)) return a;
-    if(!mine(a)) return a;
-    const role = inferRole(a);
+  // In a fixed order, so the list's order cannot decide who gets what:
+  // spending, then the card, then the goals pot, then the card pot.
+  const ORDER = ['spending', 'card', 'goals', 'card_pot'];
+  const byRole = new Map(accounts.map((a, i) => [i, inferRole(a)]));
+  const order = [...accounts.keys()].sort((i, j) => {
+    const r = ORDER.indexOf(byRole.get(i)), q = ORDER.indexOf(byRole.get(j));
+    return (r < 0 ? 99 : r) - (q < 0 ? 99 : q);
+  });
+  for(const i of order){
+    const a = accounts[i];
+    if(a.linkedByHand) continue;                       // he said which one; leave it alone
+    if(a.bankAccountId && claimed.has(a.bankAccountId)) continue;
+    if(!mine(a)) continue;
+    const role = byRole.get(i);
     const savers = free('SAVINGS').sort((x,y)=>(y.balance||0)-(x.balance||0));
     const m = role==='spending' ? free('TRANSACTION')[0]
             : role==='card'     ? free('CREDIT_CARD')[0]
             : role==='goals'    ? savers[0]
-            : role==='card_pot' ? savers[savers.length>1?1:0]
+            // Never the same saver the goals pot has: one account cannot be two pots.
+            : role==='card_pot' ? savers[0]
             : null;
-    return m ? apply(a, m, role) : a;
-  });
+    if(m) accounts[i] = apply(a, m, role);
+  }
 
   // 3. a bank linked since: bring in what is left
   if(conn.id!==LEGACY_BANK){
@@ -932,7 +943,8 @@ async function syncBankingBalances(){
     if(claimedIds.has(a.bankAccountId)){
       changed = true;
       const {bankAccountId, bankConnection, syncedFromBank, ...rest} = a;
-      return rest;
+      return {...rest, balance:0, balanceAsOf:new Date().toISOString(),
+              note:'Was showing the same bank account as another pot — enter its own balance.'};
     }
     claimedIds.add(a.bankAccountId);
     return a;
@@ -9688,6 +9700,57 @@ function accountsScreen(){
              : daysOld===0 ? 'Updated today'
              : 'Last updated '+daysOld+' day'+(daysOld===1?'':'s')+' ago — statements do not carry a balance, so this one is yours to keep current'));
       card.append(freshness);
+
+      // Which bank account feeds this one? Pinning it stops the matching
+      // rule from ever moving it again.
+      if(a.syncedFromBank || a.bankAccountId){
+        const linkRow = el('div',{style:{marginTop:'8px',fontSize:'11px',color:'var(--ink-3)'}});
+        const linkBtn = el('button',{class:'btn-quiet',style:{fontSize:'12px',padding:'2px 0'}},
+          a.linkedByHand ? 'Linked by you — change' : 'Change which bank account feeds this');
+        linkRow.append(el('span',{},'From your bank'+(a.provider?' ('+a.provider+')':'')+' · '), linkBtn);
+        linkBtn.addEventListener('click',async()=>{
+          linkBtn.textContent='Reading your bank…'; linkBtn.disabled=true;
+          const conns = (await bankConnections()).filter(c=>c.access_token);
+          const options = [];
+          for(const c of conns){
+            for(const b of (await fetchBankingAccounts(c.id))||[]) options.push({...b, conn:c.id});
+          }
+          linkRow.innerHTML='';
+          if(!options.length){ linkRow.append(el('span',{},'Could not read your bank just now.')); return; }
+          const pick = el('select',{style:{width:'100%',marginTop:'4px'}});
+          for(const o of options){
+            const label = (o.provider_name?o.provider_name+' · ':'')+(o.display_name||o.account_type)+
+                          (o.balance!=null?' · '+fmt(o.balance):'');
+            const opt = el('option',{value:o.account_id},label);
+            if(o.account_id===a.bankAccountId) opt.selected=true;
+            pick.append(opt);
+          }
+          const savePick = el('button',{class:'btn-primary',style:{marginTop:'6px',fontSize:'13px',padding:'8px'}},'Use this account');
+          savePick.addEventListener('click',async()=>{
+            const chosen = options.find(o=>o.account_id===pick.value);
+            if(!chosen) return;
+            const stamp = new Date().toISOString();
+            accounts = accounts.map(x=>{
+              if(x.id===a.id) return {...x, bankAccountId:chosen.account_id, bankConnection:chosen.conn,
+                                      provider:chosen.provider_name||x.provider||null, linkedByHand:true,
+                                      syncedFromBank:true, balance:chosen.balance!=null?chosen.balance:x.balance,
+                                      balanceAsOf:stamp, updatedAt:stamp};
+              // Nobody else may hold the same bank account.
+              if(x.bankAccountId===chosen.account_id){
+                const {bankAccountId, bankConnection, syncedFromBank, linkedByHand, ...rest} = x;
+                // It was showing that same account; it has no balance of its own.
+                return {...rest, balance:0, balanceAsOf:stamp};
+              }
+              return x;
+            });
+            appData.accounts = accounts;
+            await save({...appData, accounts});
+            renderAccounts();
+          });
+          linkRow.append(el('div',{},'Which account at your bank is this?'), pick, savePick);
+        });
+        card.append(linkRow);
+      }
 
       if(isCard){
         const syncBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',
