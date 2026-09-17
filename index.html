@@ -691,6 +691,13 @@ async function syncBankingTransactions(){
   const existingBankIds = new Set(
     Object.values(existing).map(t=>t.bankTransactionId).filter(Boolean));
 
+  // A card that is not linked to a bank has a balance typed in by hand, so
+  // a payment to it has to be taken off that balance -- otherwise paying
+  // the card leaves the app showing the money gone AND the debt still owed.
+  const handCards = appAccts.filter(a=>a.type==='credit_card' && !a.bankAccountId);
+  const cardPayments = {...(appData.cardPayments||{})};
+  let paid = null;
+
   // Paying a linked card from the current account is money moving between
   // her own accounts: the purchases are already counted on the card.
   const cardBanks = [...new Set(appAccts.filter(a=>a.type==='credit_card'&&a.provider&&a.bankAccountId)
@@ -774,6 +781,14 @@ async function syncBankingTransactions(){
           }
         }
 
+        // "B/CARD FORWARD DDR", "BARCLAYCARD BILL PAYMENT", "CAPITAL ONE" --
+        // money going TO a card, not spending.
+        if(!isCard && direction==='debit' && handCards.length && !cardPayments[t.transaction_id]
+           && /B\/?CARD|BARCLAYCARD|CREDIT ?CARD|CAPITAL ?ONE|AMEX|AMERICAN EXPRESS|MBNA|VANQUIS|AQUA|JAJA|ASDA (MONEY|CREDIT)/i.test(normDesc)){
+          cardPayments[t.transaction_id] = {amount, date, description: rawDesc};
+          paid = {amount: (paid?paid.amount:0) + amount, date};
+        }
+
         const txnId = uid();
         writes[txnId] = {
           transactionId: txnId,
@@ -796,6 +811,21 @@ async function syncBankingTransactions(){
         imported++;
       }
     } catch(e){ console.error('Transaction fetch failed:', e); }
+  }
+
+  // Take any payment found off the hand-kept card balance, once per
+  // transaction, so the same payment can never be counted twice.
+  if(paid && handCards.length){
+    const card = handCards[0];
+    const left = Math.max(0, Math.round(((card.balance||0) - paid.amount)*100)/100);
+    const stamp = new Date().toISOString();
+    const accounts = (appData.accounts||[]).map(a=>a.id===card.id
+      ? {...a, balance:left, balanceAsOf:stamp, updatedAt:stamp,
+         lastPaymentAmount:paid.amount, lastPaymentAt:paid.date} : a);
+    appData.accounts = accounts;
+    appData.cardPayments = cardPayments;
+    await save({...appData, accounts, cardPayments,
+                balances:{...(appData.balances||{}), creditCard:left}});
   }
 
   if(imported>0){
@@ -1418,6 +1448,27 @@ function getNetWorth(){
 // card_pot  → money set aside to clear the credit card
 // goals     → money for savings goals
 // card      → the credit card debt itself
+function statementSettled(stmt, txns, cardAcct){
+  if(!stmt || !(stmt.statementBalance>0)) return false;
+  const due = stmt.paymentDue ? new Date(stmt.paymentDue+'T12:00') : null;
+  // A payment entered on the card itself -- there before the bank feed
+  // catches up a day or two later.
+  if(cardAcct && cardAcct.lastPaymentAt && (cardAcct.lastPaymentAmount||0) >= stmt.statementBalance-1){
+    const paid = new Date(cardAcct.lastPaymentAt+'T12:00');
+    if(!isNaN(paid) && (!due || (paid<=due && (due-paid)/86400000<=40))) return true;
+  }
+  // Or the payment itself, out of the current account: any time from a
+  // month before the bill to five days after it.
+  return (txns||[]).some(t=>{
+    if(t.direction!=='debit' || t.sourceType==='credit_card') return false;
+    if(Math.abs(t.amount-stmt.statementBalance)>=1) return false;
+    const d = new Date(t.transactionDate||t.postingDate);
+    if(isNaN(d)) return false;
+    if(!due) return false;
+    return (due-d)/86400000<=40 && (d-due)/86400000<=5;
+  });
+}
+
 function inferRole(a){
   if(a.role) return a.role;
   if(a.type==='current') return 'spending';
@@ -2506,8 +2557,11 @@ function overviewScreen(){
 
     // Card commitment — needed by goals, safe-to-spend and the pots view
     const cardOwed = pots.card.balance;
-    const dueAmount = latestStmt && latestStmt.statementBalance!=null ? latestStmt.statementBalance : cardOwed;
-    const dueDateStr = latestStmt && latestStmt.paymentDue ? latestStmt.paymentDue : null;
+    const cardAcctNow = (appData.accounts||[]).find(a=>a.type==='credit_card')||null;
+    const stmtPaid = statementSettled(latestStmt, txns, cardAcctNow);
+    const dueAmount = stmtPaid ? 0
+      : (latestStmt && latestStmt.statementBalance!=null ? latestStmt.statementBalance : cardOwed);
+    const dueDateStr = (!stmtPaid && latestStmt && latestStmt.paymentDue) ? latestStmt.paymentDue : null;
     // dueGap = missing for the NEXT payment; uncoveredCard = total debt not backed by the pot
     const dueGap = Math.max(0, dueAmount - pots.cardPot.balance);
     const uncoveredCard = Math.max(0, cardOwed - pots.cardPot.balance);
@@ -7959,6 +8013,7 @@ function buildPlanForecast(data, today){
   }
 
   // Card payment: statement due dates, else the card balance on the 1st
+  const cardPaid=(appData.accounts||[]).find(a=>a.type==='credit_card')||null;
   const cardStmts=(data.statements||[]).filter(s=>s.statementKind==='credit_card'||s.sourceBank==='Barclaycard'||s.statementBalance!=null)
     .map(s=>{ let due=s.paymentDue; if(!due&&s.periodEnd){ const d=new Date(s.periodEnd); if(!isNaN(d)){ d.setDate(d.getDate()+25); due=_pYmd(d);} } return {...s,paymentDue:due}; })
     .filter(s=>s.paymentDue&&s.statementBalance>0);
@@ -7966,8 +8021,7 @@ function buildPlanForecast(data, today){
   for(const s of cardStmts){
     const due=new Date(s.paymentDue+'T12:00');
     if(isNaN(due)||due<=today||due>end) continue;
-    const settled=txns.some(t=>t.direction==='debit'&&t.sourceType!=='credit_card'&&Math.abs(t.amount-s.statementBalance)<1&&Math.abs(new Date(_pTxnDate(t))-due)/86400000<=5);
-    if(settled) continue;
+    if(statementSettled(s, txns, cardPaid)) continue;
     add(due,{kind:'card',label:'Credit card payment',amount:-s.statementBalance}); cardAdded=true;
   }
   if(!cardAdded && !cardStmts.length && pots.card.balance>0){
@@ -8042,6 +8096,8 @@ function buildPlanForecast(data, today){
     owed:pots.card.balance||0,
     updated:cardAcct&&cardAcct.updatedAt?new Date(cardAcct.updatedAt):null,
     synced:!!(cardAcct&&cardAcct.syncedFromBank),
+    paidAt:cardAcct&&cardAcct.lastPaymentAt?cardAcct.lastPaymentAt:null,
+    paidAmount:cardAcct?cardAcct.lastPaymentAmount:null,
     due:cardPay?cardPay.d:null, dueAmount:cardPay?-cardPay.amount:null,
     pot:pots.cardPot.balance||0, potName:pots.cardPot.names} : null;
 
@@ -8093,8 +8149,11 @@ function planBriefing(fc){
   if(fc.card && fc.card.owed>0){
     const c=fc.card, covered=c.pot>=c.owed-0.5;
     say(covered?'info':'warn','\u25A4', 'Credit card: '+strong(fmt(c.owed)+' owed')+
-      (c.synced?' (live from Barclays)':' — the figure you entered'+(c.updated?' on '+_pDay(c.updated):'')+
-        '; card spending isn\u2019t synced yet, so anything since then isn\u2019t counted')+
+      (c.synced?' (live from Barclays)'
+        : c.paidAt?' — after your payment of '+fmt(c.paidAmount||0)+' on '+_pDay(c.paidAt)+
+                   '; card spending since then is not synced yet'
+        : ' — the figure you entered'+(c.updated?' on '+_pDay(c.updated):'')+
+          '; card spending isn\u2019t synced yet, so anything since then isn\u2019t counted')+
       '. '+(c.due?'Payment ~'+strong(_pShort(c.due))+'. ':'')+
       (covered?'Your '+c.potName+' ('+fmt(c.pot)+') covers it.':'Your '+c.potName+' holds '+fmt(c.pot)+' towards it.'));
   }
@@ -9532,7 +9591,7 @@ function accountsScreen(){
       if(isCard){
         const syncBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',
           border:'1px solid var(--border)',borderRadius:'10px',padding:'7px 12px',
-          fontSize:'12px',fontWeight:'600',marginTop:'8px'}},'Update from latest statement');
+          fontSize:'12px',fontWeight:'600'}},'Update from latest statement');
         syncBtn.addEventListener('click',async()=>{
           syncBtn.textContent='Checking…'; syncBtn.disabled=true;
           try{
@@ -9554,7 +9613,38 @@ function accountsScreen(){
             syncBtn.textContent='Could not sync'; syncBtn.disabled=false;
           }
         });
-        card.append(syncBtn);
+        // Paid it early? One tap, rather than waiting a day or two for the
+        // payment to reach the bank feed and retyping the balance by hand.
+        const payWrap = el('div',{style:{display:'flex',gap:'8px',marginTop:'8px',flexWrap:'wrap',alignItems:'center'}});
+        const payBtn = el('button',{style:{background:'var(--surface2)',color:'var(--text2)',
+          border:'1px solid var(--border)',borderRadius:'10px',padding:'7px 12px',
+          fontSize:'12px',fontWeight:'600'}},'I have paid this card');
+        payBtn.addEventListener('click',()=>{
+          payWrap.innerHTML='';
+          const amt = el('input',{inputmode:'decimal',value:(a.balance||0).toFixed(2),
+            style:{width:'110px',padding:'7px 10px',fontSize:'13px'}});
+          const apply = el('button',{class:'btn-primary',style:{width:'auto',padding:'8px 14px',fontSize:'13px'}},'Apply');
+          const cancel = el('button',{class:'btn-quiet',style:{fontSize:'12px'}},'Cancel');
+          apply.addEventListener('click',async()=>{
+            const val = parseFloat(amt.value)||0;
+            const left = Math.max(0, Math.round(((a.balance||0)-val)*100)/100);
+            const stamp = new Date().toISOString();
+            accounts = accounts.map(x=>x.id===a.id
+              ? {...x, balance:left, balanceAsOf:stamp, updatedAt:stamp,
+                 lastPaymentAmount:val, lastPaymentAt:stamp.slice(0,10)} : x);
+            appData.accounts = accounts;
+            await save({...appData, accounts, balances:{...(appData.balances||{}), creditCard:left}});
+            renderAccounts();
+          });
+          cancel.addEventListener('click',renderAccounts);
+          payWrap.append(el('span',{style:{fontSize:'12px',color:'var(--text2)'}},'Paid £'), amt, apply, cancel);
+        });
+        payWrap.append(payBtn, syncBtn);
+        card.append(payWrap);
+        if(a.lastPaymentAt){
+          card.append(el('div',{style:{fontSize:'11px',color:'var(--accent)',marginTop:'6px'}},
+            'Payment of '+fmt(a.lastPaymentAmount||0)+' applied '+_pDay(a.lastPaymentAt)+'.'));
+        }
         card.append(el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'6px',lineHeight:'1.5'}},
           'Your statement balance is only correct up to the statement date. Anything you have spent since will not show until the next statement — check the Barclaycard app for the live figure.'));
       }
