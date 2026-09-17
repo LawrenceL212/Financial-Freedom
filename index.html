@@ -598,6 +598,7 @@ function showDailyCheckin(importedCount){
     {label:'🚌 Transport', cat:'Transport',       type:'EXPENSE'},
     ...(userSettings().customCategories||[]),
     {label:'📋 Sub',       cat:'Subscriptions',   type:'RECURRING_EXPENSE'},
+    {label:'💳 Card payment', cat:'Transfer',     type:'TRANSFER_OUT', cardPayment:true},
     {label:'✅ Skip',      cat:null,              type:null},
   ];
 
@@ -657,6 +658,12 @@ function showDailyCheckin(importedCount){
           await db.ref('users/'+currentUser.uid+'/transactions/'+t.transactionId).update({
             category:q.cat, financialType:q.type||t.financialType, needsReview:false});
         }
+        // Paying the card is money moving to a debt, not spending: take it
+        // off the card here, where he is already looking at it.
+        if(q.cardPayment){
+          b.textContent='Applying…';
+          await applyCardPayment(t.amount, t.postingDate||t.transactionDate, t.bankTransactionId);
+        }
         currentIdx++;
         renderCurrent();
       });
@@ -696,7 +703,16 @@ async function syncBankingTransactions(){
   // the card leaves the app showing the money gone AND the debt still owed.
   const handCards = appAccts.filter(a=>a.type==='credit_card' && !a.bankAccountId);
   const cardPayments = {...(appData.cardPayments||{})};
-  let paid = null;
+  const foundPayments = [];
+  // The card's own number, from the statements, so a payment that says
+  // only "...5002 BBP" is still recognised.
+  let knownLast4 = [];
+  if(handCards.length){
+    try {
+      const stSnap = await db.ref('users/'+currentUser.uid+'/statements').once('value');
+      knownLast4 = cardLast4s(Object.values(stSnap.val()||{}));
+    } catch(e){ knownLast4 = cardLast4s([]); }
+  }
 
   // Paying a linked card from the current account is money moving between
   // her own accounts: the purchases are already counted on the card.
@@ -781,12 +797,10 @@ async function syncBankingTransactions(){
           }
         }
 
-        // "B/CARD FORWARD DDR", "BARCLAYCARD BILL PAYMENT", "CAPITAL ONE" --
-        // money going TO a card, not spending.
+        // Money going TO a card, by name or by card number, is not spending.
         if(!isCard && direction==='debit' && handCards.length && !cardPayments[t.transaction_id]
-           && /B\/?CARD|BARCLAYCARD|CREDIT ?CARD|CAPITAL ?ONE|AMEX|AMERICAN EXPRESS|MBNA|VANQUIS|AQUA|JAJA|ASDA (MONEY|CREDIT)/i.test(normDesc)){
-          cardPayments[t.transaction_id] = {amount, date, description: rawDesc};
-          paid = {amount: (paid?paid.amount:0) + amount, date};
+           && looksLikeCardPayment(rawDesc, knownLast4)){
+          foundPayments.push({amount, date, id:t.transaction_id});
         }
 
         const txnId = uid();
@@ -813,19 +827,10 @@ async function syncBankingTransactions(){
     } catch(e){ console.error('Transaction fetch failed:', e); }
   }
 
-  // Take any payment found off the hand-kept card balance, once per
-  // transaction, so the same payment can never be counted twice.
-  if(paid && handCards.length){
-    const card = handCards[0];
-    const left = Math.max(0, Math.round(((card.balance||0) - paid.amount)*100)/100);
-    const stamp = new Date().toISOString();
-    const accounts = (appData.accounts||[]).map(a=>a.id===card.id
-      ? {...a, balance:left, balanceAsOf:stamp, updatedAt:stamp,
-         lastPaymentAmount:paid.amount, lastPaymentAt:paid.date} : a);
-    appData.accounts = accounts;
-    appData.cardPayments = cardPayments;
-    await save({...appData, accounts, cardPayments,
-                balances:{...(appData.balances||{}), creditCard:left}});
+  // Take each payment found off the hand-kept card balance, once per
+  // transaction, and never on top of one he entered himself.
+  for(const f of foundPayments){
+    await applyCardPayment(f.amount, f.date, f.id);
   }
 
   if(imported>0){
@@ -1467,6 +1472,59 @@ function _dueDate(v){
   let d = /^\d{4}-\d{2}-\d{2}$/.test(str) ? new Date(str+'T12:00') : new Date(str);
   if(isNaN(d)) d = new Date(str.replace(/(\d)(st|nd|rd|th)/gi,'$1'));
   return isNaN(d) ? null : d;
+}
+
+function cardLast4s(statements){
+  const out = new Set();
+  const tail = v => (String(v||'').match(/(\d{4})\s*$/)||[])[1];
+  for(const a of (appData.accounts||[])){
+    if(a.type!=='credit_card') continue;
+    for(const v of [a.cardLast4, a.last4, a.cardNumber, a.name]){ const t=tail(v); if(t) out.add(t); }
+  }
+  for(const st of (statements||[])){
+    if(!st) continue;
+    if(st.cardLast4) out.add(String(st.cardLast4).slice(-4));
+    const t = tail(st.accountId);
+    if(t && /card/i.test(String(st.accountId||st.sourceBank||''))) out.add(t);
+  }
+  return [...out];
+}
+
+// Does this line out of the current account look like paying a card?
+function looksLikeCardPayment(description, last4){
+  const text = String(description||'').toUpperCase();
+  if(/B\/?CARD|BARCLAYCARD|CREDIT ?CARD|CAPITAL ?ONE|AMEX|AMERICAN EXPRESS|MBNA|VANQUIS|AQUA|JAJA|ASDA (MONEY|CREDIT)/.test(text)) return true;
+  // A card number in the reference, ending in a card of his.
+  return (text.match(/\d{12,19}/g)||[]).some(run => (last4||[]).includes(run.slice(-4)));
+}
+
+// Take a payment off a card whose balance is kept by hand -- from the bank
+// feed, or because he said so. Never twice for the same payment: one he
+// entered himself is recognised when the bank line arrives days later.
+async function applyCardPayment(amount, dateStr, bankTxnId){
+  const cards = (appData.accounts||[]).filter(a=>a.type==='credit_card' && !a.bankAccountId);
+  if(!cards.length || !(amount>0)) return false;
+  const card = cards[0];
+  const when = _dueDate(dateStr) || new Date();
+  const paidAlready = card.lastPaymentAt && Math.abs((card.lastPaymentAmount||0)-amount) < 1
+    && Math.abs((_dueDate(card.lastPaymentAt)||new Date(0)) - when) <= 10*86400000;
+  const payments = {...(appData.cardPayments||{})};
+  if(bankTxnId) payments[bankTxnId] = {amount, date:(dateStr||'').slice(0,10), applied:!paidAlready};
+  if(paidAlready){
+    appData.cardPayments = payments;
+    await save({...appData, cardPayments:payments});
+    return false;
+  }
+  const left = Math.max(0, Math.round(((card.balance||0)-amount)*100)/100);
+  const stamp = new Date().toISOString();
+  const accounts = (appData.accounts||[]).map(a=>a.id===card.id
+    ? {...a, balance:left, balanceAsOf:stamp, updatedAt:stamp,
+       lastPaymentAmount:amount, lastPaymentAt:(dateStr||stamp).slice(0,10)} : a);
+  appData.accounts = accounts;
+  appData.cardPayments = payments;
+  await save({...appData, accounts, cardPayments:payments,
+              balances:{...(appData.balances||{}), creditCard:left}});
+  return true;
 }
 
 function statementSettled(stmt, txns, cardAcct){
