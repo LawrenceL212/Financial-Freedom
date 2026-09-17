@@ -1548,6 +1548,22 @@ function statementSettled(stmt, txns, cardAcct){
   });
 }
 
+// The four legacy numbers, as the accounts now say them. Accounts win
+// wherever they exist; the old record is only a fallback for someone who
+// has not made any yet.
+function liveBalances(){
+  const old = (appData && appData.balances) || {};
+  if(!((appData && appData.accounts) || []).length) return old;
+  const pots = getPots();
+  return {
+    ...old,
+    current: pots.spending.balance || 0,
+    personalSavings: pots.cardPot.balance || 0,
+    florasii: pots.goals.balance || 0,
+    creditCard: pots.card.balance || 0,
+  };
+}
+
 function inferRole(a){
   if(a.role) return a.role;
   if(a.type==='current') return 'spending';
@@ -2439,19 +2455,16 @@ async function buildFinancialReminders(){
 
     const latest = stmts[0];
     if(latest){
-      const due       = new Date(latest.paymentDue);
+      const due       = _dueDate(latest.paymentDue) || new Date(latest.paymentDue);
       const daysUntil = Math.ceil((due-now)/86400000);
       const amtDue    = latest.statementBalance;
 
-      // Check if DDR already cleared from imported transactions
+      // Paid already? The same question the forecast and Specifics ask:
+      // a payment by any name or card number, or one entered on the card.
       const allTxns = Object.values(appData.transactions||{});
-      const ddrCleared = allTxns.some(t=>
-        t.direction==='debit' &&
-        Math.abs(t.amount - amtDue) < 2 &&
-        (t.rawDescription||'').toUpperCase().includes('B/CARD') &&
-        (t.postingDate||'') >= (latest.periodEnd||'').slice(0,10)
-      );
-      const cleared = appData['cardCleared_'+latest.statementId] || ddrCleared;
+      const cardAcct = (appData.accounts||[]).find(a=>a.type==='credit_card')||null;
+      const cleared = appData['cardCleared_'+latest.statementId]
+        || statementSettled(latest, allTxns, cardAcct);
 
       if(!cleared){
         if(daysUntil <= 14 && daysUntil >= -1){
@@ -2596,7 +2609,7 @@ function renderReminders(reminders, container){
 }
 
 function overviewScreen(){
-  const balances = appData?.balances || {};
+  const balances = liveBalances();
   const paychecks = appData?.paychecks || [];
   const subscriptions = appData?.subscriptions || [];
   const habits = appData?.habits||{xp:0,level:1};
@@ -3016,6 +3029,7 @@ function overviewScreen(){
       cardOwed, subsMonthly: subTotal, owedToUser,
       availableCash: pots.spending.balance,
       committedSoon: totalCommitted,
+      savingsElsewhere: (pots.cardPot.balance||0) + (pots.goals.balance||0),
     });
 
     const highs = dx.causes.filter(c=>c.severity==='high').length;
@@ -3888,7 +3902,7 @@ function askScreen(){
   function buildFinancialContext(){
     const paychecks = (appData.paychecks||[]).filter(p=>p.income>0);
     const sorted = [...paychecks].sort((a,b)=>new Date(a.date)-new Date(b.date));
-    const balances = appData.balances||{};
+    const balances = liveBalances();
     const subs = appData.subscriptions||[];
     const cashFlow = appData.cashFlow||[];
     const goals = appData.goals||[];
@@ -6192,10 +6206,15 @@ function diagnose(model, baselines, ctx){
   if(ctx.owedToUser > 0 && inc>0 && ctx.owedToUser > inc*0.3)
     push('money_owed','medium','Money owed to you is tying up cash',
       fmt(ctx.owedToUser)+' is roughly '+(ctx.owedToUser/Math.max(inc,1)).toFixed(1)+' months of income.',null);
-  if(ctx.availableCash!=null && ctx.committedSoon>0 && ctx.availableCash < ctx.committedSoon)
-    push('timing','high','Timing, not shortage',
+  if(ctx.availableCash!=null && ctx.committedSoon>0 && ctx.availableCash < ctx.committedSoon){
+    // Only the wrong pot if another pot actually holds enough.
+    const elsewhere = ctx.savingsElsewhere||0;
+    const covered = elsewhere >= (ctx.committedSoon - Math.max(0,ctx.availableCash));
+    push(covered?'timing':'shortfall', 'high', covered?'Timing, not shortage':'Not enough before payday',
       'You hold '+fmt(ctx.availableCash)+' but '+fmt(ctx.committedSoon)+' is committed before payday.',
-      'Your savings could cover it — the money is in the wrong pot.');
+      covered ? 'Your savings ('+fmt(elsewhere)+') could cover it — the money is in the wrong pot.'
+              : 'Your other pots hold '+fmt(elsewhere)+', so this has to come out of what is coming in.');
+  }
 
   const order = {high:0, medium:1, low:2};
   causes.sort((a,b)=>order[a.severity]-order[b.severity]);
