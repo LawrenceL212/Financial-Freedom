@@ -1448,13 +1448,22 @@ function getNetWorth(){
 // card_pot  → money set aside to clear the credit card
 // goals     → money for savings goals
 // card      → the credit card debt itself
+function _dueDate(v){
+  if(!v) return null;
+  const str = String(v).trim();
+  // 2026-10-02 (midday, so a timezone cannot shift the day) or "2 October 2026".
+  let d = /^\d{4}-\d{2}-\d{2}$/.test(str) ? new Date(str+'T12:00') : new Date(str);
+  if(isNaN(d)) d = new Date(str.replace(/(\d)(st|nd|rd|th)/gi,'$1'));
+  return isNaN(d) ? null : d;
+}
+
 function statementSettled(stmt, txns, cardAcct){
   if(!stmt || !(stmt.statementBalance>0)) return false;
-  const due = stmt.paymentDue ? new Date(stmt.paymentDue+'T12:00') : null;
+  const due = _dueDate(stmt.paymentDue);
   // A payment entered on the card itself -- there before the bank feed
   // catches up a day or two later.
   if(cardAcct && cardAcct.lastPaymentAt && (cardAcct.lastPaymentAmount||0) >= stmt.statementBalance-1){
-    const paid = new Date(cardAcct.lastPaymentAt+'T12:00');
+    const paid = _dueDate(cardAcct.lastPaymentAt);
     if(!isNaN(paid) && (!due || (paid<=due && (due-paid)/86400000<=40))) return true;
   }
   // Or the payment itself, out of the current account: any time from a
@@ -8019,8 +8028,8 @@ function buildPlanForecast(data, today){
     .filter(s=>s.paymentDue&&s.statementBalance>0);
   let cardAdded=false;
   for(const s of cardStmts){
-    const due=new Date(s.paymentDue+'T12:00');
-    if(isNaN(due)||due<=today||due>end) continue;
+    const due=_dueDate(s.paymentDue);
+    if(!due||due<=today||due>end) continue;
     if(statementSettled(s, txns, cardPaid)) continue;
     add(due,{kind:'card',label:'Credit card payment',amount:-s.statementBalance}); cardAdded=true;
   }
