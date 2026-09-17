@@ -920,6 +920,18 @@ async function syncBankingBalances(){
   const conns = (await bankConnections()).filter(c=>c.access_token);
   if(!conns.length) return false;
   let accounts = [...(appData.accounts||[])], changed = false, payDetected = null;
+  // One bank account cannot be two of yours.
+  const claimedIds = new Set();
+  accounts = accounts.map(a=>{
+    if(!a.bankAccountId) return a;
+    if(claimedIds.has(a.bankAccountId)){
+      changed = true;
+      const {bankAccountId, bankConnection, syncedFromBank, ...rest} = a;
+      return rest;
+    }
+    claimedIds.add(a.bankAccountId);
+    return a;
+  });
   for(const conn of conns){
     const bankAccounts = await fetchBankingAccounts(conn.id);
     if(!bankAccounts || !bankAccounts.length) continue;
@@ -4939,9 +4951,10 @@ function statementsScreen(){
             (s.periodStart?s.periodStart.slice(0,7):'?')+' → '+(s.periodEnd?s.periodEnd.slice(0,7):'?'))
         ),
         el('div',{style:{textAlign:'right'}},
-          el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--green)'}},s.transactionCount+' txns'),
+          el('div',{style:{fontSize:'13px',fontWeight:'600',color:'var(--green)'}},
+            (s.transactionCount!=null?s.transactionCount:s.newCount!=null?s.newCount:'—')+' txns'),
           el('div',{style:{fontSize:'11px',color:'var(--text3)',marginTop:'2px'}},
-            new Date(s.uploadedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}))
+            (()=>{ const d=_dueDate(s.uploadedAt); return d?d.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}):''; })())
         )
       );
       const details = el('div',{style:{display:'flex',gap:'16px',marginTop:'8px',fontSize:'12px',color:'var(--text2)'}});
@@ -6310,14 +6323,16 @@ function analyticsScreen(){
       const W=Math.min(window.innerWidth-40,440), H=140;
       const PAD={top:10,right:8,bottom:24,left:52};
       const iW=W-PAD.left-PAD.right, iH=H-PAD.top-PAD.bottom;
-      const maxVal = Math.max(...a.monthly.map(([,m])=>Math.max(m.income,m.expenses)),1);
+      const mSpend = m => Number(m.spending ?? m.expenses ?? 0) || 0;
+      const mIn = m => Number(m.income ?? 0) || 0;
+      const maxVal = Math.max(1, ...a.monthly.map(([,m])=>Math.max(mIn(m), mSpend(m))).filter(Number.isFinite));
       const barW = Math.max(4,(iW/a.monthly.length)*0.35);
       const gap = iW/a.monthly.length;
 
       const bars = a.monthly.map(([month,m],i)=>{
         const x = PAD.left + i*gap;
-        const ih = (m.income/maxVal)*iH;
-        const eh = (m.expenses/maxVal)*iH;
+        const ih = (mIn(m)/maxVal)*iH;
+        const eh = (mSpend(m)/maxVal)*iH;
         const lbl = month.slice(5)+'/'+ month.slice(2,4);
         return `
           <rect x="${x+(gap-barW*2-2)/2}" y="${PAD.top+iH-ih}" width="${barW}" height="${ih}" fill="var(--green)" rx="2" opacity="0.8"/>
