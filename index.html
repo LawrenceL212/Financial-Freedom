@@ -332,6 +332,17 @@ input::placeholder{color:var(--ink-4)}
 .ask-row{display:flex;gap:8px;margin-top:var(--s3);position:relative}
 .ask-row input{flex:1;min-width:0;background:rgba(255,255,255,.03);border:1px solid var(--accent-edge);border-radius:999px;padding:10px 14px;font-size:14px}
 .ask-go{flex:0 0 42px;height:42px;border-radius:50%;border:none;background:var(--accent);color:var(--accent-ink);font:700 18px 'Space Mono',monospace;cursor:pointer;box-shadow:0 0 14px rgba(0,230,118,.35)}
+/* Plan: the card's statement cycle */
+.cc-meter{position:relative;height:6px;border-radius:6px;background:rgba(255,255,255,.05);overflow:hidden;margin:2px 0 var(--s2)}
+.cc-meter i{position:absolute;top:0;bottom:0;left:0;border-radius:6px}
+.cc-days{position:relative;margin-top:var(--s2)}
+.cc-day{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--line-soft);font-size:12.5px;cursor:pointer}
+.cc-day:last-child{border-bottom:none}
+.cc-day.on{background:linear-gradient(90deg,rgba(255,90,90,.08),transparent)}
+.cc-day-date{flex:0 0 96px;color:var(--ink);font-weight:600;white-space:nowrap}
+.cc-day-what{flex:1;min-width:0;color:var(--ink-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cc-day b{font:700 13px 'Space Mono',monospace;white-space:nowrap}
+.cc-more{background:none;border:none;color:var(--ink-3);font-size:12px;padding:8px 0 0;cursor:pointer}
 /* Calendar: amounts and heat instead of dots */
 .cal-amt{font:700 9px 'Space Mono',monospace;text-align:center;margin-top:2px;line-height:1.15;white-space:nowrap;overflow:hidden}
 .cal-proj{font:400 8px 'Space Mono',monospace;text-align:center;margin-top:2px;white-space:nowrap}
@@ -8097,6 +8108,74 @@ function planEta(remaining, perPay, from){
   return _pAdd(from, Math.ceil(remaining/perPay)*14);
 }
 
+// The card's statement cycle: from the day after its last statement to the
+// next, what has gone on the card each day so far, and the statement that
+// pace points to. A statement is assumed paid in full by its direct debit,
+// so the next one is this cycle's spending alone.
+const CARD_DUE_LAG=25;   // Barclaycard: payment due ~25 days after the statement
+function planCardCycle(data, today, cardAcct){
+  const cardTxns=(data.txns||[]).filter(t=>t.sourceType==='credit_card');
+  if(!cardAcct && !cardTxns.length) return null;
+  // The last statement date: the bank's, else the newest imported statement
+  // (its due date less the usual lag), else none -- then the calendar month.
+  let last=null;
+  const c=cardAcct&&cardAcct.card;
+  if(c&&c.statementDate) last=_dueDate(String(c.statementDate).slice(0,10));
+  if(!last){
+    last=(data.statements||[]).filter(s=>s.statementKind==='credit_card'||s.sourceBank==='Barclaycard')
+      .map(s=>{ const due=_dueDate(s.paymentDue); return due?_pAdd(due,-CARD_DUE_LAG):_dueDate(s.periodEnd); })
+      .filter(Boolean).sort((a,b)=>b-a)[0]||null;
+  }
+  let start, end, guessed=!last;
+  if(last){
+    last=new Date(last.getFullYear(),last.getMonth(),last.getDate());
+    const anchor=last.getDate();
+    const nextAfter=d=>{ const dim=new Date(d.getFullYear(),d.getMonth()+2,0).getDate();
+      return new Date(d.getFullYear(),d.getMonth()+1,Math.min(anchor,dim)); };
+    let next=nextAfter(last);
+    // A statement since then that is not in the app yet: roll forward.
+    for(let n=0;n<24&&next<today;n++){ last=next; next=nextAfter(last); }
+    start=_pAdd(last,1); end=next;
+  } else {
+    start=new Date(today.getFullYear(),today.getMonth(),1);
+    end=new Date(today.getFullYear(),today.getMonth()+1,0);
+  }
+  const ymd0=_pYmd(start), ymdT=_pYmd(today);
+  // Spending is purchases less refunds; paying the card is neither.
+  const signed=t=>t.direction==='debit'&&t.financialType==='EXPENSE' ? (t.amount||0)
+    : t.direction==='credit'&&t.category==='Refund' ? -(t.amount||0) : 0;
+  const byDay={};
+  for(const t of cardTxns){
+    const d=_pTxnDate(t), v=signed(t);
+    if(!v||!d||d<ymd0||d>ymdT) continue;
+    const day=byDay[d]=byDay[d]||{total:0,items:[]};
+    day.total+=v; day.items.push({name:t.normalisedMerchant||t.rawDescription||'Card',amount:v});
+  }
+  const days=[];
+  for(let d=start;d<=end;d=_pAdd(d,1)){
+    const k=_pYmd(d), x=byDay[k];
+    days.push({d,key:k,past:d<=today,total:x?Math.round(x.total*100)/100:0,
+      items:x?x.items.sort((a,b)=>b.amount-a.amount):[]});
+  }
+  const spent=days.reduce((s,x)=>s+x.total,0);
+  const elapsed=days.filter(x=>x.past).length, left=days.length-elapsed;
+  // The pace: the last four weeks on the card (or since card data begins),
+  // one-off big purchases left out, as for everyday spending.
+  const dated=cardTxns.map(_pTxnDate).filter(Boolean).sort();
+  const newest=dated.length?dated[dated.length-1]:null;
+  const first=dated.length?new Date(dated[0]+'T12:00'):null;
+  const win=first?Math.max(1,Math.min(28,Math.round((today-new Date(first.getFullYear(),first.getMonth(),first.getDate()))/86400000)+1)):28;
+  const from=_pYmd(_pAdd(today,-(win-1)));
+  const pace=Math.max(0,cardTxns.filter(t=>{ const d=_pTxnDate(t); return d&&d>=from&&d<=ymdT&&(t.amount||0)<=150; })
+    .reduce((s,t)=>s+signed(t),0)/win);
+  // Card spending that stops before this cycle began has not been synced:
+  // the days so far are unknown, so nothing is predicted.
+  const synced=!!(cardAcct&&cardAcct.syncedFromBank)||(newest&&newest>=ymd0);
+  const predicted=synced?Math.round((spent+pace*left)*100)/100:null;
+  return {start,end,days,spent:Math.round(spent*100)/100,elapsed,left,pace,predicted,synced,guessed,
+          newest:newest?new Date(newest+'T12:00'):null};
+}
+
 function buildPlanForecast(data, today){
   today=today||_pToday();
   const end=_pAdd(today,PLAN_HORIZON);
@@ -8212,7 +8291,8 @@ function buildPlanForecast(data, today){
     paidAt:cardAcct&&cardAcct.lastPaymentAt?cardAcct.lastPaymentAt:null,
     paidAmount:cardAcct?cardAcct.lastPaymentAmount:null,
     due:cardPay?cardPay.d:null, dueAmount:cardPay?-cardPay.amount:null,
-    pot:pots.cardPot.balance||0, potName:pots.cardPot.names} : null;
+    pot:pots.cardPot.balance||0, potName:pots.cardPot.names,
+    cycle:planCardCycle(data, today, cardAcct)} : null;
 
   return {today,end,start,pts,paydays,nextPay,burn,oneOffs,everydayCount:everyday.length,staleDays,newest,card,
           goals,goalPerPay,low,lowG,dueBeforePay,eve,typical:planTypicalPay(),
@@ -8320,6 +8400,116 @@ function planChartSVG(fc, showGoals){
   return {svg:s, x, y, n, W, L, pw};
 }
 
+// The cycle's days as bars: what went on the card each day so far, and the
+// days still to come at the current pace, faint.
+function planCardBarsSVG(cy){
+  const W=340, H=118, L=4, R=4, T=16, B=18, pw=W-L-R, ph=H-T-B, n=cy.days.length;
+  // One big purchase would flatten every other day: the scale stops at
+  // three days' pace, and a taller bar is clipped and labelled.
+  const top=Math.max(...cy.days.map(x=>x.total), 1);
+  const hi=cy.pace>0 ? Math.min(top, Math.max(cy.pace*3, 1)) : top;
+  const bw=pw/n, x=i=>L+i*bw, y=v=>T+ph-Math.max(0,v)/hi*ph;
+  let s='<svg class="hud-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" role="img" aria-label="Card spending by day">';
+  for(let g=0;g<=2;g++){ const gy=T+g/2*ph; s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+gy+'" y2="'+gy+'" stroke="rgba(255,255,255,.05)"/>'; }
+  if(cy.pace>0){ const py=y(cy.pace);
+    s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+py+'" y2="'+py+'" stroke="#F5A524" stroke-opacity=".55" stroke-dasharray="3 3"/>'+
+       '<text x="'+(W-R)+'" y="'+(py-3)+'" fill="#F5A524" font-size="8" text-anchor="end" font-family="Space Mono,monospace">'+_pK(cy.pace)+'/DAY</text>'; }
+  cy.days.forEach((d,i)=>{
+    const gap=Math.min(2,bw*.25), bx=x(i)+gap/2, w=Math.max(1,bw-gap);
+    if(d.past){
+      const v=Math.max(0,d.total), by=y(v), h=Math.max(v>0?1.5:0,T+ph-by);
+      if(h>0) s+='<rect class="cc-bar" data-i="'+i+'" x="'+bx.toFixed(1)+'" y="'+(T+ph-h).toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+h.toFixed(1)+'" rx="1.5" fill="#FF5A5A" fill-opacity="'+(d.total>0?.85:.3)+'"/>';
+      if(v>hi) s+='<text x="'+(bx+w/2).toFixed(1)+'" y="'+(T-6)+'" fill="#FF5A5A" font-size="8.5" font-weight="700" font-family="Space Mono,monospace" text-anchor="'+(i>n-4?'end':i<3?'start':'middle')+'">'+_pK(v)+'\u2191</text>';
+    } else if(cy.predicted!=null && cy.pace>0){
+      const by=y(cy.pace);
+      s+='<rect x="'+bx.toFixed(1)+'" y="'+by.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+(T+ph-by).toFixed(1)+'" rx="1.5" fill="#FF5A5A" fill-opacity=".14" stroke="#FF5A5A" stroke-opacity=".45" stroke-width=".7" stroke-dasharray="2 2"/>';
+    }
+  });
+  // today, and the statement day at the end
+  const ti=cy.elapsed-1;
+  if(ti>=0&&ti<n) s+='<line x1="'+(x(ti)+bw).toFixed(1)+'" x2="'+(x(ti)+bw).toFixed(1)+'" y1="'+(T-4)+'" y2="'+(T+ph)+'" stroke="#00E676" stroke-opacity=".5" stroke-dasharray="2 3"/>'+
+    '<text x="'+(x(ti)+bw).toFixed(1)+'" y="'+(T-6)+'" fill="#00E676" font-size="8.5" font-weight="700" font-family="Space Mono,monospace" text-anchor="'+(ti>n-5?'end':ti<4?'start':'middle')+'">TODAY</text>';
+  s+='<text x="'+L+'" y="'+(H-5)+'" fill="#6C6C78" font-size="8.5" font-family="Space Mono,monospace">'+_pDay(cy.start).toUpperCase()+'</text>'+
+     '<text x="'+(W-R)+'" y="'+(H-5)+'" fill="#6C6C78" font-size="8.5" font-family="Space Mono,monospace" text-anchor="end">'+(cy.guessed?'':'STATEMENT ')+_pDay(cy.end).toUpperCase()+'</text>';
+  s+='<rect class="cc-sel" x="0" y="'+T+'" width="'+bw.toFixed(1)+'" height="'+ph+'" fill="#F5F5F7" fill-opacity=".06" visibility="hidden"/></svg>';
+  return {svg:s, W, L, bw, n};
+}
+
+function planCardPanel(card){
+  const cy=card.cycle;
+  const p=hudPanel('Credit card', cy?(cy.guessed?'THIS MONTH':_pDay(cy.start).toUpperCase()+' – '+_pDay(cy.end).toUpperCase()):'');
+  const owedSub=card.synced?'live':(card.updated?'set '+_pDay(card.updated):'typed in');
+  if(!cy){ p.append(hudKpis([['Owed now',_pK(card.owed),owedSub,card.owed>0?'var(--danger)':'var(--ink)']])); return p; }
+  const daysTo=Math.max(0,Math.round((cy.end-_pToday())/86400000));
+  p.append(hudKpis([
+    ['Owed now',_pK(card.owed),owedSub,card.owed>0?'var(--danger)':'var(--ink)'],
+    ['This cycle',cy.synced?_pK(cy.spent):'—',cy.elapsed+' day'+(cy.elapsed===1?'':'s')+' so far'],
+    [cy.guessed?'Month end':'Statement',cy.predicted!=null?'~'+_pK(cy.predicted):'—',
+      cy.predicted!=null?(daysTo===0?'issued today':'in '+daysTo+' day'+(daysTo===1?'':'s')):'not synced','var(--warn)']]));
+  if(!cy.synced){
+    p.append(el('div',{class:'hud-tip',style:{minHeight:'0'}},
+      'Card spending isn’t synced'+(cy.newest?' since '+_pDay(cy.newest):'')+', so this cycle’s days can’t be shown yet. Link the card under Money → Accounts, or import its latest statement.'));
+    return p;
+  }
+  // spent so far against the predicted statement
+  if(cy.predicted>0){
+    const pct=Math.min(100,cy.spent/cy.predicted*100);
+    p.append(el('div',{class:'cc-meter'},el('i',{style:{width:pct+'%',background:'var(--danger)',boxShadow:'0 0 8px rgba(255,90,90,.5)'}})));
+  }
+  const chart=el('div',{style:{position:'relative'}});
+  const c=planCardBarsSVG(cy); chart.innerHTML=c.svg;
+  const tip=el('div',{class:'hud-tip'});
+  const legend=el('div',{class:'hud-legend'},
+    el('span',{},el('i',{style:{background:'var(--danger)'}}),'Spent'),
+    el('span',{},el('i',{style:{background:'rgba(255,90,90,.25)',border:'1px dashed var(--danger)'}}),'At this pace'),
+    el('span',{},el('i',{style:{background:'var(--warn)'}}),'Pace '+fmt(cy.pace)+'/day'));
+  const list=el('div',{class:'cc-days'});
+  const svg=chart.querySelector('svg'), sel=svg.querySelector('.cc-sel');
+  const rows={};
+  const show=i=>{
+    const d=cy.days[i]; if(!d) return;
+    sel.setAttribute('x',(c.L+i*c.bw).toFixed(1)); sel.setAttribute('visibility','visible');
+    tip.innerHTML='';
+    tip.append(el('div',{style:{display:'flex',justifyContent:'space-between',gap:'8px'}},
+      el('span',{style:{color:'var(--ink)',fontWeight:'600'}},_pShort(d.d)),
+      el('span',{style:{fontFamily:"'Space Mono',monospace",color:d.past?'var(--danger)':'var(--ink-3)'}},
+        d.past?fmt(d.total):'~'+fmt(cy.pace)+' at this pace')));
+    tip.append(el('div',{style:{marginTop:'2px'}},
+      !d.past?'Still to come in this cycle'
+      : d.items.length?d.items.map(x=>x.name+' '+fmt(x.amount)).join(' · ')
+      : 'Nothing on the card'));
+    for(const k in rows) rows[k].classList.toggle('on',+k===i);
+  };
+  const pick=ev=>{ const r=svg.getBoundingClientRect(); const px=(ev.clientX-r.left)/r.width*c.W;
+    show(Math.max(0,Math.min(c.n-1,Math.floor((px-c.L)/c.bw)))); };
+  svg.addEventListener('pointerdown',pick); svg.addEventListener('pointermove',e=>{ if(e.buttons||e.pointerType==='mouse') pick(e); });
+  // Day by day so far, newest first; days with nothing on the card are skipped.
+  const spentDays=cy.days.map((d,i)=>({...d,i})).filter(d=>d.past&&d.total!==0).reverse();
+  const quiet=cy.elapsed-spentDays.length;
+  const SHOW=7;
+  const addRows=from=>{ for(const d of spentDays.slice(from, from===0?SHOW:undefined)){
+    const what=d.items.map(x=>x.name).join(', ');
+    const row=el('div',{class:'cc-day'},
+      el('span',{class:'cc-day-date'},_pShort(d.d)),
+      el('span',{class:'cc-day-what'},(d.items.length>1?d.items.length+' · ':'')+what),
+      el('b',{style:{color:d.total>0?'var(--ink)':'var(--accent)'}},fmt(d.total)));
+    row.addEventListener('click',()=>show(d.i));
+    rows[d.i]=row; list.append(row);
+  } };
+  addRows(0);
+  if(spentDays.length>SHOW){
+    const more=el('button',{class:'cc-more'},'Show all '+spentDays.length+' days ↓');
+    more.addEventListener('click',()=>{ more.remove(); addRows(SHOW); if(quiet>0) list.append(note); });
+    list.append(more);
+  }
+  const note=el('div',{class:'t-meta',style:{paddingTop:'8px'}},
+    spentDays.length?quiet+' day'+(quiet===1?'':'s')+' with nothing on the card.':'Nothing on the card yet this cycle.');
+  if(spentDays.length<=SHOW) list.append(note);
+  p.append(chart, legend, tip, list);
+  show(Math.max(0,cy.elapsed-1));
+  return p;
+}
+
 // Publish the briefing for JARVIS, so asking JARVIS for a briefing shows
 // exactly this -- Financial Freedom's own numbers and wording.
 function publishBriefing(fc){
@@ -8348,8 +8538,9 @@ function planForecastScreen(){
   const hud=el('div',{class:'hud'});
   hud.append(el('div',{class:'hud-eyebrow'},el('span',{class:'hud-live'}),'JARVIS · Forecast'),
              el('div',{class:'t-meta',style:{marginTop:'var(--s3)'}},'Reading your accounts…'));
+  const cardSlot=el('div');
   const brief=el('div',{class:'hud'});
-  content.append(hud, brief);
+  content.append(hud, cardSlot, brief);
 
   loadPlanData().then(data=>{
     const fc=buildPlanForecast(data);
@@ -8416,6 +8607,7 @@ function planForecastScreen(){
       legend.append(t);
     }
     hud.append(chartWrap, legend, tip);
+    if(fc.card) cardSlot.append(planCardPanel(fc.card));
 
     // Briefing
     brief.innerHTML='';
