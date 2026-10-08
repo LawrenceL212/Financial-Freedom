@@ -417,6 +417,8 @@ input::placeholder{color:var(--ink-4)}
 .wk-note{font-size:11px;color:var(--ink-3);margin-top:3px}
 .wk-split{color:var(--warn)}
 .wk-hrs{font:700 13px 'Space Mono',monospace;color:var(--accent);white-space:nowrap}
+.wk-sched .wk-slot{border-style:dashed;color:var(--ink-2);background:none}
+.wk-sched .wk-hrs{color:var(--ink-3)}
 /* Monthly budget */
 .mb-row{display:flex;gap:6px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line-soft)}
 .mb-row:last-child{border-bottom:none}
@@ -7686,7 +7688,14 @@ function hoursScreen(){
 
   function renderAll(){
     histWrap.innerHTML='';
-    const log = appData.hoursLog||[];
+    // Weeks from the rota with nothing worked yet get a card too, shown but
+    // never saved: they join hoursLog only as their shifts are worked.
+    const sched = scheduledByWeek();
+    const logged = new Set((appData.hoursLog||[]).map(w=>_pYmd(_pLabel(w.label))));
+    const ahead = Object.entries(sched).filter(([k])=>!logged.has(k))
+      .map(([k,w])=>({id:'sched_'+k, label:w.label, mon:0,tue:0,wed:0,thu:0,fri:0,sat:0,sun:0, total:0, scheduled:true}));
+    const log = [...(appData.hoursLog||[]), ...ahead];
+    const schedFor = w=>sched[_pYmd(_pLabel(w.label))]||null;
     if(log.length===0){
       histWrap.append(el('div',{class:'card',style:{textAlign:'center',padding:'30px 20px',color:'var(--text2)',fontSize:'13px'}},'No weeks logged yet — add your first week above.'));
       return;
@@ -7722,7 +7731,9 @@ function hoursScreen(){
 
     for(const {w1,w2} of filtered){
       const totalH = w1.total + (w2?w2.total:0);
-      const predicted = predictedPay(totalH);
+      const aheadH = (schedFor(w1)||{hours:0}).hours + (w2?(schedFor(w2)||{hours:0}).hours:0);
+      // Predicted pay counts the shifts still to come; "worked" doesn't.
+      const predicted = predictedPay(totalH + aheadH);
       const actualKey = w1.id + '_actual';
       const savedActual = appData.actualPay && appData.actualPay[actualKey] ? appData.actualPay[actualKey] : 0;
       const card = el('div',{class:'card',style:{marginBottom:'10px'}});
@@ -7731,7 +7742,7 @@ function hoursScreen(){
       const labelDiv = el('div',{},
         el('div',{style:{fontWeight:'600',fontSize:'14px'}},
           _pDay(_pLabel(w1.label))+' – '+_pDay(_pAdd(_pLabel(w1.label),w2?13:6))+(w2?'':' (in progress)')),
-        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked'+(MONTHLY?'':' · paid '+_pShort(_pAdd(_pLabel(w1.label),userSettings().payLagDays||18))))
+        el('div',{style:{fontSize:'12px',color:'var(--text3)',marginTop:'2px'}},_hm(totalH)+' worked'+(aheadH?' · '+_hm(aheadH)+' ahead':'')+(MONTHLY?'':' · paid '+_pShort(_pAdd(_pLabel(w1.label),userSettings().payLagDays||18))))
       );
       const payDiv = el('div',{style:{textAlign:'right'}},
         el('div',{style:{fontFamily:"'Space Mono',monospace",fontWeight:'700',color:'var(--green)',fontSize:'16px'}},fmt(predicted)),
@@ -7749,8 +7760,8 @@ function hoursScreen(){
         const days = ['mon','tue','wed','thu','fri','sat','sun'];
         // Reading: one line per day worked. Editing: the grid, as before.
         if(!editMode){
-          breakdown.append(hoursDayRows(w1));
-          if(w2) breakdown.append(hoursDayRows(w2));
+          breakdown.append(hoursDayRows(w1, schedFor(w1)));
+          if(w2) breakdown.append(hoursDayRows(w2, schedFor(w2)));
           return;
         }
 
@@ -7784,7 +7795,7 @@ function hoursScreen(){
         w1TotalRow.textContent = w1.total.toFixed(1)+'h';
         breakdown.append(w1TotalRow);
 
-        if(w2){
+        if(w2 && !w2.scheduled){
           // week 2 row
           const w2Row = el('div',{style:{display:'grid',gridTemplateColumns:'52px repeat(7,1fr)',gap:'4px',marginBottom:'4px',borderTop:'1px solid var(--border)',paddingTop:'6px'}});
           const w2LabelEl = el('div',{style:{fontSize:'9px',color:'var(--text2)',display:'flex',alignItems:'center',paddingRight:'4px',whiteSpace:'nowrap',overflow:'hidden'}}, w2.label.slice(0,5));
@@ -7882,12 +7893,14 @@ function hoursScreen(){
       // Monthly pay: these cards are for entering and editing weeks; the
       // pay is worked out per month above, so no fortnightly pay here.
       if(MONTHLY){ payDiv.style.display='none'; actualWrap.style.display='none'; delBtn.textContent='Remove these weeks'; }
+      // Nothing worked yet: no hours to edit, pay to enter or period to remove.
+      if(w1.scheduled){ editRow.style.display='none'; actualWrap.style.display='none'; delBtn.style.display='none'; }
       card.append(header, breakdown, editRow, actualWrap, delBtn);
       histWrap.append(card);
     }
 
     // Hours graph
-    const sortedForGraph = [...log].sort((a,b) => parseLabel(a.label) - parseLabel(b.label));
+    const sortedForGraph = log.filter(w=>!w.scheduled).sort((a,b) => parseLabel(a.label) - parseLabel(b.label));
     if(sortedForGraph.length >= 2){
       const values = sortedForGraph.map(w => w.total);
       const dates = sortedForGraph.map(w => w.label);
@@ -8855,19 +8868,53 @@ function jarvisPaydayHint(onUse){
 const _hm = h=>{ const m=Math.round((parseFloat(h)||0)*60); const hh=Math.floor(m/60), mm=m%60;
   return hh&&mm ? hh+'h '+mm+'m' : hh ? hh+'h' : mm+'m'; };
 const _mins = t=>{ const [a,b]=String(t).split(':').map(Number); return a*60+(b||0); };
-function hoursDayRows(week){
+// Rota shifts that haven't ended yet, by week: {'yyyy-mm-dd' of the Monday:
+// {label, hours, days:{mon:[shift,…]}}}. JARVIS moves a shift into hoursLog
+// only once it has ended, so without these the weeks ahead look empty.
+function scheduledByWeek(){
+  const DAYS=['mon','tue','wed','thu','fri','sat','sun'], now=new Date(), out={};
+  for(const s of (appData.upcomingShifts||[])){
+    if(!s||!/^\d{4}-\d{2}-\d{2}$/.test(s.date||'')||!s.start||!s.end) continue;
+    const day=new Date(s.date+'T00:00');
+    // An end at or before the start is the next morning, as JARVIS reads it.
+    const endMins=_mins(s.end)+(_mins(s.end)<=_mins(s.start)?1440:0);
+    if(new Date(day.getTime()+endMins*60000)<=now) continue;
+    const i=(day.getDay()+6)%7, monday=_pAdd(day,-i), k=_pYmd(monday);
+    const w=out[k]=out[k]||{label:monday.toLocaleDateString('en-GB',{day:'2-digit',month:'2-digit',year:'numeric'}),hours:0,days:{}};
+    (w.days[DAYS[i]]=w.days[DAYS[i]]||[]).push(s);
+    w.hours+=parseFloat(s.hours)||0;
+  }
+  return out;
+}
+
+function hoursDayRows(week, sched){
   const DAYS=['mon','tue','wed','thu','fri','sat','sun'];
   const monday=_pLabel(week.label), today=_pYmd(_pToday());
+  const ahead=(sched&&sched.days)||{}, aheadH=sched?sched.hours:0;
   const box=el('div',{class:'wk-list'});
   box.append(el('div',{class:'wk-head'},
     el('span',{},'Week of '+monday.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})),
-    el('b',{},_hm(week.total||0))));
-  const byHand=!week.times;
+    el('b',{},_hm(week.total||0)+(aheadH?' + '+_hm(aheadH)+' ahead':''))));
+  const byHand=!week.times&&!week.scheduled;
   if(byHand) box.append(el('div',{class:'wk-note',style:{padding:'6px 0 2px'}},'Logged by hand — no shift times for this week'));
   let any=false;
+  // Shifts still to come: dashed, after any worked that day, not counted as worked.
+  const aheadRow=(d,i)=>{
+    if(!ahead[d]) return;
+    any=true;
+    const date=_pAdd(monday,i), list=[...ahead[d]].sort((x,y)=>_mins(x.start)-_mins(y.start));
+    box.append(el('div',{class:'wk-day wk-sched'+(_pYmd(date)===today?' wk-today':'')},
+      el('div',{class:'wk-date'},
+        el('b',{},date.toLocaleDateString('en-GB',{weekday:'short'})),
+        el('span',{},date.getDate()+' '+date.toLocaleDateString('en-GB',{month:'short'}))),
+      el('div',{class:'wk-times'},
+        el('div',{class:'wk-slots'},...list.map(x=>el('span',{class:'wk-slot'},x.start+'–'+x.end))),
+        el('div',{class:'wk-note'},'Scheduled')),
+      el('div',{class:'wk-hrs'},_hm(list.reduce((a,x)=>a+(parseFloat(x.hours)||0),0)))));
+  };
   DAYS.forEach((d,i)=>{
     const h=parseFloat(week[d])||0;
-    if(!h) return;
+    if(!h){ aheadRow(d,i); return; }
     any=true;
     const date=_pAdd(monday,i), times=(week.times&&week.times[d])?[...week.times[d]].sort((x,y)=>_mins(x[0])-_mins(y[0])):null;
     const row=el('div',{class:'wk-day'+(_pYmd(date)===today?' wk-today':'')});
@@ -8886,6 +8933,7 @@ function hoursDayRows(week){
     }
     row.append(mid, el('div',{class:'wk-hrs'},_hm(h)));
     box.append(row);
+    aheadRow(d,i);
   });
   if(!any) box.append(el('div',{class:'wk-note',style:{padding:'8px 0'}},'No hours this week yet'));
   return box;
