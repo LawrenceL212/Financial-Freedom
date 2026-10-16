@@ -8057,27 +8057,46 @@ function planTypicalPay(){
   return recent.length ? recent[Math.floor(recent.length/2)] : 0;
 }
 
+// "20h worked + 14h on rota", or "34h worked", for a payday's hours.
+function paydayHours(p){
+  if(p.hours==null) return '';
+  const worked=p.hours-(p.scheduled||0);
+  return (worked>0||!p.scheduled?worked.toFixed(1)+'h worked':'')+(worked>0&&p.scheduled?' + ':'')
+    +(p.scheduled?p.scheduled.toFixed(1)+'h on rota':'');
+}
+
 // Upcoming paydays. A fortnight is paid on the Friday 18 days after it
-// starts, at the hours worked; one still in progress is shown at least at
-// his typical pay, marked estimated. Beyond the hours log, fortnightly at
-// typical pay.
+// starts, at its hours: those worked plus the rota's shifts still to come.
+// Until the rota reaches a fortnight's second week, part of it is unknown,
+// so it shows at least his typical pay. All marked estimated until the
+// fortnight ends. Beyond the rota, fortnightly at typical pay.
 function planPaydays(today, end){
   const S=userSettings(), LAG=S.payLagDays||18;
   // Hours drive the pay only for hourly pay paid in pay periods; anyone
   // else is paid on their calendar, at their typical pay.
   if(!(S.hourly && S.payCycle==='fortnightly')) return cyclePaydays(today, end, S);
   const RATE=payRate(), typical=planTypicalPay();
-  const weeks=(appData.hoursLog||[]).filter(w=>w&&w.label).sort((a,b)=>_pLabel(a.label)-_pLabel(b.label));
+  // Weeks the rota reaches with nothing worked yet are paired in too, the
+  // same way the Work tab shows them.
+  const sched=scheduledByWeek();
+  const logged=(appData.hoursLog||[]).filter(w=>w&&w.label);
+  const have=new Set(logged.map(w=>_pYmd(_pLabel(w.label))));
+  const weeks=[...logged, ...Object.entries(sched).filter(([k])=>!have.has(k)).map(([,w])=>({label:w.label, total:0}))]
+    .sort((a,b)=>_pLabel(a.label)-_pLabel(b.label));
+  const onRota=w=>(sched[_pYmd(_pLabel(w.label))]||{hours:0}).hours;
+  const rotaTo=Object.values(sched).flatMap(w=>Object.values(w.days).flat()).map(x=>x.date).sort().pop()||'';
   const list=[];
   for(let i=0;i<weeks.length;i+=2){
     const w1=weeks[i], w2=weeks[i+1]||null, start=_pLabel(w1.label);
     const date=_pAdd(start,LAG);
     if(date<today || date>end) continue;
-    const hours=(w1.total||0)+(w2?(w2.total||0):0);
+    const scheduled=Math.round((onRota(w1)+(w2?onRota(w2):0))*100)/100;
+    const hours=(w1.total||0)+(w2?(w2.total||0):0)+scheduled;
     const complete=_pAdd(start,14)<=today;
+    const known=complete || rotaTo>=_pYmd(_pAdd(start,7));
     const byHours=Math.round(hours*RATE*100)/100;
-    list.push({date, start, hours, estimated:!complete,
-               amount: complete ? byHours : Math.max(byHours, typical)});
+    list.push({date, start, hours, scheduled, estimated:!complete,
+               amount: known ? byHours : Math.max(byHours, typical)});
   }
   let last = list.length ? list[list.length-1].date : null;
   if(!last){
@@ -8202,7 +8221,7 @@ function buildPlanForecast(data, today){
   // Paydays
   const paydays=planPaydays(today,end);
   for(const p of paydays) add(p.date,{kind:'pay',label:'Payday',amount:p.amount,estimated:p.estimated,
-    detail:p.hours!=null?p.hours.toFixed(1)+'h worked':'typical pay'});
+    detail:p.hours!=null?paydayHours(p):'typical pay'});
 
   // Subscriptions on their billing day, until any end date
   for(let m=0;m<3;m++){
@@ -8321,7 +8340,7 @@ function planBriefing(fc){
     const p=fc.nextPay, days=Math.round((p.date-fc.today)/86400000);
     say('good','£', 'Next pay '+strong(fmt(p.amount))+' on '+strong(_pShort(p.date))+
       (days===0?' — today':days===1?' — tomorrow':' — in '+days+' days')+
-      (p.hours!=null?', for '+p.hours.toFixed(1)+'h worked'+(p.estimated?' so far (estimated)':''):' (typical pay, estimated)')+'.');
+      (p.hours!=null?', for '+paydayHours(p)+(p.estimated?' (estimated)':''):' (typical pay, estimated)')+'.');
   }
   if(fc.low.bal<0){
     say('bad','!', 'At this pace you’d go '+strong(fmt(fc.low.bal)+' overdrawn')+' on '+strong(_pShort(fc.low.d))+
@@ -8855,7 +8874,7 @@ function jarvisPaydayHint(onUse){
     el('div',{},
       el('div',{class:'t-meta'},'JARVIS expects'),
       el('div',{style:{font:"700 26px 'Space Mono',monospace",color:'var(--accent)',textShadow:'0 0 18px rgba(0,230,118,.3)'}},fmt(near.amount)),
-      el('div',{class:'t-meta'},near.hours!=null?near.hours.toFixed(1)+'h × '+fmt(payRate())+'/h'+(near.estimated?' · estimated':''):'typical pay')),
+      el('div',{class:'t-meta'},near.hours!=null?paydayHours(near)+' × '+fmt(payRate())+'/h'+(near.estimated?' · estimated':''):'typical pay')),
     (()=>{ const b=el('button',{class:'hud-link'},'Use this →'); b.addEventListener('click',()=>onUse(near.amount)); return b; })()));
   return p;
 }
@@ -9371,7 +9390,8 @@ function calendarScreen(){
         direction: 'credit',
         financialType: 'INCOME',
         source: 'hours',
-        detail: (p.hours!=null ? p.hours.toFixed(1)+'h × £'+(payRate()).toFixed(2)+'/hr' : 'typical pay')
+        detail: (p.hours!=null ? paydayHours(p)+' × £'+(payRate()).toFixed(2)+'/hr'
+                  + (p.amount>p.hours*payRate()+0.01 ? ' · at least typical pay' : '') : 'typical pay')
           + (p.estimated ? ' · estimated' : ''),
       });
     }
